@@ -28,3 +28,4 @@ same_item_push = "allow"
 too_many_arguments = "allow"
 uninlined_format_args = "allow"
 unnecessary_cast = "allow"
+

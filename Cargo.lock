@@ -245,18 +245,8 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f8ca58f447f06ed17d5fc4043ce1b10dd205e060fb3ce5b979b8ed8e59ff3f79"
 
 [[package]]
-name = "memmap2"
-version = "0.9.10"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "714098028fe011992e1c3962653c96b2d578c4b4bce9036e15ff220319b1e0e3"
-dependencies = [
- "libc",
-]
-
-[[package]]
 name = "neat-core"
-version = "0.1.0"
-source = "git+https://github.com/stSoftwareAU/NEAT-AI-core.git?branch=Develop#8d6cd8a50773d382c923ae5bdead7c29b8517cbb"
+version = "0.1.1"
 dependencies = [
  "serde",
  "serde_json",
@@ -314,7 +304,6 @@ name = "rust_scorer"
 version = "0.1.0"
 dependencies = [
  "clap",
- "memmap2",
  "neat-core",
  "serde",
  "serde_json",

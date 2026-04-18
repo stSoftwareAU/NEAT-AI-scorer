@@ -16,6 +16,13 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      - name: Checkout NEAT-AI-core (path dependency for neat-core)
+        uses: actions/checkout@v4
+        with:
+          repository: stSoftwareAU/NEAT-AI-core
+          ref: Develop
+          path: ../NEAT-AI-core
+
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 

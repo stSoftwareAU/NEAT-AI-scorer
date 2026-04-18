@@ -17,11 +17,10 @@ name = "float_scan_bench"
 path = "src/bin/float_scan_bench.rs"
 
 [dependencies]
-# Source of truth: https://github.com/stSoftwareAU/NEAT-AI-core (crate `neat-core` in that workspace).
-# Pin with `rev = "…"` for reproducible releases; `branch` tracks integration head.
-neat-core = { git = "https://github.com/stSoftwareAU/NEAT-AI-core.git", branch = "Develop" }
+# Path relative to this file: `NEAT-AI-scorer/rust_scorer` → sibling `NEAT-AI-core/neat-core`.
+# CI checks out NEAT-AI-core to `../../NEAT-AI-core` (see `.github/workflows/ci.yml`).
+neat-core = { path = "../../NEAT-AI-core/neat-core" }
 clap = { version = "4", features = ["derive"] }
-memmap2 = "0.9"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 

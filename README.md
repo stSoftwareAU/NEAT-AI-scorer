@@ -1,13 +1,13 @@
 # NEAT-AI-scorer
 
-Native **MSE scorer** CLI for NEAT-AI creatures. Shared logic lives in **`neat-core`**, pulled from **[NEAT-AI-core](https://github.com/stSoftwareAU/NEAT-AI-core)** (see `rust_scorer/Cargo.toml`).
+Native **MSE scorer** CLI for NEAT-AI creatures. Shared logic lives in **`neat-core`**, resolved from a **path dependency** on **[NEAT-AI-core](https://github.com/stSoftwareAU/NEAT-AI-core)** (see `rust_scorer/Cargo.toml`). GitHub Actions checks out `NEAT-AI-core` next to this repo so CI can resolve that path.
 
 ## Source
 
 | Component | Provenance |
 |-----------|----------------|
-| `rust_scorer/` | NEAT-AI working tree (not on `origin/Develop` yet): chunked read path with **pending buffer + head + compact** (`stream_score.rs`), fused MSE when `forwardOnly` is true, and **`float_scan_bench`** (`--mode=double-buf` / `mmap` / `read-copy`) for I/O experiments. |
-| `neat-core` (crate) | **NEAT-AI-core** repository, `Develop` branch, via Cargo `git` dependency — not vendored here. |
+| `rust_scorer/` | **`training_bin_stream::for_each_read_chunk`** (pipelined on native, same API on wasm) plus **pending + head + compact** (`stream_score.rs`), fused MSE when `forwardOnly` is true; **`float_scan_bench`** uses the same reader for throughput experiments. |
+| `neat-core` (crate) | **`../../NEAT-AI-core/neat-core`** relative to `rust_scorer/Cargo.toml` — clone **NEAT-AI-core** as a sibling of **NEAT-AI-scorer** (same parent directory). |
 | `LICENSE`, `.gitleaks.toml` | `origin/Develop` of NEAT-AI |
 
 ## Build
@@ -39,9 +39,9 @@ Positional arguments only (same contract as in NEAT-AI):
 rust_scorer <creature.json> <training_data_dir>
 ```
 
-## Local development against a NEAT-AI-core checkout
+## Local layout
 
-If you clone [NEAT-AI-core](https://github.com/stSoftwareAU/NEAT-AI-core) alongside this repo, you can point `neat-core` at your working tree by temporarily replacing the `git` dependency in `rust_scorer/Cargo.toml` with `neat-core = { path = "../NEAT-AI-core/neat-core" }` (sibling layout). Prefer committing the `git` dependency so CI stays self-contained.
+Place **NEAT-AI-core** and **NEAT-AI-scorer** as **siblings** (e.g. `…/src/NEAT-AI-core` and `…/src/NEAT-AI-scorer`). The path in `rust_scorer/Cargo.toml` is `../../NEAT-AI-core/neat-core` so `cargo build` resolves `neat-core` from your local **NEAT-AI-core** tree. CI does the same via a second checkout (`../NEAT-AI-core`).
 
 ## Relationship to NEAT-AI
 

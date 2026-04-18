@@ -17,6 +17,7 @@ mod stream_score;
 use std::fs;
 use std::path::PathBuf;
 use std::process;
+use std::time::Instant;
 
 use clap::Parser;
 use neat_core::creature::{compile_creature, parse_creature_json};
@@ -44,6 +45,7 @@ struct Cli {
 }
 
 fn run(cli: &Cli) -> Result<ScoreResult, String> {
+    let started = Instant::now();
     let creature_json = fs::read_to_string(&cli.creature).map_err(|e| {
         format!(
             "Failed to read creature file '{}': {e}",
@@ -143,6 +145,7 @@ fn run(cli: &Cli) -> Result<ScoreResult, String> {
         record_count,
         hidden_neurons,
         synapse_count,
+        time_taken_secs: started.elapsed().as_secs_f64(),
     })
 }
 
@@ -398,6 +401,7 @@ mod tests {
             record_count: 5000,
             hidden_neurons: 150,
             synapse_count: 2000,
+            time_taken_secs: 1.25,
         };
         let json = serde_json::to_string_pretty(&result).unwrap();
         // Verify camelCase keys in output
@@ -407,5 +411,6 @@ mod tests {
         assert!(json.contains("\"recordCount\""));
         assert!(json.contains("\"hiddenNeurons\""));
         assert!(json.contains("\"synapseCount\""));
+        assert!(json.contains("\"timeTaken\""));
     }
 }

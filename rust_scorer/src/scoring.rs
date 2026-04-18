@@ -203,6 +203,9 @@ pub struct ScoreResult {
     pub record_count: usize,
     pub hidden_neurons: usize,
     pub synapse_count: usize,
+    /// Wall-clock seconds for the full scoring run (read creature, compile, evaluate data).
+    #[serde(rename = "timeTaken")]
+    pub time_taken_secs: f64,
 }
 
 #[cfg(test)]
