@@ -203,6 +203,24 @@ pub struct ScoreResult {
     pub record_count: usize,
     pub hidden_neurons: usize,
     pub synapse_count: usize,
+    /// Creature JSON `forwardOnly` — must be `true` for fused + pipelined `.bin` scoring.
+    #[serde(rename = "forwardOnly")]
+    pub forward_only: bool,
+    /// Which training read path ran (`io_backend_label` when fused), else `record_iterator`.
+    #[serde(rename = "trainingReadBackend")]
+    pub training_read_backend: String,
+    /// Effective `read` buffer size (bytes) after record alignment; set when fused path ran.
+    #[serde(rename = "readBufLen", skip_serializing_if = "Option::is_none")]
+    pub read_buf_len: Option<usize>,
+    /// Fused path only: parallel activation workers when `> 1` (`NEAT_SCORER_ACTIVATION_THREADS`).
+    #[serde(rename = "activationThreads", skip_serializing_if = "Option::is_none")]
+    pub activation_threads: Option<usize>,
+    /// Fused path + `activationThreads` > 1: how many pending-buffer batches actually ran via Rayon (`0` = still sequential).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parallel_activation_batches: Option<usize>,
+    /// Fused path + `activationThreads` > 1: max whole records in one activation batch (if `1` with zero parallel batches, widen reads).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_activation_batch_records: Option<usize>,
     /// Wall-clock seconds for the full scoring run (read creature, compile, evaluate data).
     #[serde(rename = "timeTaken")]
     pub time_taken_secs: f64,

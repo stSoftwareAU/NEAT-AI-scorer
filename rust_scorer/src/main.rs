@@ -21,10 +21,12 @@ use std::time::Instant;
 
 use clap::Parser;
 use neat_core::creature::{compile_creature, parse_creature_json};
+use neat_core::training_bin_stream::{io_backend_label, training_read_tuning_from_env};
 use neat_core::training_data::{TrainingDataConfig, TrainingDataIterator, find_bin_files};
 
 use crate::cost::mse_mean_record;
 use crate::scoring::{ScoreResult, calculate_score, compute_score_components};
+use crate::stream_score::activation_worker_count_for_scorer;
 
 /// Matches `DEFAULT_COST_OF_GROWTH` in `src/config/NeatConfig.ts` (CLI is KISS: no flag).
 const GROWTH_COST: f64 = 0.000_000_1;
@@ -83,15 +85,31 @@ fn run(cli: &Cli) -> Result<ScoreResult, String> {
         num_outputs: creature.output,
     };
 
-    let use_fused_stream = creature.forward_only;
+    let record_bytes = config.bytes_per_record();
+    let (fused_io_mode, fused_read_target_bytes) = training_read_tuning_from_env(record_bytes);
+    let fused_read_buf_len =
+        stream_score::effective_fused_read_buf_len(record_bytes, fused_read_target_bytes);
 
-    let (total_error, record_count) = if use_fused_stream {
-        let (mse_sum, count) =
-            stream_score::accumulate_mse_sum_forward_only_fused(&bin_files, &config, &mut network)?;
-        if count == 0 {
-            return Err("No training records found".to_string());
-        }
-        (mse_sum, count)
+    let use_fused_stream = creature.forward_only;
+    let activation_threads = use_fused_stream.then(|| activation_worker_count_for_scorer());
+    let training_read_backend = if use_fused_stream {
+        io_backend_label(fused_io_mode).to_string()
+    } else {
+        "record_iterator".to_string()
+    };
+
+    let (total_error, record_count, parallel_activation_batches, max_activation_batch_records) =
+        if use_fused_stream {
+            let (mse_sum, count, parallel_batches, max_batch) =
+                stream_score::accumulate_mse_sum_forward_only_fused(
+                    &bin_files,
+                    &config,
+                    &mut network,
+                )?;
+            if count == 0 {
+                return Err("No training records found".to_string());
+            }
+            (mse_sum, count, parallel_batches, max_batch)
     } else {
         let mut iter = TrainingDataIterator::new(data_path, config.clone())
             .map_err(|e| format!("Failed to open training data iterator: {e}"))?;
@@ -114,7 +132,7 @@ fn run(cli: &Cli) -> Result<ScoreResult, String> {
         if record_count == 0 {
             return Err("No training records found".to_string());
         }
-        (total_error, record_count)
+        (total_error, record_count, 0_usize, 0_usize)
     };
 
     let avg_error = total_error / record_count as f64;
@@ -145,6 +163,14 @@ fn run(cli: &Cli) -> Result<ScoreResult, String> {
         record_count,
         hidden_neurons,
         synapse_count,
+        forward_only: creature.forward_only,
+        training_read_backend,
+        read_buf_len: use_fused_stream.then_some(fused_read_buf_len),
+        activation_threads: activation_threads.and_then(|n| (n > 1).then_some(n)),
+        parallel_activation_batches: activation_threads
+            .and_then(|n| (n > 1).then_some(parallel_activation_batches)),
+        max_activation_batch_records: activation_threads
+            .and_then(|n| (n > 1).then_some(max_activation_batch_records)),
         time_taken_secs: started.elapsed().as_secs_f64(),
     })
 }
@@ -401,6 +427,12 @@ mod tests {
             record_count: 5000,
             hidden_neurons: 150,
             synapse_count: 2000,
+            forward_only: true,
+            training_read_backend: "pipelined_double_buffer".to_string(),
+            read_buf_len: Some(2_097_152),
+            activation_threads: Some(8),
+            parallel_activation_batches: Some(1204),
+            max_activation_batch_records: Some(2609),
             time_taken_secs: 1.25,
         };
         let json = serde_json::to_string_pretty(&result).unwrap();
@@ -412,5 +444,11 @@ mod tests {
         assert!(json.contains("\"hiddenNeurons\""));
         assert!(json.contains("\"synapseCount\""));
         assert!(json.contains("\"timeTaken\""));
+        assert!(json.contains("\"forwardOnly\""));
+        assert!(json.contains("\"trainingReadBackend\""));
+        assert!(json.contains("\"readBufLen\""));
+        assert!(json.contains("\"activationThreads\""));
+        assert!(json.contains("\"parallelActivationBatches\""));
+        assert!(json.contains("\"maxActivationBatchRecords\""));
     }
 }
