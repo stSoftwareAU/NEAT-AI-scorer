@@ -1,0 +1,29 @@
+[package]
+name = "rust_scorer"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+description = "Native CLI binary for scoring NEAT-AI creatures against training data."
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "rust_scorer"
+path = "src/main.rs"
+
+[[bin]]
+name = "float_scan_bench"
+path = "src/bin/float_scan_bench.rs"
+
+[dependencies]
+# Source of truth: https://github.com/stSoftwareAU/NEAT-AI-core (crate `neat-core` in that workspace).
+# Pin with `rev = "…"` for reproducible releases; `branch` tracks integration head.
+neat-core = { git = "https://github.com/stSoftwareAU/NEAT-AI-core.git", branch = "Develop" }
+clap = { version = "4", features = ["derive"] }
+memmap2 = "0.9"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[dev-dependencies]
+tempfile = "3"

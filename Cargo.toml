@@ -1,0 +1,30 @@
+# Native scorer CLI; `neat-core` comes from the NEAT-AI-core repository (see `rust_scorer/Cargo.toml`).
+[workspace]
+members = ["rust_scorer"]
+resolver = "2"
+
+[profile.release]
+opt-level = 3
+lto = true
+
+[profile.release.package."*"]
+opt-level = 3
+
+[profile.release.package.rust_scorer]
+codegen-units = 1
+
+[workspace.lints.clippy]
+collapsible_if = "deny"
+filter_next = "deny"
+doc_nested_refdefs = "allow"
+identity_op = "allow"
+manual_is_multiple_of = "allow"
+manual_memcpy = "allow"
+missing_const_for_thread_local = "allow"
+needless_late_init = "allow"
+needless_range_loop = "allow"
+neg_multiply = "allow"
+same_item_push = "allow"
+too_many_arguments = "allow"
+uninlined_format_args = "allow"
+unnecessary_cast = "allow"

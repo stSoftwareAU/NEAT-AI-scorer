@@ -1,0 +1,185 @@
+# Quality bar aligned with NEAT-AI-Discovery (fmt, clippy, tests, security, spell & shell checks).
+name: CI
+
+on:
+  push:
+    branches:
+      - Develop
+    paths-ignore:
+      - "**.md"
+      - "docs/**"
+  pull_request:
+    types: [opened, synchronize, reopened]
+    branches:
+      - Develop
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_BUILD_JOBS: "2"
+
+jobs:
+  quality:
+    name: Quality Checks
+    runs-on: ubuntu-latest
+    env:
+      RUSTFLAGS: "-D warnings"
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Free up runner disk space
+        run: |
+          df -h /
+          sudo rm -rf /usr/share/dotnet
+          sudo rm -rf /usr/local/lib/android
+          sudo rm -rf /opt/ghc
+          sudo rm -rf /opt/hostedtoolcache/CodeQL
+          sudo rm -rf /usr/share/swift
+          df -h /
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock', '**/Cargo.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      - name: Install cargo-deny
+        run: cargo install cargo-deny --locked
+
+      - name: cargo deny
+        run: cargo deny check
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Run linter
+        run: |
+          cargo clippy --all-targets --all-features -- \
+            -D warnings \
+            -D clippy::filter_next \
+            -D clippy::collapsible_if
+
+      - name: Check types
+        run: cargo check --all-targets --all-features
+
+      - name: Build workspace
+        run: cargo build --workspace
+
+      - name: Clean intermediate artefacts before tests
+        run: |
+          df -h /
+          find target -name "incremental" -type d -exec rm -rf {} + 2>/dev/null || true
+          find target -name ".fingerprint" -type d -exec rm -rf {} + 2>/dev/null || true
+          find target -name "build" -type d -exec rm -rf {} + 2>/dev/null || true
+          df -h /
+
+      - name: Run tests
+        run: cargo test --workspace --all-features --verbose -- --test-threads=2
+
+      - name: Build documentation
+        run: RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
+
+  security:
+    uses: ./.github/workflows/security.yml
+    if: github.event_name == 'pull_request'
+    with:
+      include-dependency-review: true
+
+  validation:
+    name: Project Validation
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Check for required files
+        run: |
+          required_files=(
+            "Cargo.toml"
+            "README.md"
+            "LICENSE"
+            "quality.sh"
+            "deny.toml"
+            "rust_scorer/src/main.rs"
+          )
+          missing_files=()
+          for file in "${required_files[@]}"; do
+            if [ ! -f "$file" ]; then
+              missing_files+=("$file")
+            fi
+          done
+          if [ ${#missing_files[@]} -ne 0 ]; then
+            echo "Missing required files: ${missing_files[*]}"
+            exit 1
+          fi
+
+      - name: Validate Cargo workspace
+        run: cargo metadata --no-deps --format-version 1 > /dev/null
+
+  shell-checks:
+    name: Shell Script Quality
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install shellcheck
+        run: sudo apt-get update -qq && sudo apt-get install -y shellcheck
+
+      - name: Check bash script syntax
+        run: |
+          EXIT_CODE=0
+          while IFS= read -r script; do
+            if bash -n "$script"; then
+              echo "OK $script"
+            else
+              echo "FAIL $script"
+              EXIT_CODE=1
+            fi
+          done < <(find . -name "*.sh" -not -path "./target/*" -not -path "./.git/*")
+          exit $EXIT_CODE
+
+      - name: Run shellcheck
+        run: |
+          EXIT_CODE=0
+          while IFS= read -r script; do
+            echo "shellcheck: $script"
+            if ! shellcheck -s bash "$script"; then
+              EXIT_CODE=1
+            fi
+          done < <(find . -name "*.sh" -not -path "./target/*" -not -path "./.git/*")
+          exit $EXIT_CODE
+
+  spell-check:
+    name: Spell Check
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Run codespell
+        uses: codespell-project/actions-codespell@v2
+        with:
+          check_filenames: true
+          check_hidden: true
+          skip: "./target,./.git"
+          ignore_words_list: renderD
