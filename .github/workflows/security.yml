@@ -9,6 +9,11 @@ on:
         type: boolean
         default: true
 
+permissions:
+  contents: read
+  checks: write
+  issues: write
+
 jobs:
   security:
     runs-on: ubuntu-latest
@@ -26,10 +31,19 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Install cargo-audit
-        run: cargo install cargo-audit
+      # Official RustSec GitHub Action — wraps cargo-audit and annotates the PR /
+      # check run with any RUSTSEC advisories found in Cargo.lock.
+      - name: Cargo Security Audit (rustsec/audit-check)
+        uses: rustsec/audit-check@v2
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Run security audit
+      # Belt-and-braces: run cargo-audit directly so the job fails hard on
+      # advisories even if the action's annotation path is disabled.
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked
+
+      - name: Run cargo audit
         run: cargo audit
 
       - name: Dependency review
