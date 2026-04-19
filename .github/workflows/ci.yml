@@ -150,13 +150,12 @@ jobs:
   shell-checks:
     name: Shell Script Quality
     runs-on: ubuntu-latest
+    # Upstream ShellCheck project: https://github.com/koalaman/shellcheck
+    # Action wrapper used below: ludeeus/action-shellcheck (runs koalaman/shellcheck).
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
-
-      - name: Install shellcheck
-        run: sudo apt-get update -qq && sudo apt-get install -y shellcheck
 
       - name: Check bash script syntax
         run: |
@@ -171,16 +170,14 @@ jobs:
           done < <(find . -name "*.sh" -not -path "./target/*" -not -path "./.git/*")
           exit $EXIT_CODE
 
-      - name: Run shellcheck
-        run: |
-          EXIT_CODE=0
-          while IFS= read -r script; do
-            echo "shellcheck: $script"
-            if ! shellcheck -s bash "$script"; then
-              EXIT_CODE=1
-            fi
-          done < <(find . -name "*.sh" -not -path "./target/*" -not -path "./.git/*")
-          exit $EXIT_CODE
+      - name: Run ShellCheck (koalaman/shellcheck via ludeeus/action-shellcheck)
+        uses: ludeeus/action-shellcheck@master
+        with:
+          scandir: "."
+          severity: warning
+          ignore_paths: "target .git"
+        env:
+          SHELLCHECK_OPTS: -s bash
 
   spell-check:
     name: Spell Check
