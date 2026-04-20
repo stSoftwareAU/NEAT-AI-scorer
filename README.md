@@ -49,6 +49,33 @@ Place **NEAT-AI-core** and **NEAT-AI-scorer** as **siblings** (e.g. `…/src/NEA
 
 Scorer-specific Rust stays here; **`neat-core`** tracks **NEAT-AI-core**.
 
+## Why MSE-only?
+
+The CLI scores creatures with **mean squared error** only — there is no `--cost` flag
+and no runtime dispatch across loss functions.
+
+- **Fused fast path is MSE.** The forward-only path calls
+  `neat_core::loss::mse_sum_batch_packed` directly so error accumulation stays
+  inside the same SIMD-friendly pass that reads packed `[inputs..., targets...]`
+  records. The non-fused recurrent path (`forwardOnly: false`) uses
+  `cost::mse_mean_record` to match the TypeScript `MSE.calculate()` mean.
+- **Scope matches today's callers.** NEAT-AI `Develop` invokes this binary with
+  the fixed positional contract `<creature.json> <data_dir>` (see `AGENTS.md`)
+  and never requests a non-MSE score. `GROWTH_COST` and the fitness formula in
+  `scoring.rs` are defined against MSE.
+- **`neat-core` still exposes the full set.** The sibling crate already ships
+  fused batch variants for MAE, cross-entropy, MAPE, MSLE, and hinge
+  (`neat_core::loss::{mae,cross_entropy,mape,msle,hinge}_sum_batch_packed`).
+  Re-adding a `--cost` dispatch would be CLI wiring plus tests — no new math —
+  but until a downstream caller needs it, keeping the surface area small wins
+  on KISS grounds and preserves the stable positional CLI contract.
+
+If a downstream caller ever needs non-MSE scoring at this boundary, the
+existing fused batch-packed losses in `neat-core` are the drop-in entry points;
+see the in-tree `rust_scorer/` experiment on
+[`milestone/pure-rust-scorer-experiment`](https://github.com/stSoftwareAU/NEAT-AI/blob/milestone/pure-rust-scorer-experiment/rust_scorer/src/cost.rs)
+for the six-way dispatch pattern.
+
 ## License
 
 Apache-2.0 — see `LICENSE`.

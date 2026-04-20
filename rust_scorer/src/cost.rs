@@ -1,6 +1,10 @@
 //! Per-record MSE for the non-fused scoring path (recurrent / `forwardOnly: false`).
 //!
 //! Matches the TypeScript `MSE.calculate()` mean over outputs.
+//!
+//! The CLI is deliberately MSE-only — see the "Why MSE-only?" section in
+//! `README.md` for the rationale and the fused-loss entry points in
+//! `neat_core::loss` that would be used if a `--cost` dispatch is ever added.
 
 /// Mean squared error across outputs for one record.
 #[inline]
