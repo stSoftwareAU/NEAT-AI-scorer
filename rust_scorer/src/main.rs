@@ -10,7 +10,7 @@
 //!
 //! Issue #1967 - Build Rust CLI scorer application.
 
-mod cost;
+mod read_tuning;
 mod scoring;
 mod stream_score;
 
@@ -21,10 +21,10 @@ use std::time::Instant;
 
 use clap::Parser;
 use neat_core::creature::{compile_creature, parse_creature_json};
-use neat_core::training_bin_stream::{io_backend_label, training_read_tuning_from_env};
+use neat_core::mse_mean_record;
 use neat_core::training_data::{TrainingDataConfig, TrainingDataIterator, find_bin_files};
 
-use crate::cost::mse_mean_record;
+use crate::read_tuning::{training_read_backend_label, training_read_target_bytes_from_env};
 use crate::scoring::{ScoreResult, calculate_score, compute_score_components};
 use crate::stream_score::activation_worker_count_for_scorer;
 
@@ -86,14 +86,14 @@ fn run(cli: &Cli) -> Result<ScoreResult, String> {
     };
 
     let record_bytes = config.bytes_per_record();
-    let (fused_io_mode, fused_read_target_bytes) = training_read_tuning_from_env(record_bytes);
+    let fused_read_target_bytes = training_read_target_bytes_from_env(record_bytes);
     let fused_read_buf_len =
         stream_score::effective_fused_read_buf_len(record_bytes, fused_read_target_bytes);
 
     let use_fused_stream = creature.forward_only;
-    let activation_threads = use_fused_stream.then(|| activation_worker_count_for_scorer());
+    let activation_threads = use_fused_stream.then(activation_worker_count_for_scorer);
     let training_read_backend = if use_fused_stream {
-        io_backend_label(fused_io_mode).to_string()
+        training_read_backend_label().to_string()
     } else {
         "record_iterator".to_string()
     };
@@ -110,30 +110,30 @@ fn run(cli: &Cli) -> Result<ScoreResult, String> {
                 return Err("No training records found".to_string());
             }
             (mse_sum, count, parallel_batches, max_batch)
-    } else {
-        let mut iter = TrainingDataIterator::new(data_path, config.clone())
-            .map_err(|e| format!("Failed to open training data iterator: {e}"))?;
-        let mut total_error = 0.0_f64;
-        let mut record_count: usize = 0;
-        let mut output_buf = vec![0.0_f32; num_outputs];
+        } else {
+            let mut iter = TrainingDataIterator::new(data_path, config.clone())
+                .map_err(|e| format!("Failed to open training data iterator: {e}"))?;
+            let mut total_error = 0.0_f64;
+            let mut record_count: usize = 0;
+            let mut output_buf = vec![0.0_f32; num_outputs];
 
-        while let Some(record) = iter
-            .next_record()
-            .map_err(|e| format!("Failed reading training record: {e}"))?
-        {
-            network.reset_state();
-            let outputs = network.activate(&record.inputs, num_outputs);
-            output_buf.copy_from_slice(&outputs);
-            let record_error = mse_mean_record(&record.outputs, &output_buf);
-            total_error += record_error;
-            record_count += 1;
-        }
+            while let Some(record) = iter
+                .next_record()
+                .map_err(|e| format!("Failed reading training record: {e}"))?
+            {
+                network.reset_state();
+                let outputs = network.activate(&record.inputs, num_outputs);
+                output_buf.copy_from_slice(&outputs);
+                let record_error = mse_mean_record(&record.outputs, &output_buf);
+                total_error += record_error;
+                record_count += 1;
+            }
 
-        if record_count == 0 {
-            return Err("No training records found".to_string());
-        }
-        (total_error, record_count, 0_usize, 0_usize)
-    };
+            if record_count == 0 {
+                return Err("No training records found".to_string());
+            }
+            (total_error, record_count, 0_usize, 0_usize)
+        };
 
     let avg_error = total_error / record_count as f64;
 
@@ -428,7 +428,7 @@ mod tests {
             hidden_neurons: 150,
             synapse_count: 2000,
             forward_only: true,
-            training_read_backend: "pipelined_double_buffer".to_string(),
+            training_read_backend: "native_pipelined".to_string(),
             read_buf_len: Some(2_097_152),
             activation_threads: Some(8),
             parallel_activation_batches: Some(1204),

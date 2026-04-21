@@ -1,19 +1,20 @@
 //! Chunked binary reads and fused MSE scoring for large datasets.
 //!
-//! Uses `neat_core::training_bin_stream::for_each_read_chunk_with_mode` plus a `pending`
-//! buffer with **head + compact**. Read tuning: **`NEAT_SCORER_IO_MODE`** and
-//! **`NEAT_SCORER_READ_BYTES`** (see [`neat_core::training_bin_stream::training_read_tuning_from_env`]).
+//! Uses [`neat_core::training_bin_stream::for_each_read_chunk`] plus a `pending`
+//! buffer with **head + compact**. Read tuning: **`NEAT_SCORER_READ_BYTES`**
+//! (see [`crate::read_tuning::training_read_target_bytes_from_env`]).
 //!
 //! Optional **multi-threaded activation** for large in-memory batches (forward-only only):
 //! set **`NEAT_SCORER_ACTIVATION_THREADS`** to a value `> 1` (clamped to 64). Each worker holds a
-//! [`CompiledNetwork`] clone so activations stay independent. Any batch with at least two whole
+//! [`CompiledNetwork`] clones so activations stay independent. Any batch with at least two whole
 //! records may be split across workers (very small batches still pay Rayon scheduling cost).
 //! Summation order may differ slightly (floating-point). JSON **`parallelActivationBatches`**
 //! counts how many batches actually used Rayon.
 
+use crate::read_tuning::{MAX_READ_BYTES, training_read_target_bytes_from_env};
 use neat_core::loss::mse_sum_batch_packed;
 use neat_core::network::CompiledNetwork;
-use neat_core::training_bin_stream::{for_each_read_chunk_with_mode, training_read_tuning_from_env};
+use neat_core::training_bin_stream::for_each_read_chunk;
 use neat_core::training_data::TrainingDataConfig;
 use rayon::prelude::*;
 
@@ -34,14 +35,13 @@ pub fn activation_worker_count_for_scorer() -> usize {
     }
 }
 
-/// Aligned fused read size (same rounding as `training_read_tuning_from_env` in `neat_core`).
+/// Aligned fused read size (same rounding as [`training_read_target_bytes_from_env`]).
 ///
 /// When **`NEAT_SCORER_ACTIVATION_THREADS` > 1**, bumps the buffer to at least **`2 * record_bytes`**
 /// (capped like the core I/O tuner) so `pending` can hold two whole records per activation batch.
 /// Otherwise each read often yields only one complete record when `record_bytes` is large, and
 /// parallel activation never runs (`parallelActivationBatches: 0`).
 pub fn effective_fused_read_buf_len(record_bytes: usize, target_read_bytes: usize) -> usize {
-    const MAX_READ_BYTES: usize = 64 * 1024 * 1024;
     let rb = record_bytes.max(1);
     let worker_count = activation_worker_count_for_scorer();
     let mut len = (target_read_bytes / rb * rb).max(rb);
@@ -54,12 +54,12 @@ pub fn effective_fused_read_buf_len(record_bytes: usize, target_read_bytes: usiz
 
 /// Split `records` (layout `[inputs..., targets...]` per record) into `workers` contiguous slices.
 /// `workers` must be `<= n_records` so every slice is non-empty.
-fn partition_packed_records<'a>(
-    records: &'a [f32],
+fn partition_packed_records(
+    records: &[f32],
     values_per_record: usize,
     n_records: usize,
     workers: usize,
-) -> Vec<&'a [f32]> {
+) -> Vec<&[f32]> {
     debug_assert!(workers > 0 && workers <= n_records);
     debug_assert_eq!(records.len(), n_records * values_per_record);
     let base = n_records / workers;
@@ -150,7 +150,7 @@ pub fn accumulate_mse_sum_forward_only_fused(
     }
 
     let values_per_record = config.num_inputs + config.num_outputs;
-    let (read_mode, target_read_bytes) = training_read_tuning_from_env(record_bytes);
+    let target_read_bytes = training_read_target_bytes_from_env(record_bytes);
     let read_buf_len = effective_fused_read_buf_len(record_bytes, target_read_bytes);
 
     let worker_count = activation_worker_count_for_scorer();
@@ -168,7 +168,7 @@ pub fn accumulate_mse_sum_forward_only_fused(
     let mut parallel_activation_batches = 0_usize;
     let mut max_records_per_activation_batch = 0_usize;
 
-    for_each_read_chunk_with_mode(bin_files, read_buf_len, read_mode, |chunk| {
+    for_each_read_chunk(bin_files, read_buf_len, |chunk| {
         if !chunk.is_empty() {
             pending.extend_from_slice(chunk);
         }
@@ -183,8 +183,7 @@ pub fn accumulate_mse_sum_forward_only_fused(
 
             let num_f32 = complete_len / 4;
             let n_records = complete_len / record_bytes;
-            max_records_per_activation_batch =
-                max_records_per_activation_batch.max(n_records);
+            max_records_per_activation_batch = max_records_per_activation_batch.max(n_records);
             let slice = &pending[head..head + complete_len];
             unpack_f32s_le(slice, &mut unpack_floats, num_f32);
 

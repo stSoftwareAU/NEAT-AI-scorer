@@ -58,7 +58,7 @@ and no runtime dispatch across loss functions.
   `neat_core::loss::mse_sum_batch_packed` directly so error accumulation stays
   inside the same SIMD-friendly pass that reads packed `[inputs..., targets...]`
   records. The non-fused recurrent path (`forwardOnly: false`) uses
-  `cost::mse_mean_record` to match the TypeScript `MSE.calculate()` mean.
+  `neat_core::mse_mean_record` to match the TypeScript `MSE.calculate()` mean.
 - **Scope matches today's callers.** NEAT-AI `Develop` invokes this binary with
   the fixed positional contract `<creature.json> <data_dir>` (see `AGENTS.md`)
   and never requests a non-MSE score. `GROWTH_COST` and the fitness formula in

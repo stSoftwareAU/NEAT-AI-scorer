@@ -206,7 +206,7 @@ pub struct ScoreResult {
     /// Creature JSON `forwardOnly` — must be `true` for fused + pipelined `.bin` scoring.
     #[serde(rename = "forwardOnly")]
     pub forward_only: bool,
-    /// Which training read path ran (`io_backend_label` when fused), else `record_iterator`.
+    /// Which training read path ran ([`crate::read_tuning::training_read_backend_label`] when fused), else `record_iterator`.
     #[serde(rename = "trainingReadBackend")]
     pub training_read_backend: String,
     /// Effective `read` buffer size (bytes) after record alignment; set when fused path ran.

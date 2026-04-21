@@ -1,16 +1,19 @@
 //! Micro-benchmark: scan `.bin` training files and sum all `f32` values (trivial work).
-//! Uses `training_bin_stream::for_each_read_chunk_with_mode` with the same **`NEAT_SCORER_*`**
+//! Uses `training_bin_stream::for_each_read_chunk` with the same **`NEAT_SCORER_READ_BYTES`**
 //! env tuning as `rust_scorer` / `stream_score`.
 //!
 //! Build: `cargo build --release -p rust_scorer --bin float_scan_bench`
 
+#[path = "../read_tuning.rs"]
+mod read_tuning;
+
 use std::path::{Path, PathBuf};
 
 use clap::Parser;
-use neat_core::training_bin_stream::{
-    for_each_read_chunk_with_mode, io_backend_label, training_read_tuning_from_env,
-};
+use neat_core::training_bin_stream::for_each_read_chunk;
 use neat_core::training_data::find_bin_files;
+
+use read_tuning::{training_read_backend_label, training_read_target_bytes_from_env};
 
 const PENDING_COMPACT_HEAD_BYTES: usize = 512 * 1024;
 
@@ -66,12 +69,7 @@ fn compact_pending(pending: &mut Vec<u8>, head: &mut usize) {
     *head = 0;
 }
 
-fn drain_complete_records(
-    pending: &[u8],
-    head: &mut usize,
-    record_bytes: usize,
-    total: &mut f64,
-) {
+fn drain_complete_records(pending: &[u8], head: &mut usize, record_bytes: usize, total: &mut f64) {
     loop {
         let avail = pending.len() - *head;
         let complete_len = (avail / record_bytes) * record_bytes;
@@ -84,13 +82,13 @@ fn drain_complete_records(
 }
 
 fn scan_bin_files(bin_files: &[PathBuf], record_bytes: usize) -> Result<f64, String> {
-    let (mode, target) = training_read_tuning_from_env(record_bytes);
+    let target = training_read_target_bytes_from_env(record_bytes);
     let read_buf_len = (target / record_bytes * record_bytes).max(record_bytes);
     let mut sum = 0.0_f64;
     let mut pending: Vec<u8> = Vec::new();
     let mut head: usize = 0;
 
-    for_each_read_chunk_with_mode(bin_files, read_buf_len, mode, |chunk| {
+    for_each_read_chunk(bin_files, read_buf_len, |chunk| {
         if !chunk.is_empty() {
             pending.extend_from_slice(chunk);
         }
@@ -138,7 +136,7 @@ fn main() {
         .map(|p| std::fs::metadata(p).map(|m| m.len()).unwrap_or(0))
         .sum();
 
-    let (bench_mode, bench_target) = training_read_tuning_from_env(record_bytes);
+    let bench_target = training_read_target_bytes_from_env(record_bytes);
     let bench_read_buf_len = (bench_target / record_bytes * record_bytes).max(record_bytes);
 
     let scan = || scan_bin_files(&bin_files, record_bytes).expect("scan");
@@ -161,7 +159,7 @@ fn main() {
     println!(
         "{}",
         serde_json::json!({
-            "trainingReadBackend": io_backend_label(bench_mode),
+            "trainingReadBackend": training_read_backend_label(),
             "readBufLen": bench_read_buf_len,
             "dataDir": cli.data_dir,
             "floatsPerRecord": cli.floats_per_record,
