@@ -21,7 +21,6 @@ use std::time::Instant;
 
 use clap::Parser;
 use neat_core::creature::{compile_creature, parse_creature_json};
-use neat_core::mse_mean_record;
 use neat_core::training_data::{TrainingDataConfig, TrainingDataIterator, find_bin_files};
 
 use crate::read_tuning::{training_read_backend_label, training_read_target_bytes_from_env};
@@ -104,6 +103,7 @@ fn run(cli: &Cli) -> Result<ScoreResult, String> {
                 stream_score::accumulate_mse_sum_forward_only_fused(
                     &bin_files,
                     &config,
+                    &creature,
                     &mut network,
                 )?;
             if count == 0 {
@@ -116,6 +116,11 @@ fn run(cli: &Cli) -> Result<ScoreResult, String> {
             let mut total_error = 0.0_f64;
             let mut record_count: usize = 0;
             let mut output_buf = vec![0.0_f32; num_outputs];
+            let inv_outputs = if num_outputs > 0 {
+                1.0_f64 / num_outputs as f64
+            } else {
+                0.0
+            };
 
             while let Some(record) = iter
                 .next_record()
@@ -124,8 +129,15 @@ fn run(cli: &Cli) -> Result<ScoreResult, String> {
                 network.reset_state();
                 let outputs = network.activate(&record.inputs, num_outputs);
                 output_buf.copy_from_slice(&outputs);
-                let record_error = mse_mean_record(&record.outputs, &output_buf);
-                total_error += record_error;
+                // Per-record MSE = mean over outputs of (target - output)^2.
+                // Computed inline to keep the recurrent loop independent of
+                // `mse_mean_record`'s packed/batched signature in NEAT-AI-core.
+                let mut sq_sum = 0.0_f64;
+                for (target, predicted) in record.outputs.iter().zip(output_buf.iter()) {
+                    let diff = (*target - *predicted) as f64;
+                    sq_sum += diff * diff;
+                }
+                total_error += sq_sum * inv_outputs;
                 record_count += 1;
             }
 

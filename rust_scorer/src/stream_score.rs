@@ -5,13 +5,15 @@
 //! (see [`crate::read_tuning::training_read_target_bytes_from_env`]).
 //!
 //! Optional **multi-threaded activation** for large in-memory batches (forward-only only):
-//! set **`NEAT_SCORER_ACTIVATION_THREADS`** to a value `> 1` (clamped to 64). Each worker holds a
-//! [`CompiledNetwork`] clones so activations stay independent. Any batch with at least two whole
+//! set **`NEAT_SCORER_ACTIVATION_THREADS`** to a value `> 1` (clamped to 64). Each worker owns
+//! its own [`CompiledNetwork`], (re)built via [`neat_core::creature::compile_creature`] from the
+//! shared [`CreatureExport`], so activations stay independent. Any batch with at least two whole
 //! records may be split across workers (very small batches still pay Rayon scheduling cost).
 //! Summation order may differ slightly (floating-point). JSON **`parallelActivationBatches`**
 //! counts how many batches actually used Rayon.
 
 use crate::read_tuning::{MAX_READ_BYTES, training_read_target_bytes_from_env};
+use neat_core::creature::{CreatureExport, compile_creature};
 use neat_core::loss::mse_sum_batch_packed;
 use neat_core::network::CompiledNetwork;
 use neat_core::training_bin_stream::for_each_read_chunk;
@@ -142,6 +144,7 @@ fn compact_pending_if_needed(pending: &mut Vec<u8>, head: &mut usize) {
 pub fn accumulate_mse_sum_forward_only_fused(
     bin_files: &[std::path::PathBuf],
     config: &TrainingDataConfig,
+    creature: &CreatureExport,
     network: &mut CompiledNetwork,
 ) -> Result<(f64, usize, usize, usize), String> {
     let record_bytes = config.bytes_per_record();
@@ -153,9 +156,16 @@ pub fn accumulate_mse_sum_forward_only_fused(
     let target_read_bytes = training_read_target_bytes_from_env(record_bytes);
     let read_buf_len = effective_fused_read_buf_len(record_bytes, target_read_bytes);
 
+    // For multi-threaded activation, each worker needs an independent `CompiledNetwork`
+    // (separate activation/hint/trace buffers). Re-compile from the shared creature export
+    // rather than relying on `CompiledNetwork: Clone` (NEAT-AI-core#11 — not yet landed).
     let worker_count = activation_worker_count_for_scorer();
     let mut parallel_networks: Option<Vec<CompiledNetwork>> = if worker_count > 1 {
-        Some((0..worker_count).map(|_| network.clone()).collect())
+        let mut nets = Vec::with_capacity(worker_count);
+        for _ in 0..worker_count {
+            nets.push(compile_creature(creature)?);
+        }
+        Some(nets)
     } else {
         None
     };
