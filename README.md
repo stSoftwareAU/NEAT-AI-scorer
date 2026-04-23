@@ -49,6 +49,33 @@ Place **NEAT-AI-core** and **NEAT-AI-scorer** as **siblings** (e.g. `…/src/NEA
 
 Scorer-specific Rust stays here; **`neat-core`** tracks **NEAT-AI-core**.
 
+## Related Repositories
+
+The NEAT-AI project is split across several repositories. This repo, **NEAT-AI-scorer**, is the native MSE scorer CLI consumed by **NEAT-AI** during training.
+
+| Repository | Role |
+|------------|------|
+| [NEAT-AI](https://github.com/stSoftwareAU/NEAT-AI) | Deno/TypeScript orchestrator — the NEAT neural-network runtime that trains and evaluates creatures. |
+| [NEAT-AI-core](https://github.com/stSoftwareAU/NEAT-AI-core) | Shared Rust computation library (`neat-core` crate) with fused batch losses and `training_bin_stream`. |
+| [NEAT-AI-Discovery](https://github.com/stSoftwareAU/NEAT-AI-Discovery) | Rust discovery module invoked by NEAT-AI via Deno FFI. |
+| [NEAT-AI-Snapshot](https://github.com/stSoftwareAU/NEAT-AI-Snapshot) | Snapshot storage for trained creatures. |
+| [NEAT-AI-scorer](https://github.com/stSoftwareAU/NEAT-AI-scorer) | **This repo** — native MSE scorer CLI; depends on `neat-core` via path dependency. |
+| [NEAT-AI-Explore](https://github.com/stSoftwareAU/NEAT-AI-Explore) | Visualiser that consumes NEAT-AI-Snapshot data. |
+| [NEAT-AI-Examples](https://github.com/stSoftwareAU/NEAT-AI-Examples) | Usage examples built on NEAT-AI. |
+
+### Dependency graph
+
+```mermaid
+graph TD
+    Examples[NEAT-AI-Examples] --> NEAT[NEAT-AI]
+    NEAT -->|Deno FFI| Discovery[NEAT-AI-Discovery]
+    NEAT -->|spawns CLI| Scorer[NEAT-AI-scorer]
+    NEAT -->|writes| Snapshot[NEAT-AI-Snapshot]
+    Scorer -->|path dep| Core[NEAT-AI-core]
+    Discovery -->|path dep| Core
+    Explore[NEAT-AI-Explore] -->|reads| Snapshot
+```
+
 ## Why MSE-only?
 
 The CLI scores creatures with **mean squared error** only — there is no `--cost` flag
