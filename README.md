@@ -39,6 +39,21 @@ Positional arguments only (same contract as in NEAT-AI):
 rust_scorer <creature.json> <training_data_dir>
 ```
 
+### Stdin input mode
+
+For restricted worker/sandbox environments where writing a temp file may fail
+even with write permission (see issue #15), pass the creature JSON on stdin:
+
+```text
+rust_scorer --creature-stdin <training_data_dir>
+```
+
+The positional contract is unchanged in default mode. With `--creature-stdin`,
+the binary reads creature JSON from standard input until EOF and expects a
+single positional argument (`<training_data_dir>`).
+
+### Output
+
 JSON includes **`forwardOnly`** (from the creature) and **`trainingReadBackend`**: on a native release build you should see **`pipelined_double_buffer`** when `forwardOnly` is `true` (fused scoring + `training_bin_stream`). If `forwardOnly` is `false`, you get **`record_iterator`** instead (no pipelining — much slower on large data).
 
 ## Local layout

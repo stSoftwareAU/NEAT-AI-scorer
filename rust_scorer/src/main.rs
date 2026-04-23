@@ -15,7 +15,8 @@ mod scoring;
 mod stream_score;
 
 use std::fs;
-use std::path::PathBuf;
+use std::io::Read;
+use std::path::{Path, PathBuf};
 use std::process;
 use std::time::Instant;
 
@@ -31,6 +32,10 @@ use crate::stream_score::activation_worker_count_for_scorer;
 const GROWTH_COST: f64 = 0.000_000_1;
 
 /// Full-dataset MSE score for a NEAT creature (native, minimal CLI).
+///
+/// Two input modes (positional contract unchanged):
+/// * default: `rust_scorer <creature.json> <data_dir>`
+/// * stdin:   `rust_scorer --creature-stdin <data_dir>` (creature JSON on stdin)
 #[derive(Parser, Debug)]
 #[command(
     name = "rust_scorer",
@@ -38,22 +43,69 @@ const GROWTH_COST: f64 = 0.000_000_1;
     arg_required_else_help = true
 )]
 struct Cli {
-    /// Path to the creature JSON export.
-    creature: PathBuf,
+    /// Read the creature JSON from stdin instead of a file.
+    ///
+    /// When set, the only positional argument is `<data_dir>`; useful for
+    /// restricted worker/sandbox environments where `Deno.makeTempFile`
+    /// (or similar) may fail even with write permission granted.
+    #[arg(long)]
+    creature_stdin: bool,
 
-    /// Directory of `.bin` training files (packed `f32`, little-endian).
-    data: PathBuf,
+    /// Positional arguments.
+    ///
+    /// * default mode: `<creature.json> <data_dir>` (two values).
+    /// * `--creature-stdin` mode: `<data_dir>` (one value).
+    #[arg(num_args = 1..=2, value_name = "ARGS")]
+    args: Vec<PathBuf>,
+}
+
+/// Resolve the `(creature_json, data_dir)` pair from parsed CLI args.
+///
+/// In stdin mode this blocks reading from `std::io::stdin` until EOF. The
+/// positional argument count is validated here rather than in clap so the
+/// error message can describe the chosen input mode.
+fn resolve_inputs(cli: &Cli) -> Result<(String, PathBuf), String> {
+    if cli.creature_stdin {
+        if cli.args.len() != 1 {
+            return Err(
+                "With --creature-stdin, exactly one positional argument is required: <data_dir>"
+                    .to_string(),
+            );
+        }
+        let mut creature_json = String::new();
+        std::io::stdin()
+            .read_to_string(&mut creature_json)
+            .map_err(|e| format!("Failed to read creature JSON from stdin: {e}"))?;
+        if creature_json.trim().is_empty() {
+            return Err("Creature JSON from stdin is empty".to_string());
+        }
+        Ok((creature_json, cli.args[0].clone()))
+    } else {
+        if cli.args.len() != 2 {
+            return Err(
+                "Expected arguments: <creature.json> <data_dir> (or use --creature-stdin)"
+                    .to_string(),
+            );
+        }
+        let creature_path = &cli.args[0];
+        let creature_json = fs::read_to_string(creature_path).map_err(|e| {
+            format!(
+                "Failed to read creature file '{}': {e}",
+                creature_path.display()
+            )
+        })?;
+        Ok((creature_json, cli.args[1].clone()))
+    }
 }
 
 fn run(cli: &Cli) -> Result<ScoreResult, String> {
+    let (creature_json, data_path) = resolve_inputs(cli)?;
+    score_from_json(&creature_json, &data_path)
+}
+
+fn score_from_json(creature_json: &str, data_path: &Path) -> Result<ScoreResult, String> {
     let started = Instant::now();
-    let creature_json = fs::read_to_string(&cli.creature).map_err(|e| {
-        format!(
-            "Failed to read creature file '{}': {e}",
-            cli.creature.display()
-        )
-    })?;
-    let creature = parse_creature_json(&creature_json)?;
+    let creature = parse_creature_json(creature_json)?;
 
     if creature.input == 0 || creature.output == 0 {
         return Err("Creature JSON must set positive input and output counts".to_string());
@@ -62,7 +114,6 @@ fn run(cli: &Cli) -> Result<ScoreResult, String> {
     let mut network = compile_creature(&creature)?;
     let num_outputs = creature.output;
 
-    let data_path = &cli.data;
     if !data_path.is_dir() {
         return Err(format!(
             "Training data path '{}' is not a directory",
@@ -264,6 +315,15 @@ mod tests {
         }
     }
 
+    /// Construct a default-mode `Cli` with the two positional args, matching the
+    /// pre-issue-#15 contract (kept stable for these tests).
+    fn cli_for(creature: &std::path::Path, data: &std::path::Path) -> Cli {
+        Cli {
+            creature_stdin: false,
+            args: vec![creature.to_path_buf(), data.to_path_buf()],
+        }
+    }
+
     #[test]
     fn test_identity_network_zero_error() {
         // A simple network: input-0 -> output-0 with weight=1, bias=0
@@ -279,10 +339,7 @@ mod tests {
         // Training data: input=0.5, expected output=0.5
         write_training_data(&data_dir, &[(vec![0.5], vec![0.5])]);
 
-        let cli = Cli {
-            creature: creature_path.clone(),
-            data: data_dir.clone(),
-        };
+        let cli = cli_for(&creature_path, &data_dir);
 
         let result = run(&cli).unwrap();
         assert!(
@@ -317,10 +374,7 @@ mod tests {
         // Input=0 => tanh(0) = 0 => output = 0
         write_training_data(&data_dir, &[(vec![0.0], vec![0.0])]);
 
-        let cli = Cli {
-            creature: creature_path.clone(),
-            data: data_dir.clone(),
-        };
+        let cli = cli_for(&creature_path, &data_dir);
 
         let result = run(&cli).unwrap();
         assert!(
@@ -354,10 +408,7 @@ mod tests {
             ],
         );
 
-        let cli = Cli {
-            creature: creature_path.clone(),
-            data: data_dir.clone(),
-        };
+        let cli = cli_for(&creature_path, &data_dir);
 
         let result = run(&cli).unwrap();
         assert_eq!(result.record_count, 3);
@@ -366,10 +417,10 @@ mod tests {
 
     #[test]
     fn test_missing_creature_file() {
-        let cli = Cli {
-            creature: PathBuf::from("/nonexistent/path/creature.json"),
-            data: PathBuf::from("/tmp"),
-        };
+        let cli = cli_for(
+            &PathBuf::from("/nonexistent/path/creature.json"),
+            &PathBuf::from("/tmp"),
+        );
 
         let result = run(&cli);
         assert!(result.is_err());
@@ -389,14 +440,8 @@ mod tests {
         fs::write(&creature_path_v3, &json_v3).unwrap();
         write_training_data(&data_dir, &[(vec![0.5], vec![0.5])]);
 
-        let cli_v4 = Cli {
-            creature: creature_path_v4.clone(),
-            data: data_dir.clone(),
-        };
-        let cli_v3 = Cli {
-            creature: creature_path_v3.clone(),
-            data: data_dir.clone(),
-        };
+        let cli_v4 = cli_for(&creature_path_v4, &data_dir);
+        let cli_v3 = cli_for(&creature_path_v3, &data_dir);
 
         let result_v4 = run(&cli_v4).unwrap();
         let result_v3 = run(&cli_v3).unwrap();
@@ -420,10 +465,7 @@ mod tests {
         let json = make_creature_json(1, 1, &[], &[("input-0", "output-0", 1.0)], None);
         fs::write(&creature_path, &json).unwrap();
 
-        let cli = Cli {
-            creature: creature_path.clone(),
-            data: data_dir.clone(),
-        };
+        let cli = cli_for(&creature_path, &data_dir);
 
         let result = run(&cli);
         assert!(result.is_err());
@@ -462,5 +504,93 @@ mod tests {
         assert!(json.contains("\"activationThreads\""));
         assert!(json.contains("\"parallelActivationBatches\""));
         assert!(json.contains("\"maxActivationBatchRecords\""));
+    }
+
+    /// Stdin mode must yield the same `ScoreResult` as the default file mode.
+    /// Exercised via `score_from_json` — the same core the stdin path uses in
+    /// `run`, bypassing the real `std::io::stdin` which cannot be injected in
+    /// a unit test.
+    #[test]
+    fn test_stdin_mode_matches_file_mode() {
+        let tmp = TempDir::new().unwrap();
+        let creature_path = tmp.path().join("creature.json");
+        let data_dir = tmp.path().join("data");
+        fs::create_dir(&data_dir).unwrap();
+
+        let json = make_creature_json(1, 1, &[], &[("input-0", "output-0", 1.0)], Some("4.0.0"));
+        fs::write(&creature_path, &json).unwrap();
+        write_training_data(&data_dir, &[(vec![0.5], vec![0.5])]);
+
+        let file_result = run(&cli_for(&creature_path, &data_dir)).unwrap();
+        let stdin_result = score_from_json(&json, &data_dir).unwrap();
+
+        assert!((file_result.score - stdin_result.score).abs() < 1e-12);
+        assert!((file_result.error - stdin_result.error).abs() < 1e-12);
+        assert_eq!(file_result.record_count, stdin_result.record_count);
+        assert_eq!(file_result.hidden_neurons, stdin_result.hidden_neurons);
+        assert_eq!(file_result.synapse_count, stdin_result.synapse_count);
+    }
+
+    /// `--creature-stdin` with two positional args must be rejected before any
+    /// stdin read (reading would block a unit test indefinitely).
+    #[test]
+    fn test_stdin_mode_rejects_extra_positional_args() {
+        let cli = Cli {
+            creature_stdin: true,
+            args: vec![PathBuf::from("/tmp/creature.json"), PathBuf::from("/tmp")],
+        };
+        let err = resolve_inputs(&cli).expect_err("extra positional args should fail");
+        assert!(
+            err.contains("--creature-stdin"),
+            "error should mention the flag, got: {err}"
+        );
+    }
+
+    /// Default (file) mode must keep its two-positional contract.
+    #[test]
+    fn test_default_mode_requires_two_positional_args() {
+        let cli = Cli {
+            creature_stdin: false,
+            args: vec![PathBuf::from("/tmp")],
+        };
+        let err = resolve_inputs(&cli).expect_err("single positional arg should fail");
+        assert!(
+            err.contains("<creature.json>") && err.contains("<data_dir>"),
+            "error should describe the positional contract, got: {err}"
+        );
+    }
+
+    /// `score_from_json` with an invalid JSON payload must error with a parse
+    /// failure rather than panic — the stdin path reads arbitrary user input
+    /// and must not crash the binary.
+    #[test]
+    fn test_score_from_json_rejects_invalid_json() {
+        let tmp = TempDir::new().unwrap();
+        let data_dir = tmp.path().join("data");
+        fs::create_dir(&data_dir).unwrap();
+        let err = score_from_json("not json", &data_dir).expect_err("invalid JSON should fail");
+        assert!(!err.is_empty());
+    }
+
+    /// Clap must accept `--creature-stdin` with a single positional arg and
+    /// two positional args without the flag, both parsing cleanly.
+    #[test]
+    fn test_cli_parsing_both_modes() {
+        use clap::Parser;
+
+        let parsed = Cli::try_parse_from(["rust_scorer", "--creature-stdin", "/tmp/data"]).unwrap();
+        assert!(parsed.creature_stdin);
+        assert_eq!(parsed.args, vec![PathBuf::from("/tmp/data")]);
+
+        let parsed =
+            Cli::try_parse_from(["rust_scorer", "/tmp/creature.json", "/tmp/data"]).unwrap();
+        assert!(!parsed.creature_stdin);
+        assert_eq!(
+            parsed.args,
+            vec![
+                PathBuf::from("/tmp/creature.json"),
+                PathBuf::from("/tmp/data"),
+            ]
+        );
     }
 }

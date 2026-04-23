@@ -11,8 +11,9 @@
 //!
 //! Issue stSoftwareAU/NEAT-AI-scorer#11.
 
+use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 /// Resolve `tests/fixtures/<name>` relative to this crate.
 fn fixture(name: &str) -> PathBuf {
@@ -114,4 +115,61 @@ fn scorer_binary_fails_when_creature_missing() {
         stderr.contains("Failed to read creature file"),
         "expected diagnostic about missing creature file, got: {stderr}",
     );
+}
+
+/// End-to-end check for `--creature-stdin` (issue #15): piping the creature
+/// JSON over stdin must produce the same numeric result as the default file
+/// mode, without needing a temp file on disk.
+#[test]
+fn scorer_binary_accepts_creature_via_stdin() {
+    let bin = env!("CARGO_BIN_EXE_rust_scorer");
+    let creature_path = fixture("identity_creature.json");
+    let data_dir = fixture_data_dir("identity_data.bin");
+    let creature_json =
+        std::fs::read_to_string(&creature_path).expect("read identity_creature.json fixture");
+
+    let mut child = Command::new(bin)
+        .arg("--creature-stdin")
+        .arg(data_dir.path())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("failed to spawn rust_scorer binary");
+
+    child
+        .stdin
+        .as_mut()
+        .expect("child stdin")
+        .write_all(creature_json.as_bytes())
+        .expect("write creature json to stdin");
+    // Drop stdin so the child sees EOF and proceeds.
+    drop(child.stdin.take());
+
+    let output = child
+        .wait_with_output()
+        .expect("failed to wait on rust_scorer");
+
+    assert!(
+        output.status.success(),
+        "rust_scorer --creature-stdin exited with status {:?}\nstderr:\n{}",
+        output.status.code(),
+        String::from_utf8_lossy(&output.stderr),
+    );
+
+    let stdout = String::from_utf8(output.stdout).expect("stdout is utf-8");
+    let parsed: serde_json::Value = serde_json::from_str(&stdout)
+        .unwrap_or_else(|e| panic!("stdout is not JSON: {e}\n{stdout}"));
+
+    let error = parsed
+        .get("error")
+        .and_then(|v| v.as_f64())
+        .expect("missing `error` in scorer JSON");
+    assert!(error.abs() < 1e-6, "expected near-zero error, got {error}");
+
+    let record_count = parsed
+        .get("recordCount")
+        .and_then(|v| v.as_u64())
+        .expect("missing `recordCount` in scorer JSON");
+    assert_eq!(record_count, 4, "expected 4 records, got {record_count}");
 }
