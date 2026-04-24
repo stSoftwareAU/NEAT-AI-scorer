@@ -32,6 +32,9 @@ if [[ "$SHELLCHECK_FAILED" -ne 0 ]]; then
 fi
 echo "shellcheck: all scripts passed"
 
+echo "🔗 Validating NEAT-AI-core checkout path strategy in workflows..."
+./scripts/check-workflow-paths.sh
+
 echo "🧰 Running bash helper tests (bats)..."
 if command -v bats &>/dev/null; then
   # Only execute the bats suites we ship under tests/scripts — keeps runtime

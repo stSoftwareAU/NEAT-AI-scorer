@@ -31,6 +31,16 @@ jobs:
         with:
           fetch-depth: 0
 
+      # Path strategy for the NEAT-AI-core sibling (Issue #18):
+      #   * `actions/checkout` refuses any `path:` that resolves outside
+      #     `$GITHUB_WORKSPACE` (hence no `path: ../NEAT-AI-core`). We
+      #     therefore clone NEAT-AI-core INTO the workspace as `NEAT-AI-core`.
+      #   * Locally, `rust_scorer/Cargo.toml` points at
+      #     `../../NEAT-AI-core/neat-core` (NEAT-AI-core is a SIBLING clone
+      #     of NEAT-AI-scorer — see AGENTS.md).
+      #   * The symlink step below bridges the two layouts so Cargo finds
+      #     the expected sibling without the workflow having to rewrite
+      #     Cargo.toml.
       - name: Checkout NEAT-AI-core (path dependency for neat-core)
         uses: actions/checkout@v4
         with:
@@ -119,6 +129,9 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      # NEAT-AI-core checkout path strategy — see note in the `quality` job
+      # above. Summary: in-workspace clone + sibling symlink so Cargo resolves
+      # the `../../NEAT-AI-core/neat-core` path dependency on the runner.
       - name: Checkout NEAT-AI-core (path dependency for neat-core)
         uses: actions/checkout@v4
         with:

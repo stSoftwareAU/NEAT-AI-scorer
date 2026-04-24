@@ -21,6 +21,14 @@ jobs:
           ref: Develop
           token: ${{ secrets.GITHUB_TOKEN }}
 
+      # Path strategy for the NEAT-AI-core sibling (Issue #18):
+      #   * `actions/checkout` refuses any `path:` that resolves outside
+      #     `$GITHUB_WORKSPACE`, so we clone NEAT-AI-core INTO the workspace
+      #     as `NEAT-AI-core`.
+      #   * `rust_scorer/Cargo.toml` expects the sibling layout
+      #     `../../NEAT-AI-core/neat-core` (see AGENTS.md). The symlink step
+      #     below recreates that layout on the runner so Cargo (and therefore
+      #     `cargo upgrade`) resolves the path dependency.
       - name: Checkout NEAT-AI-core (path dependency for neat-core)
         uses: actions/checkout@v4
         with:
