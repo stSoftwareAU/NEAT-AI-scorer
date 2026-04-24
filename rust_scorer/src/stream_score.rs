@@ -25,7 +25,7 @@ const PENDING_COMPACT_HEAD_BYTES: usize = 512 * 1024;
 
 const MAX_ACTIVATION_WORKERS: usize = 64;
 
-/// Parsed `NEAT_SCORER_ACTIVATION_THREADS`: `1` or missing = sequential activation within each batch.
+/// Parsed `NEAT_SCORER_ACTIVATION_THREADS`: missing defaults to all available CPUs.
 /// Clamped to `[1, MAX_ACTIVATION_WORKERS]`.
 pub fn activation_worker_count_for_scorer() -> usize {
     match std::env::var("NEAT_SCORER_ACTIVATION_THREADS") {
@@ -33,7 +33,10 @@ pub fn activation_worker_count_for_scorer() -> usize {
             let t = s.trim().parse::<usize>().unwrap_or(1);
             t.clamp(1, MAX_ACTIVATION_WORKERS)
         }
-        Err(_) => 1,
+        Err(_) => std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(1)
+            .clamp(1, MAX_ACTIVATION_WORKERS),
     }
 }
 

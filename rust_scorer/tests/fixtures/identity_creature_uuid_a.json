@@ -1,0 +1,22 @@
+{
+  "uuid": "creature-uuid-a",
+  "input": 1,
+  "output": 1,
+  "forwardOnly": true,
+  "semanticVersion": "4.0.0",
+  "neurons": [
+    {
+      "type": "output",
+      "uuid": "output-0",
+      "bias": 0.0,
+      "squash": "IDENTITY"
+    }
+  ],
+  "synapses": [
+    {
+      "fromUUID": "input-0",
+      "toUUID": "output-0",
+      "weight": 1.0
+    }
+  ]
+}

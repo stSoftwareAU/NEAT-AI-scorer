@@ -36,8 +36,12 @@ Binaries: `rust_scorer`, `float_scan_bench` (see `rust_scorer/Cargo.toml`).
 Positional arguments only (same contract as in NEAT-AI):
 
 ```text
-rust_scorer <creature.json> <training_data_dir>
+rust_scorer <creature.json | creatures_dir> <training_data_dir>
 ```
+
+- `creature.json` path: scores one creature and returns the existing single-object output.
+- `creatures_dir` path: scores every `*.json` in that directory in one pass over training data and returns one JSON object keyed by each file's stem (filename without extension or folders).
+- Directory mode requires `forwardOnly: true` and matching `input` / `output` shape across all files.
 
 ### Stdin input mode
 
@@ -54,7 +58,28 @@ single positional argument (`<training_data_dir>`).
 
 ### Output
 
-JSON includes **`forwardOnly`** (from the creature) and **`trainingReadBackend`**: on a native release build you should see **`pipelined_double_buffer`** when `forwardOnly` is `true` (fused scoring + `training_bin_stream`). If `forwardOnly` is `false`, you get **`record_iterator`** instead (no pipelining — much slower on large data).
+Single-creature mode JSON includes **`forwardOnly`** (from the creature) and **`trainingReadBackend`**: on a native release build you should see **`pipelined_double_buffer`** when `forwardOnly` is `true` (fused scoring + `training_bin_stream`). If `forwardOnly` is `false`, you get **`record_iterator`** instead (no pipelining — much slower on large data).
+
+In directory mode, output is a top-level object keyed by creature filename stem, where each value has the same shape as a single-creature `ScoreResult`.
+
+```json
+{
+  "GRQ-10-1": {
+    "score": 0.9999998,
+    "error": 0.0
+  },
+  "GRQ-12-1": {
+    "score": 0.9999998,
+    "error": 0.0
+  }
+}
+```
+
+This mode uses one shared training-data scan and parallelises scoring across creatures to use available CPU cores by default.
+
+For forward-only single-creature fused scoring, activation parallelism also
+defaults to all available CPU cores. Set `NEAT_SCORER_ACTIVATION_THREADS` only
+when you want to tune down/up manually.
 
 ## Local layout
 

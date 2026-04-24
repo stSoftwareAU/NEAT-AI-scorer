@@ -36,6 +36,18 @@ fn fixture_data_dir(bin_name: &str) -> tempfile::TempDir {
     tmp
 }
 
+/// Resolve a fresh temporary directory containing a pair of creature fixtures.
+fn fixture_creatures_dir(names: &[&str]) -> tempfile::TempDir {
+    let tmp = tempfile::tempdir().expect("create tempdir");
+    for name in names {
+        let src = fixture(name);
+        let dst = tmp.path().join(name);
+        std::fs::copy(&src, &dst)
+            .unwrap_or_else(|e| panic!("copy fixture {} -> {}: {e}", src.display(), dst.display()));
+    }
+    tmp
+}
+
 /// Run the `rust_scorer` binary against the fixture and assert the JSON output
 /// matches the expected zero-error identity result.
 #[test]
@@ -172,4 +184,89 @@ fn scorer_binary_accepts_creature_via_stdin() {
         .and_then(|v| v.as_u64())
         .expect("missing `recordCount` in scorer JSON");
     assert_eq!(record_count, 4, "expected 4 records, got {record_count}");
+}
+
+/// Directory mode: score multiple creatures in one training-data scan, and
+/// ensure each keyed result is bit-identical to single-creature mode.
+#[test]
+fn scorer_binary_directory_mode_matches_single_mode_results() {
+    let bin = env!("CARGO_BIN_EXE_rust_scorer");
+    let data_dir = fixture_data_dir("identity_data.bin");
+    let creatures_dir = fixture_creatures_dir(&[
+        "identity_creature_uuid_a.json",
+        "identity_creature_uuid_b.json",
+    ]);
+
+    let out_multi = Command::new(bin)
+        .arg(creatures_dir.path())
+        .arg(data_dir.path())
+        .output()
+        .expect("failed to spawn rust_scorer in directory mode");
+    assert!(
+        out_multi.status.success(),
+        "directory mode exited with status {:?}\nstderr:\n{}",
+        out_multi.status.code(),
+        String::from_utf8_lossy(&out_multi.stderr),
+    );
+
+    let multi_stdout = String::from_utf8(out_multi.stdout).expect("stdout is utf-8");
+    let multi: serde_json::Value = serde_json::from_str(&multi_stdout)
+        .unwrap_or_else(|e| panic!("directory mode stdout is not JSON: {e}\n{multi_stdout}"));
+
+    let creatures = [
+        ("identity_creature_uuid_a", "identity_creature_uuid_a.json"),
+        ("identity_creature_uuid_b", "identity_creature_uuid_b.json"),
+    ];
+    for (key, fixture_name) in creatures {
+        let single = Command::new(bin)
+            .arg(fixture(fixture_name))
+            .arg(data_dir.path())
+            .output()
+            .expect("failed to spawn rust_scorer in single mode");
+        assert!(
+            single.status.success(),
+            "single mode exited with status {:?}\nstderr:\n{}",
+            single.status.code(),
+            String::from_utf8_lossy(&single.stderr),
+        );
+        let single_stdout = String::from_utf8(single.stdout).expect("stdout is utf-8");
+        let single_json: serde_json::Value = serde_json::from_str(&single_stdout)
+            .unwrap_or_else(|e| panic!("single mode stdout is not JSON: {e}\n{single_stdout}"));
+
+        let from_multi = multi
+            .get(key)
+            .unwrap_or_else(|| panic!("missing key '{key}' in directory output"));
+
+        // With deeper parallel chunk reductions, floating-point summation order can differ
+        // by a tiny epsilon while remaining numerically equivalent.
+        let multi_error = from_multi
+            .get("error")
+            .and_then(|v| v.as_f64())
+            .expect("multi missing error");
+        let single_error = single_json
+            .get("error")
+            .and_then(|v| v.as_f64())
+            .expect("single missing error");
+        assert!(
+            (multi_error - single_error).abs() < 1e-9,
+            "error mismatch too large: multi={multi_error}, single={single_error}",
+        );
+
+        let multi_score = from_multi
+            .get("score")
+            .and_then(|v| v.as_f64())
+            .expect("multi missing score");
+        let single_score = single_json
+            .get("score")
+            .and_then(|v| v.as_f64())
+            .expect("single missing score");
+        assert!(
+            (multi_score - single_score).abs() < 1e-9,
+            "score mismatch too large: multi={multi_score}, single={single_score}",
+        );
+        assert_eq!(
+            from_multi.get("recordCount"),
+            single_json.get("recordCount")
+        );
+    }
 }
