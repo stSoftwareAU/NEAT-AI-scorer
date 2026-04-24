@@ -27,7 +27,20 @@ cargo test --workspace --all-features
 cargo build --release -p rust_scorer
 ```
 
-Requires **shellcheck**, **cargo-deny** (`cargo install cargo-deny --locked`), and optionally **cargo-edit** for the upgrade step in `./quality.sh`.
+Requires **shellcheck**, **cargo-deny** (`cargo install cargo-deny --locked`), **codespell** (`pip install --user codespell`, used by `scripts/spell-check.sh`), and optionally **cargo-edit** for the upgrade step in `./quality.sh`.
+
+### Spell check
+
+CI runs `codespell` via `scripts/spell-check.sh`; the same script is invoked by `./quality.sh`, so the local gate and CI stay in lock-step. Reproduce the CI spell check at any time with:
+
+```bash
+./scripts/spell-check.sh
+```
+
+Configuration (ignore list, skip paths, check-filenames / check-hidden flags) is kept in a single source of truth: [`.codespellrc`](./.codespellrc). When a domain term trips codespell, prefer adding it — with a short justification comment — to `.codespellrc` over silencing the whole file. Genuine typos must continue to fail the build. Current curated domain entries:
+
+- `renderD` — DRM device node name (e.g. `renderD128`).
+- `mape` / `MAPE` — Mean Absolute Percentage Error (a `neat-core` loss function).
 
 Binaries: `rust_scorer`, `float_scan_bench` (see `rust_scorer/Cargo.toml`).
 

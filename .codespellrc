@@ -1,0 +1,22 @@
+# codespell configuration — shared by CI and the local preflight script
+# (`scripts/spell-check.sh`). Keep this file as the single source of truth so
+# contributors can reproduce the CI spell check exactly and CI never
+# drifts from what runs locally.
+#
+# Curated ignore list (see README "Spell check" section for workflow):
+#   - renderD  : DRM device node name (renderD128 etc).
+#   - mape/MAPE: Mean Absolute Percentage Error — a neat-core loss function.
+#
+# Skipped paths:
+#   - target, .git, Cargo.lock              : build artefacts / VCS metadata.
+#   - tests/scripts/spell_check.bats        : intentionally contains typo
+#     fixtures that exercise the preflight (see the bats suite).
+#
+# To extend the list, prefer adding an entry here with a short justification
+# comment rather than silencing individual files. Genuine typos must continue
+# to fail the build.
+[codespell]
+skip = ./target,./.git,./Cargo.lock,./tests/scripts/spell_check.bats
+check-filenames =
+check-hidden =
+ignore-words-list = renderD,mape,MAPE
