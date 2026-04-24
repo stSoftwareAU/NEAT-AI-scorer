@@ -208,6 +208,18 @@ message live in `scripts/auto-format.sh` and are covered by
 `tests/scripts/auto_format.bats`; the workflow itself is validated by
 `scripts/check-auto-format-workflow.sh` (invoked from `quality.sh`).
 
+### GitHub Actions version policy (Node 24 compat)
+
+GitHub is deprecating the Node 20 runtime for JavaScript actions, so the
+workflow files pin each `uses:` reference to a major that runs on Node 24
+where one exists. The policy — minimum majors, tracked Node 20 exceptions
+(`actions/dependency-review-action@v4`, `rustsec/audit-check@v2` — no Node
+24 release upstream yet), and composite/shell allow-list — is encoded in
+`scripts/check-workflow-action-versions.sh` and validated end-to-end by
+`tests/scripts/workflow_action_versions.bats`. `quality.sh` invokes the
+script so any workflow that adds an unpinned or outdated `uses:` reference
+fails the local gate before CI (Issue #24).
+
 ## License
 
 Apache-2.0 — see `LICENSE`.

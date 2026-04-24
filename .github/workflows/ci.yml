@@ -52,7 +52,7 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           fetch-depth: 0
 
@@ -67,7 +67,7 @@ jobs:
       #     the expected sibling without the workflow having to rewrite
       #     Cargo.toml.
       - name: Checkout NEAT-AI-core (path dependency for neat-core)
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           repository: stSoftwareAU/NEAT-AI-core
           ref: Develop
@@ -95,7 +95,7 @@ jobs:
           components: rustfmt, clippy
 
       - name: Cache dependencies
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: |
             ~/.cargo/registry
@@ -155,13 +155,13 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       # NEAT-AI-core checkout path strategy — see note in the `quality` job
       # above. Summary: in-workspace clone + sibling symlink so Cargo resolves
       # the `../../NEAT-AI-core/neat-core` path dependency on the runner.
       - name: Checkout NEAT-AI-core (path dependency for neat-core)
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           repository: stSoftwareAU/NEAT-AI-core
           ref: Develop
@@ -208,7 +208,7 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Check bash script syntax
         run: |
@@ -224,7 +224,9 @@ jobs:
           exit $EXIT_CODE
 
       - name: Run ShellCheck (koalaman/shellcheck via ludeeus/action-shellcheck)
-        uses: ludeeus/action-shellcheck@master
+        # Pinned to a tagged release (Issue #24) — `@master` is unpinned and
+        # a compromised upstream commit would silently alter CI behaviour.
+        uses: ludeeus/action-shellcheck@2.0.0
         with:
           scandir: "."
           severity: warning
@@ -247,7 +249,7 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       # Configuration lives in `.codespellrc` at the repo root so CI and the
       # local preflight (`scripts/spell-check.sh`) stay in lock-step — see
