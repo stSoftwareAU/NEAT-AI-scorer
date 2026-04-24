@@ -19,7 +19,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       # Path strategy for the NEAT-AI-core sibling (Issue #18):
       #   * `actions/checkout` refuses any `path:` that resolves outside
@@ -30,7 +30,7 @@ jobs:
       #     below recreates that layout on the runner so Cargo resolves the
       #     path dependency without rewriting any manifest.
       - name: Checkout NEAT-AI-core (path dependency for neat-core)
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           repository: stSoftwareAU/NEAT-AI-core
           ref: Develop
