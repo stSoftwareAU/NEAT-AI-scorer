@@ -191,6 +191,15 @@ jobs:
         env:
           SHELLCHECK_OPTS: -s bash
 
+      - name: Install bats
+        run: sudo apt-get update && sudo apt-get install -y bats
+
+      - name: Run bash helper tests (bats)
+        run: |
+          if [ -d "tests/scripts" ]; then
+            bats tests/scripts
+          fi
+
   spell-check:
     name: Spell Check
     runs-on: ubuntu-latest

@@ -32,6 +32,18 @@ if [[ "$SHELLCHECK_FAILED" -ne 0 ]]; then
 fi
 echo "shellcheck: all scripts passed"
 
+echo "🧰 Running bash helper tests (bats)..."
+if command -v bats &>/dev/null; then
+  # Only execute the bats suites we ship under tests/scripts — keeps runtime
+  # scoped to shell helpers and avoids pulling in unrelated directories.
+  if [ -d "tests/scripts" ]; then
+    bats tests/scripts
+  fi
+else
+  echo "⚠️  bats not installed — skipping shell helper tests"
+  echo "   Install with: brew install bats-core  (or your package manager)"
+fi
+
 echo "📦 Upgrading Rust library dependencies (optional)..."
 if command -v cargo-upgrade &>/dev/null; then
   cargo upgrade --incompatible
