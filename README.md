@@ -158,6 +158,37 @@ for the six-way dispatch pattern.
 
 ## CI
 
+### Job dependency graph (Issue #23)
+
+`.github/workflows/ci.yml` declares an explicit job graph so ordering is
+predictable on re-runs and partial failures:
+
+```
+validation ──┬── quality ─────────────┐
+             │                         │
+             └── security ─────────────┤
+                                       ├──► ci-required  (aggregator)
+shell-checks ──────────────────────────┤
+spell-check ───────────────────────────┘
+```
+
+* **`validation`** is the foundation — it verifies required files and Cargo
+  metadata. `quality` and `security` `needs: [validation]` so a broken repo
+  layout fails fast without burning Rust compile minutes or a security scan.
+* **`shell-checks`** and **`spell-check`** are lightweight and run in
+  parallel with the foundation to surface findings early.
+* **`ci-required`** is a single fan-in aggregator. It `needs:` every gating
+  job, uses `if: always()` so it always reports a result, and inspects
+  `needs.<job>.result` in its run step to fail unless every dependency
+  reported `success` or `skipped`. **Branch protection should pin exactly
+  one required check — `CI Required Checks` — so the merge gate is stable
+  even when individual gating jobs are added or renamed.**
+
+The graph is validated by `scripts/check-ci-job-graph.sh` (wired into
+`quality.sh`) and covered end-to-end by `tests/scripts/workflow_job_graph.bats`.
+
+### Other PR automation
+
 Besides the quality gate (`.github/workflows/ci.yml`), PRs also run a guarded
 auto-version increment job (`.github/workflows/version-increment.yml`,
 Issue #20). On each PR the job compares `rust_scorer/Cargo.toml` against the

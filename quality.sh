@@ -41,6 +41,9 @@ echo "🔐 Validating Gitleaks workflow hardening (Issue #21)..."
 echo "🪄 Validating auto-format PR workflow (Issue #19)..."
 ./scripts/check-auto-format-workflow.sh
 
+echo "🧭 Validating CI job dependency graph (Issue #23)..."
+./scripts/check-ci-job-graph.sh
+
 echo "📝 Running codespell preflight (mirrors CI spell-check job)..."
 if ! ./scripts/spell-check.sh; then
   echo "spell-check: FAILED — fix the typos above or update .codespellrc (see README)."

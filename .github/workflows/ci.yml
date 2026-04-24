@@ -1,4 +1,27 @@
 # Quality bar aligned with NEAT-AI-Discovery (fmt, clippy, tests, security, spell & shell checks).
+#
+# Job dependency graph (Issue #23):
+#
+#   validation ──┬── quality ─────────────┐
+#                │                         │
+#                └── security ─────────────┤
+#                                          ├──► ci-required  (aggregator)
+#   shell-checks ──────────────────────────┤
+#   spell-check ───────────────────────────┘
+#
+# * `validation` is the foundational check: it verifies the required files
+#   and Cargo metadata. Running it first means we do not burn runner minutes
+#   on a Rust compile when the repo layout itself is broken.
+# * `quality` and `security` depend on `validation` so a missing manifest
+#   fails fast without spinning up a full build or security scan.
+# * `shell-checks` and `spell-check` are lightweight and independent — they
+#   always run in parallel to surface their findings early on every push/PR.
+# * `ci-required` is a fan-in aggregator job with `if: always()`. It inspects
+#   `needs.<job>.result` and succeeds only when every gating job succeeded
+#   (or was cleanly skipped, e.g. `security` on non-PR events). Branch
+#   protection should pin exactly one required status check — this one —
+#   so the merge-readiness signal is stable regardless of how the underlying
+#   graph evolves.
 name: CI
 
 on:
@@ -21,6 +44,8 @@ env:
 jobs:
   quality:
     name: Quality Checks
+    # Foundational layout check must pass before we spend minutes compiling.
+    needs: [validation]
     runs-on: ubuntu-latest
     env:
       RUSTFLAGS: "-D warnings"
@@ -116,6 +141,9 @@ jobs:
         run: RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
 
   security:
+    # Fan-in after `validation` keeps security audits aligned with the rest
+    # of the graph — no advisory scan runs against a broken repo layout.
+    needs: [validation]
     uses: ./.github/workflows/security.yml
     if: github.event_name == 'pull_request'
     with:
@@ -230,3 +258,63 @@ jobs:
 
       - name: Run codespell preflight
         run: ./scripts/spell-check.sh
+
+  # ------------------------------------------------------------------
+  # Aggregator job — single stable required check for branch protection.
+  # ------------------------------------------------------------------
+  # Branch protection should pin exactly one required check: `CI Required
+  # Checks`. This fan-in job depends on every gating job above and uses
+  # `if: always()` so it always reports a result, even when an upstream job
+  # failed. The explicit `needs.<job>.result` inspection below turns
+  # `always()` into a real gate: the step exits non-zero unless every
+  # dependency reported `success` (or `skipped`, which is the expected state
+  # for `security` on push events where the dependency-review step is
+  # deliberately disabled).
+  #
+  # Why an aggregator at all?
+  # * Stable required-check name — adding/removing a gating job no longer
+  #   requires a branch-protection update.
+  # * Deterministic re-run behaviour — a re-run of a failed upstream job
+  #   automatically re-runs the aggregator (GitHub re-evaluates fan-in
+  #   dependents), so the required check reflects the latest state.
+  # * Clear partial-failure semantics — the aggregator summarises *why* it
+  #   failed in its log, pointing reviewers at the specific upstream.
+  ci-required:
+    name: CI Required Checks
+    needs: [validation, quality, security, shell-checks, spell-check]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify all gating jobs succeeded
+        env:
+          VALIDATION_RESULT: ${{ needs.validation.result }}
+          QUALITY_RESULT: ${{ needs.quality.result }}
+          SECURITY_RESULT: ${{ needs.security.result }}
+          SHELL_CHECKS_RESULT: ${{ needs.shell-checks.result }}
+          SPELL_CHECK_RESULT: ${{ needs.spell-check.result }}
+        run: |
+          set -euo pipefail
+          # Accept `success` (ran and passed) and `skipped` (e.g. `security`
+          # on non-PR events). Anything else — failure, cancelled, timed
+          # out — must fail the aggregator so branch protection blocks the
+          # merge.
+          fail=0
+          check() {
+            local name="$1" result="$2"
+            if [[ "$result" == "success" || "$result" == "skipped" ]]; then
+              echo "OK   $name: $result"
+            else
+              echo "FAIL $name: $result" >&2
+              fail=1
+            fi
+          }
+          check "validation"   "$VALIDATION_RESULT"
+          check "quality"      "$QUALITY_RESULT"
+          check "security"     "$SECURITY_RESULT"
+          check "shell-checks" "$SHELL_CHECKS_RESULT"
+          check "spell-check"  "$SPELL_CHECK_RESULT"
+          if [[ "$fail" -ne 0 ]]; then
+            echo "One or more gating jobs did not succeed — blocking merge." >&2
+            exit 1
+          fi
+          echo "All gating jobs succeeded — safe to merge."
