@@ -12,9 +12,9 @@
 # required in the bash helper tests).
 set -euo pipefail
 
-COMMIT_MESSAGE="chore(fmt): apply cargo fmt fixes
+COMMIT_MESSAGE="chore(fmt): apply rustfmt fixes
 
-Automated by the auto-format PR job — see issue #19."
+Automated by the auto-format PR job (rustfmt via cargo fmt) — see issue #19."
 
 usage() {
   cat <<'EOF'
