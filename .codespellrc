@@ -11,12 +11,14 @@
 #   - target, .git, Cargo.lock              : build artefacts / VCS metadata.
 #   - tests/scripts/spell_check.bats        : intentionally contains typo
 #     fixtures that exercise the preflight (see the bats suite).
+#   - docs/pr-summary-*.md                  : historical PR narratives that
+#     may quote typo fixtures from the PR they describe (Issue #21).
 #
 # To extend the list, prefer adding an entry here with a short justification
 # comment rather than silencing individual files. Genuine typos must continue
 # to fail the build.
 [codespell]
-skip = ./target,./.git,./Cargo.lock,./tests/scripts/spell_check.bats
+skip = ./target,./.git,./Cargo.lock,./tests/scripts/spell_check.bats,./docs/pr-summary-*.md
 check-filenames =
 check-hidden =
 ignore-words-list = renderD,mape,MAPE
