@@ -69,6 +69,17 @@ teardown() {
   [ "$status" -eq 0 ]
 }
 
+@test "check-changes exits 1 when only an untracked directory is present" {
+  # Regression: NEAT-AI-core/ is checked out alongside the workspace as a
+  # path dependency but is not a tracked file. cargo fmt cannot modify it,
+  # so its presence must not trigger a commit attempt (issue #22 / PR #34).
+  mkdir -p "$TMP_REPO/NEAT-AI-core/src"
+  echo "fn main() {}" >"$TMP_REPO/NEAT-AI-core/src/lib.rs"
+  run "$AUTO_FORMAT" --check-changes --repo "$TMP_REPO"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"clean"* ]]
+}
+
 @test "unknown flag prints usage and exits non-zero" {
   run "$AUTO_FORMAT" --nonsense
   [ "$status" -ne 0 ]

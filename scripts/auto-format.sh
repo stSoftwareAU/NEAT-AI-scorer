@@ -22,8 +22,8 @@ Usage: auto-format.sh <mode> [--repo DIR]
 
 Modes (exactly one):
   --commit-message   Print the deterministic commit message.
-  --check-changes    Exit 0 when the git working tree has pending changes
-                     (tracked or untracked), exit 1 when it is clean.
+  --check-changes    Exit 0 when tracked files have pending changes,
+                     exit 1 when the tracked working tree is clean.
 
 Options:
   --repo DIR         Repository directory for git operations (default: cwd).
@@ -69,10 +69,11 @@ case "$MODE" in
     ;;
 
   check-changes)
-    # Inspect both tracked modifications and untracked files. `git status
-    # --porcelain` prints one line per changed path and nothing for a clean
-    # tree, which is the cheapest way to cover both cases in a single call.
-    status_output="$(cd "$REPO_DIR" && git status --porcelain)"
+    # Only inspect changes to tracked files. Untracked paths (lines starting
+    # with '??') are excluded because cargo fmt cannot modify files that are
+    # not part of the tracked working tree — e.g. path-dependency repos
+    # checked out alongside the workspace (such as NEAT-AI-core/).
+    status_output="$(cd "$REPO_DIR" && git status --porcelain | grep -v '^??' || true)"
     if [[ -z "$status_output" ]]; then
       echo "clean: no formatting changes detected"
       exit 1
