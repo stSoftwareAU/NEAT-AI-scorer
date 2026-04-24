@@ -352,7 +352,7 @@ dependencies = [
 
 [[package]]
 name = "rust_scorer"
-version = "0.5.7"
+version = "0.5.8"
 dependencies = [
  "clap",
  "neat-core",

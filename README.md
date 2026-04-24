@@ -168,6 +168,15 @@ the job, so no duplicate bump commits are produced. The underlying logic
 lives in `scripts/version-increment.sh` and is covered by
 `tests/scripts/version_increment.bats`.
 
+PRs also run an auto-format job (`.github/workflows/auto-format.yml`,
+Issue #19). The job runs `cargo fmt --all` on the PR branch; if the working
+tree changes, the formatting fix is committed with a deterministic message
+and pushed back. When there are no changes the commit step is skipped, so
+re-running on a clean branch is a no-op. Change detection and the commit
+message live in `scripts/auto-format.sh` and are covered by
+`tests/scripts/auto_format.bats`; the workflow itself is validated by
+`scripts/check-auto-format-workflow.sh` (invoked from `quality.sh`).
+
 ## License
 
 Apache-2.0 — see `LICENSE`.

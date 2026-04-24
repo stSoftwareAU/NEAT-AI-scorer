@@ -38,6 +38,9 @@ echo "🔗 Validating NEAT-AI-core checkout path strategy in workflows..."
 echo "🔐 Validating Gitleaks workflow hardening (Issue #21)..."
 ./scripts/check-gitleaks-workflow.sh
 
+echo "🪄 Validating auto-format PR workflow (Issue #19)..."
+./scripts/check-auto-format-workflow.sh
+
 echo "📝 Running codespell preflight (mirrors CI spell-check job)..."
 if ! ./scripts/spell-check.sh; then
   echo "spell-check: FAILED — fix the typos above or update .codespellrc (see README)."
