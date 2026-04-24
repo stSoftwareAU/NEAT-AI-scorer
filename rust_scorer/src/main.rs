@@ -10,10 +10,12 @@
 //!
 //! Issue #1967 - Build Rust CLI scorer application.
 
+mod multi_score;
 mod read_tuning;
 mod scoring;
 mod stream_score;
 
+use std::collections::BTreeMap;
 use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -24,6 +26,7 @@ use clap::Parser;
 use neat_core::creature::{compile_creature, parse_creature_json};
 use neat_core::training_data::{TrainingDataConfig, TrainingDataIterator, find_bin_files};
 
+use crate::multi_score::score_from_creature_dir;
 use crate::read_tuning::{training_read_backend_label, training_read_target_bytes_from_env};
 use crate::scoring::{ScoreResult, calculate_score, compute_score_components};
 use crate::stream_score::activation_worker_count_for_scorer;
@@ -98,9 +101,34 @@ fn resolve_inputs(cli: &Cli) -> Result<(String, PathBuf), String> {
     }
 }
 
-fn run(cli: &Cli) -> Result<ScoreResult, String> {
-    let (creature_json, data_path) = resolve_inputs(cli)?;
-    score_from_json(&creature_json, &data_path)
+enum RunOutput {
+    Single(ScoreResult),
+    Multi(BTreeMap<String, ScoreResult>),
+}
+
+fn run(cli: &Cli) -> Result<RunOutput, String> {
+    if cli.creature_stdin {
+        let (creature_json, data_path) = resolve_inputs(cli)?;
+        return score_from_json(&creature_json, &data_path).map(RunOutput::Single);
+    }
+
+    if cli.args.len() != 2 {
+        return Err("Expected arguments: <creature.json|creatures_dir> <data_dir> (or use --creature-stdin)".to_string());
+    }
+
+    let creature_path = &cli.args[0];
+    let data_path = &cli.args[1];
+    if creature_path.is_dir() {
+        score_from_creature_dir(creature_path, data_path).map(RunOutput::Multi)
+    } else {
+        let creature_json = fs::read_to_string(creature_path).map_err(|e| {
+            format!(
+                "Failed to read creature file '{}': {e}",
+                creature_path.display()
+            )
+        })?;
+        score_from_json(&creature_json, data_path).map(RunOutput::Single)
+    }
 }
 
 fn score_from_json(creature_json: &str, data_path: &Path) -> Result<ScoreResult, String> {
@@ -242,9 +270,14 @@ fn main() {
     let cli = Cli::parse();
 
     match run(&cli) {
-        Ok(result) => {
+        Ok(RunOutput::Single(result)) => {
             let json =
                 serde_json::to_string_pretty(&result).expect("Failed to serialise result to JSON");
+            println!("{json}");
+        }
+        Ok(RunOutput::Multi(result_map)) => {
+            let json = serde_json::to_string_pretty(&result_map)
+                .expect("Failed to serialise multi-creature result to JSON");
             println!("{json}");
         }
         Err(e) => {
@@ -257,6 +290,13 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn run_single(cli: &Cli) -> Result<ScoreResult, String> {
+        match run(cli)? {
+            RunOutput::Single(result) => Ok(result),
+            RunOutput::Multi(_) => Err("Expected single-creature output".to_string()),
+        }
+    }
+
     use std::io::Write;
     use std::path::PathBuf;
     use tempfile::TempDir;
@@ -341,7 +381,7 @@ mod tests {
 
         let cli = cli_for(&creature_path, &data_dir);
 
-        let result = run(&cli).unwrap();
+        let result = run_single(&cli).unwrap();
         assert!(
             result.error.abs() < 1e-6,
             "Expected near-zero error, got {}",
@@ -376,7 +416,7 @@ mod tests {
 
         let cli = cli_for(&creature_path, &data_dir);
 
-        let result = run(&cli).unwrap();
+        let result = run_single(&cli).unwrap();
         assert!(
             result.error.abs() < 1e-6,
             "Expected near-zero error, got {}",
@@ -410,7 +450,7 @@ mod tests {
 
         let cli = cli_for(&creature_path, &data_dir);
 
-        let result = run(&cli).unwrap();
+        let result = run_single(&cli).unwrap();
         assert_eq!(result.record_count, 3);
         assert!(result.error.abs() < 1e-6);
     }
@@ -422,7 +462,7 @@ mod tests {
             &PathBuf::from("/tmp"),
         );
 
-        let result = run(&cli);
+        let result = run_single(&cli);
         assert!(result.is_err());
     }
 
@@ -443,8 +483,8 @@ mod tests {
         let cli_v4 = cli_for(&creature_path_v4, &data_dir);
         let cli_v3 = cli_for(&creature_path_v3, &data_dir);
 
-        let result_v4 = run(&cli_v4).unwrap();
-        let result_v3 = run(&cli_v3).unwrap();
+        let result_v4 = run_single(&cli_v4).unwrap();
+        let result_v3 = run_single(&cli_v3).unwrap();
 
         // v3 should have a 1e-6 version penalty
         assert!(
@@ -467,7 +507,7 @@ mod tests {
 
         let cli = cli_for(&creature_path, &data_dir);
 
-        let result = run(&cli);
+        let result = run_single(&cli);
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("No .bin files"));
     }
@@ -521,7 +561,7 @@ mod tests {
         fs::write(&creature_path, &json).unwrap();
         write_training_data(&data_dir, &[(vec![0.5], vec![0.5])]);
 
-        let file_result = run(&cli_for(&creature_path, &data_dir)).unwrap();
+        let file_result = run_single(&cli_for(&creature_path, &data_dir)).unwrap();
         let stdin_result = score_from_json(&json, &data_dir).unwrap();
 
         assert!((file_result.score - stdin_result.score).abs() < 1e-12);
