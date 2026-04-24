@@ -143,6 +143,18 @@ see the in-tree `rust_scorer/` experiment on
 [`milestone/pure-rust-scorer-experiment`](https://github.com/stSoftwareAU/NEAT-AI/blob/milestone/pure-rust-scorer-experiment/rust_scorer/src/cost.rs)
 for the six-way dispatch pattern.
 
+## CI
+
+Besides the quality gate (`.github/workflows/ci.yml`), PRs also run a guarded
+auto-version increment job (`.github/workflows/version-increment.yml`,
+Issue #20). On each PR the job compares `rust_scorer/Cargo.toml` against the
+base branch and, if the version has not already changed on the branch, bumps
+the patch component once and pushes that commit back to the PR branch. A
+re-run of CI — or a human-authored bump on the same branch — short-circuits
+the job, so no duplicate bump commits are produced. The underlying logic
+lives in `scripts/version-increment.sh` and is covered by
+`tests/scripts/version_increment.bats`.
+
 ## License
 
 Apache-2.0 — see `LICENSE`.

@@ -1,0 +1,116 @@
+# Guarded auto-version increment PR job (Issue #20).
+#
+# Runs on pull requests targeting Develop or a milestone/* branch. If the
+# Cargo package version in `rust_scorer/Cargo.toml` still matches the base
+# branch, bumps the patch component once and commits the change back to the
+# PR branch. Re-running CI or a human-authored bump on the branch both
+# short-circuit via `scripts/version-increment.sh --run`, so no duplicate
+# bump commits are produced.
+name: Version Increment
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    branches:
+      - Develop
+      - "milestone/**"
+    paths-ignore:
+      - "**.md"
+      - "docs/**"
+
+permissions:
+  contents: write
+  pull-requests: read
+
+jobs:
+  # Gate: establish a canonical "should we attempt a bump?" signal that the
+  # actual writer job depends on. Making this a separate job keeps the
+  # ordering explicit (per acceptance criteria) and lets other PR checks
+  # pin themselves to `needs: [version-increment]` later if desired.
+  guard:
+    name: Version Bump Guard
+    runs-on: ubuntu-latest
+    # Never attempt to push onto a fork's branch — the GITHUB_TOKEN cannot
+    # write there, and bump-on-fork is the PR author's responsibility.
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    outputs:
+      should_bump: ${{ steps.check.outputs.should_bump }}
+      next_version: ${{ steps.check.outputs.next_version }}
+    steps:
+      - name: Checkout PR branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.ref }}
+          fetch-depth: 0
+
+      - name: Fetch base ref
+        run: |
+          git fetch --no-tags --prune origin "${{ github.event.pull_request.base.ref }}"
+
+      - name: Decide whether to bump
+        id: check
+        run: |
+          set -euo pipefail
+          base_ref="origin/${{ github.event.pull_request.base.ref }}"
+          current="$(./scripts/version-increment.sh --get-version \
+            --manifest rust_scorer/Cargo.toml)"
+          if ./scripts/version-increment.sh --already-bumped \
+              --manifest rust_scorer/Cargo.toml \
+              --base-ref "$base_ref"; then
+            echo "Version already bumped on branch — skipping."
+            echo "should_bump=false" >>"$GITHUB_OUTPUT"
+            echo "next_version=$current" >>"$GITHUB_OUTPUT"
+          else
+            next="$(./scripts/version-increment.sh --bump-patch \
+              --manifest rust_scorer/Cargo.toml --dry-run)"
+            echo "Planned bump: $current -> $next"
+            echo "should_bump=true" >>"$GITHUB_OUTPUT"
+            echo "next_version=$next" >>"$GITHUB_OUTPUT"
+          fi
+
+  bump:
+    name: Apply Version Bump
+    needs: guard
+    if: needs.guard.outputs.should_bump == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout PR branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.ref }}
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Fetch base ref
+        run: |
+          git fetch --no-tags --prune origin "${{ github.event.pull_request.base.ref }}"
+
+      # Re-check just before writing to avoid a race where a bump landed
+      # between the guard job and this job — preserves at-most-once semantics.
+      - name: Perform guarded bump
+        id: bump
+        run: |
+          set -euo pipefail
+          base_ref="origin/${{ github.event.pull_request.base.ref }}"
+          result="$(./scripts/version-increment.sh --run \
+            --manifest rust_scorer/Cargo.toml \
+            --base-ref "$base_ref")"
+          echo "$result"
+          if [[ "$result" == skip:* ]]; then
+            echo "changed=false" >>"$GITHUB_OUTPUT"
+          else
+            echo "changed=true" >>"$GITHUB_OUTPUT"
+          fi
+
+      - name: Commit and push bump
+        if: steps.bump.outputs.changed == 'true'
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add rust_scorer/Cargo.toml
+          new_version="${{ needs.guard.outputs.next_version }}"
+          git commit -m "chore: auto-bump rust_scorer version to ${new_version}
+
+          Closes part of #20 — guarded auto-version increment."
+          git push origin "HEAD:${{ github.event.pull_request.head.ref }}"
