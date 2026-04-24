@@ -35,6 +35,12 @@ echo "shellcheck: all scripts passed"
 echo "🔗 Validating NEAT-AI-core checkout path strategy in workflows..."
 ./scripts/check-workflow-paths.sh
 
+echo "📝 Running codespell preflight (mirrors CI spell-check job)..."
+if ! ./scripts/spell-check.sh; then
+  echo "spell-check: FAILED — fix the typos above or update .codespellrc (see README)."
+  exit 1
+fi
+
 echo "🧰 Running bash helper tests (bats)..."
 if command -v bats &>/dev/null; then
   # Only execute the bats suites we ship under tests/scripts — keeps runtime

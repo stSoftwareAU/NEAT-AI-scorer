@@ -221,10 +221,12 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Run codespell
-        uses: codespell-project/actions-codespell@v2
-        with:
-          check_filenames: true
-          check_hidden: true
-          skip: "./target,./.git"
-          ignore_words_list: renderD,mape,MAPE
+      # Configuration lives in `.codespellrc` at the repo root so CI and the
+      # local preflight (`scripts/spell-check.sh`) stay in lock-step — see
+      # Issue #22 and the README "Spell check" section. Invoke the same
+      # script contributors run locally.
+      - name: Install codespell
+        run: pip install --user codespell
+
+      - name: Run codespell preflight
+        run: ./scripts/spell-check.sh
