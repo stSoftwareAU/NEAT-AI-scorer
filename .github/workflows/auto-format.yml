@@ -79,10 +79,12 @@ jobs:
 
       - name: Commit and push rustfmt fixes
         if: steps.detect.outputs.changed == 'true'
+        env:
+          PR_HEAD_REF: ${{ github.event.pull_request.head.ref }}
         run: |
           set -euo pipefail
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           msg="$(./scripts/auto-format.sh --commit-message)"
           git commit -am "$msg"
-          git push origin "HEAD:${{ github.event.pull_request.head.ref }}"
+          git push origin "HEAD:$PR_HEAD_REF"

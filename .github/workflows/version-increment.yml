@@ -44,14 +44,18 @@ jobs:
           fetch-depth: 0
 
       - name: Fetch base ref
+        env:
+          PR_BASE_REF: ${{ github.event.pull_request.base.ref }}
         run: |
-          git fetch --no-tags --prune origin "${{ github.event.pull_request.base.ref }}"
+          git fetch --no-tags --prune origin "$PR_BASE_REF"
 
       - name: Decide whether to bump
         id: check
+        env:
+          PR_BASE_REF: ${{ github.event.pull_request.base.ref }}
         run: |
           set -euo pipefail
-          base_ref="origin/${{ github.event.pull_request.base.ref }}"
+          base_ref="origin/$PR_BASE_REF"
           current="$(./scripts/version-increment.sh --get-version \
             --manifest rust_scorer/Cargo.toml)"
           if ./scripts/version-increment.sh --already-bumped \
@@ -82,16 +86,20 @@ jobs:
           token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Fetch base ref
+        env:
+          PR_BASE_REF: ${{ github.event.pull_request.base.ref }}
         run: |
-          git fetch --no-tags --prune origin "${{ github.event.pull_request.base.ref }}"
+          git fetch --no-tags --prune origin "$PR_BASE_REF"
 
       # Re-check just before writing to avoid a race where a bump landed
       # between the guard job and this job — preserves at-most-once semantics.
       - name: Perform guarded bump
         id: bump
+        env:
+          PR_BASE_REF: ${{ github.event.pull_request.base.ref }}
         run: |
           set -euo pipefail
-          base_ref="origin/${{ github.event.pull_request.base.ref }}"
+          base_ref="origin/$PR_BASE_REF"
           result="$(./scripts/version-increment.sh --run \
             --manifest rust_scorer/Cargo.toml \
             --base-ref "$base_ref")"
@@ -104,13 +112,15 @@ jobs:
 
       - name: Commit and push bump
         if: steps.bump.outputs.changed == 'true'
+        env:
+          PR_HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          NEXT_VERSION: ${{ needs.guard.outputs.next_version }}
         run: |
           set -euo pipefail
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add rust_scorer/Cargo.toml
-          new_version="${{ needs.guard.outputs.next_version }}"
-          git commit -m "chore: auto-bump rust_scorer version to ${new_version}
+          git commit -m "chore: auto-bump rust_scorer version to ${NEXT_VERSION}
 
           Closes part of #20 — guarded auto-version increment."
-          git push origin "HEAD:${{ github.event.pull_request.head.ref }}"
+          git push origin "HEAD:$PR_HEAD_REF"
