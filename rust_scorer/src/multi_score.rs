@@ -240,14 +240,14 @@ pub fn score_from_creature_dir(
         for loaded_creature in &mut loaded {
             loaded_creature.networks.reserve(per_creature_workers - 1);
             for _ in 1..per_creature_workers {
-                loaded_creature
-                    .networks
-                    .push(compile_creature(&loaded_creature.creature).map_err(|e| {
+                loaded_creature.networks.push(
+                    compile_creature(&loaded_creature.creature).map_err(|e| {
                         format!(
                             "Failed compiling worker network for creature '{}': {e}",
                             loaded_creature.path.display()
                         )
-                    })?);
+                    })?,
+                );
             }
         }
     }
@@ -373,4 +373,3 @@ pub fn score_from_creature_dir(
 
     Ok(results)
 }
-

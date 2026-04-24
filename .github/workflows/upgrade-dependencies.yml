@@ -26,7 +26,13 @@ jobs:
         with:
           repository: stSoftwareAU/NEAT-AI-core
           ref: Develop
-          path: ../NEAT-AI-core
+          path: NEAT-AI-core
+
+      - name: Link NEAT-AI-core sibling path expected by Cargo
+        run: |
+          if [ ! -e "$GITHUB_WORKSPACE/../NEAT-AI-core" ]; then
+            ln -s "$GITHUB_WORKSPACE/NEAT-AI-core" "$GITHUB_WORKSPACE/../NEAT-AI-core"
+          fi
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable

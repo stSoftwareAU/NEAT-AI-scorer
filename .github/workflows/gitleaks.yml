@@ -17,7 +17,13 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Install gitleaks CLI
+        run: |
+          version="8.24.2"
+          archive="gitleaks_${version}_linux_x64.tar.gz"
+          curl -sSfL "https://github.com/gitleaks/gitleaks/releases/download/v${version}/${archive}" -o "${archive}"
+          tar -xzf "${archive}" gitleaks
+          sudo install -m 0755 gitleaks /usr/local/bin/gitleaks
+
       - name: Run Gitleaks
-        uses: gitleaks/gitleaks-action@v2
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gitleaks git --source . --log-opts="origin/Develop..HEAD" --redact --verbose
