@@ -27,7 +27,20 @@ cargo test --workspace --all-features
 cargo build --release -p rust_scorer
 ```
 
-Requires **shellcheck**, **cargo-deny** (`cargo install cargo-deny --locked`), and optionally **cargo-edit** for the upgrade step in `./quality.sh`.
+Requires **shellcheck**, **cargo-deny** (`cargo install cargo-deny --locked`), **codespell** (`pip install --user codespell`, used by `scripts/spell-check.sh`), and optionally **cargo-edit** for the upgrade step in `./quality.sh`.
+
+### Spell check
+
+CI runs `codespell` via `scripts/spell-check.sh`; the same script is invoked by `./quality.sh`, so the local gate and CI stay in lock-step. Reproduce the CI spell check at any time with:
+
+```bash
+./scripts/spell-check.sh
+```
+
+Configuration (ignore list, skip paths, check-filenames / check-hidden flags) is kept in a single source of truth: [`.codespellrc`](./.codespellrc). When a domain term trips codespell, prefer adding it — with a short justification comment — to `.codespellrc` over silencing the whole file. Genuine typos must continue to fail the build. Current curated domain entries:
+
+- `renderD` — DRM device node name (e.g. `renderD128`).
+- `mape` / `MAPE` — Mean Absolute Percentage Error (a `neat-core` loss function).
 
 Binaries: `rust_scorer`, `float_scan_bench` (see `rust_scorer/Cargo.toml`).
 
@@ -142,6 +155,70 @@ existing fused batch-packed losses in `neat-core` are the drop-in entry points;
 see the in-tree `rust_scorer/` experiment on
 [`milestone/pure-rust-scorer-experiment`](https://github.com/stSoftwareAU/NEAT-AI/blob/milestone/pure-rust-scorer-experiment/rust_scorer/src/cost.rs)
 for the six-way dispatch pattern.
+
+## CI
+
+### Job dependency graph (Issue #23)
+
+`.github/workflows/ci.yml` declares an explicit job graph so ordering is
+predictable on re-runs and partial failures:
+
+```
+validation ──┬── quality ─────────────┐
+             │                         │
+             └── security ─────────────┤
+                                       ├──► ci-required  (aggregator)
+shell-checks ──────────────────────────┤
+spell-check ───────────────────────────┘
+```
+
+* **`validation`** is the foundation — it verifies required files and Cargo
+  metadata. `quality` and `security` `needs: [validation]` so a broken repo
+  layout fails fast without burning Rust compile minutes or a security scan.
+* **`shell-checks`** and **`spell-check`** are lightweight and run in
+  parallel with the foundation to surface findings early.
+* **`ci-required`** is a single fan-in aggregator. It `needs:` every gating
+  job, uses `if: always()` so it always reports a result, and inspects
+  `needs.<job>.result` in its run step to fail unless every dependency
+  reported `success` or `skipped`. **Branch protection should pin exactly
+  one required check — `CI Required Checks` — so the merge gate is stable
+  even when individual gating jobs are added or renamed.**
+
+The graph is validated by `scripts/check-ci-job-graph.sh` (wired into
+`quality.sh`) and covered end-to-end by `tests/scripts/workflow_job_graph.bats`.
+
+### Other PR automation
+
+Besides the quality gate (`.github/workflows/ci.yml`), PRs also run a guarded
+auto-version increment job (`.github/workflows/version-increment.yml`,
+Issue #20). On each PR the job compares `rust_scorer/Cargo.toml` against the
+base branch and, if the version has not already changed on the branch, bumps
+the patch component once and pushes that commit back to the PR branch. A
+re-run of CI — or a human-authored bump on the same branch — short-circuits
+the job, so no duplicate bump commits are produced. The underlying logic
+lives in `scripts/version-increment.sh` and is covered by
+`tests/scripts/version_increment.bats`.
+
+PRs also run an auto-format job (`.github/workflows/auto-format.yml`,
+Issue #19). The job runs `cargo fmt --all` on the PR branch; if the working
+tree changes, the formatting fix is committed with a deterministic message
+and pushed back. When there are no changes the commit step is skipped, so
+re-running on a clean branch is a no-op. Change detection and the commit
+message live in `scripts/auto-format.sh` and are covered by
+`tests/scripts/auto_format.bats`; the workflow itself is validated by
+`scripts/check-auto-format-workflow.sh` (invoked from `quality.sh`).
+
+### GitHub Actions version policy (Node 24 compat)
+
+GitHub is deprecating the Node 20 runtime for JavaScript actions, so the
+workflow files pin each `uses:` reference to a major that runs on Node 24
+where one exists. The policy — minimum majors, tracked Node 20 exceptions
+(`actions/dependency-review-action@v4`, `rustsec/audit-check@v2` — no Node
+24 release upstream yet), and composite/shell allow-list — is encoded in
+`scripts/check-workflow-action-versions.sh` and validated end-to-end by
+`tests/scripts/workflow_action_versions.bats`. `quality.sh` invokes the
+script so any workflow that adds an unpinned or outdated `uses:` reference
+fails the local gate before CI (Issue #24).
 
 ## License
 

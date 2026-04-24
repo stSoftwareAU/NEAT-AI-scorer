@@ -1,0 +1,90 @@
+# Auto-format PR job (Issue #19).
+#
+# Runs on pull requests targeting Develop or a milestone/* branch. Applies
+# `cargo fmt --all` on the PR branch; if the working tree changes, the fix
+# is committed and pushed back. Re-running on a clean branch is a no-op,
+# so the job is safe/idempotent.
+#
+# Permissions are scoped to the minimum: `contents: write` to push the
+# rustfmt commit. `pull-requests: read` is sufficient for the workflow's
+# metadata needs — the job does not comment or label the PR.
+name: Auto Format
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    branches:
+      - Develop
+      - "milestone/**"
+    paths-ignore:
+      - "**.md"
+      - "docs/**"
+
+permissions:
+  contents: write
+  pull-requests: read
+
+jobs:
+  auto-format:
+    name: Auto-format Code
+    runs-on: ubuntu-latest
+    # Skip forks — GITHUB_TOKEN cannot push to a fork's branch. Formatting
+    # on fork PRs is the author's responsibility.
+    if: github.event.pull_request.head.repo.full_name == github.repository
+
+    steps:
+      - name: Checkout PR branch
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.pull_request.head.ref }}
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      # NEAT-AI-core is a path dependency required for `cargo fmt --all`
+      # to resolve the workspace. Mirrors the strategy used in ci.yml —
+      # see the comment there for the path-strategy rationale.
+      - name: Checkout NEAT-AI-core (path dependency for neat-core)
+        uses: actions/checkout@v5
+        with:
+          repository: stSoftwareAU/NEAT-AI-core
+          ref: Develop
+          path: NEAT-AI-core
+
+      - name: Link NEAT-AI-core sibling path expected by Cargo
+        run: |
+          set -euo pipefail
+          if [ ! -e "$GITHUB_WORKSPACE/../NEAT-AI-core" ]; then
+            ln -s "$GITHUB_WORKSPACE/NEAT-AI-core" "$GITHUB_WORKSPACE/../NEAT-AI-core"
+          fi
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+
+      - name: Apply cargo fmt
+        run: |
+          set -euo pipefail
+          cargo fmt --all
+
+      - name: Detect formatting changes
+        id: detect
+        run: |
+          set -euo pipefail
+          if ./scripts/auto-format.sh --check-changes; then
+            echo "changed=true" >>"$GITHUB_OUTPUT"
+          else
+            echo "changed=false" >>"$GITHUB_OUTPUT"
+          fi
+
+      - name: Commit and push rustfmt fixes
+        if: steps.detect.outputs.changed == 'true'
+        env:
+          PR_HEAD_REF: ${{ github.event.pull_request.head.ref }}
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          msg="$(./scripts/auto-format.sh --commit-message)"
+          git commit -am "$msg"
+          git push origin "HEAD:$PR_HEAD_REF"

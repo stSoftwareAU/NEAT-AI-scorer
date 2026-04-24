@@ -32,6 +32,39 @@ if [[ "$SHELLCHECK_FAILED" -ne 0 ]]; then
 fi
 echo "shellcheck: all scripts passed"
 
+echo "🔗 Validating NEAT-AI-core checkout path strategy in workflows..."
+./scripts/check-workflow-paths.sh
+
+echo "🔐 Validating Gitleaks workflow hardening (Issue #21)..."
+./scripts/check-gitleaks-workflow.sh
+
+echo "🪄 Validating auto-format PR workflow (Issue #19)..."
+./scripts/check-auto-format-workflow.sh
+
+echo "🧭 Validating CI job dependency graph (Issue #23)..."
+./scripts/check-ci-job-graph.sh
+
+echo "🔢 Validating workflow action versions for Node 24 compat (Issue #24)..."
+./scripts/check-workflow-action-versions.sh
+
+echo "📝 Running codespell preflight (mirrors CI spell-check job)..."
+if ! ./scripts/spell-check.sh; then
+  echo "spell-check: FAILED — fix the typos above or update .codespellrc (see README)."
+  exit 1
+fi
+
+echo "🧰 Running bash helper tests (bats)..."
+if command -v bats &>/dev/null; then
+  # Only execute the bats suites we ship under tests/scripts — keeps runtime
+  # scoped to shell helpers and avoids pulling in unrelated directories.
+  if [ -d "tests/scripts" ]; then
+    bats tests/scripts
+  fi
+else
+  echo "⚠️  bats not installed — skipping shell helper tests"
+  echo "   Install with: brew install bats-core  (or your package manager)"
+fi
+
 echo "📦 Upgrading Rust library dependencies (optional)..."
 if command -v cargo-upgrade &>/dev/null; then
   cargo upgrade --incompatible
