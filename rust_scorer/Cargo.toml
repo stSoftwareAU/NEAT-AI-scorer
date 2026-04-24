@@ -1,6 +1,6 @@
 [package]
 name = "rust_scorer"
-version = "0.5.5"
+version = "0.5.6"
 edition = "2024"
 license = "Apache-2.0"
 description = "Native CLI binary for scoring NEAT-AI creatures against training data."
@@ -18,7 +18,10 @@ path = "src/bin/float_scan_bench.rs"
 
 [dependencies]
 # Path relative to this file: `NEAT-AI-scorer/rust_scorer` → sibling `NEAT-AI-core/neat-core`.
-# CI checks out NEAT-AI-core to `../../NEAT-AI-core` (see `.github/workflows/ci.yml`).
+# CI clones NEAT-AI-core INSIDE the workspace at `NEAT-AI-core/` (an
+# out-of-workspace `path:` is rejected by `actions/checkout` — see Issue #18)
+# and then symlinks `$GITHUB_WORKSPACE/../NEAT-AI-core` to that clone so this
+# `../../NEAT-AI-core/neat-core` path still resolves. See `.github/workflows/*.yml`.
 neat-core = { path = "../../NEAT-AI-core/neat-core" }
 clap = { version = "4", features = ["derive"] }
 serde = { version = "1", features = ["derive"] }
