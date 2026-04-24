@@ -26,4 +26,9 @@ jobs:
           sudo install -m 0755 gitleaks /usr/local/bin/gitleaks
 
       - name: Run Gitleaks
-        run: gitleaks git --source . --log-opts="origin/Develop..HEAD" --redact --verbose
+        run: |
+          gitleaks detect \
+            --source . \
+            --log-opts="origin/${{ github.base_ref }}..HEAD" \
+            --redact \
+            --verbose
