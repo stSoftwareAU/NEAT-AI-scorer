@@ -163,13 +163,14 @@ for the six-way dispatch pattern.
 `.github/workflows/ci.yml` declares an explicit job graph so ordering is
 predictable on re-runs and partial failures:
 
-```
-validation ──┬── quality ─────────────┐
-             │                         │
-             └── security ─────────────┤
-                                       ├──► ci-required  (aggregator)
-shell-checks ──────────────────────────┤
-spell-check ───────────────────────────┘
+```mermaid
+graph LR
+    validation[validation] --> quality[quality]
+    validation --> security[security]
+    quality --> ciRequired[ci-required<br/>aggregator]
+    security --> ciRequired
+    shellChecks[shell-checks] --> ciRequired
+    spellCheck[spell-check] --> ciRequired
 ```
 
 * **`validation`** is the foundation — it verifies required files and Cargo
