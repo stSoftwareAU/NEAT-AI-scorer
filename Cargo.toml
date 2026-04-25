@@ -13,6 +13,14 @@ opt-level = 3
 [profile.release.package.rust_scorer]
 codegen-units = 1
 
+# `profiling`: release optimisations plus debug symbols so `sample`/`dtrace`/
+# `perf` can produce a useful flamegraph. See `scripts/profile-flamegraph.sh`
+# and `docs/performance-baseline.md` (Issue #37).
+[profile.profiling]
+inherits = "release"
+debug = true
+strip = false
+
 [workspace.lints.clippy]
 collapsible_if = "deny"
 filter_next = "deny"
