@@ -105,6 +105,71 @@ fn scorer_binary_runs_against_identity_fixture() {
     assert!(forward_only, "fixture sets forwardOnly: true");
 }
 
+/// Issue #38: when the read buffer is a whole-record multiple and `pending`
+/// is empty at the start of a chunk callback, the scorer should skip the
+/// memcpy through `pending` and score directly from the chunk slice. This
+/// test exercises that fast path by:
+///   - generating an identity-creature fixture with many records (more than
+///     fit in one read buffer);
+///   - forcing a small `NEAT_SCORER_READ_BYTES` so the read buffer is
+///     exactly a whole-record multiple but several chunks are needed; and
+///   - asserting the scoring result still reports zero error and the full
+///     record count (i.e. records are not lost or double-counted).
+#[test]
+fn scorer_binary_record_aligned_multi_chunk_fast_path() {
+    let bin = env!("CARGO_BIN_EXE_rust_scorer");
+    let creature = fixture("identity_creature.json");
+
+    // Identity creature: 1 input + 1 output = 8 bytes per record.
+    // Build 1024 records (8 KiB) and force the read buffer to 32 bytes
+    // (4 records) so the fast path is taken many times in sequence.
+    let tmp = tempfile::tempdir().expect("create tempdir");
+    let data_path = tmp.path().join("aligned_fast_path.bin");
+    let mut file = std::fs::File::create(&data_path).expect("create data file");
+    use std::io::Write as _;
+    let n_records: usize = 1024;
+    for i in 0..n_records {
+        // Identity: input == output so squared error per record is zero.
+        let v: f32 = (i as f32) * 1.0e-3;
+        file.write_all(&v.to_le_bytes()).expect("write input");
+        file.write_all(&v.to_le_bytes()).expect("write output");
+    }
+    drop(file);
+
+    let output = Command::new(bin)
+        .env("NEAT_SCORER_READ_BYTES", "32")
+        .arg(&creature)
+        .arg(tmp.path())
+        .output()
+        .expect("failed to spawn rust_scorer binary");
+
+    assert!(
+        output.status.success(),
+        "rust_scorer exited with status {:?}\nstderr:\n{}",
+        output.status.code(),
+        String::from_utf8_lossy(&output.stderr),
+    );
+
+    let stdout = String::from_utf8(output.stdout).expect("stdout is utf-8");
+    let parsed: serde_json::Value = serde_json::from_str(&stdout)
+        .unwrap_or_else(|e| panic!("stdout is not JSON: {e}\n{stdout}"));
+
+    let error = parsed
+        .get("error")
+        .and_then(|v| v.as_f64())
+        .expect("missing `error` in scorer JSON");
+    assert!(error.abs() < 1e-6, "expected near-zero error, got {error}");
+
+    let record_count = parsed
+        .get("recordCount")
+        .and_then(|v| v.as_u64())
+        .expect("missing `recordCount` in scorer JSON");
+    assert_eq!(
+        record_count, n_records as u64,
+        "expected {n_records} records, got {record_count}",
+    );
+}
+
 /// Sanity check: missing creature file produces a non-zero exit and a clear error.
 /// Also serves as a regression for the CLI contract (positional args).
 #[test]
