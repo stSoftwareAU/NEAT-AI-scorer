@@ -243,6 +243,55 @@ host-specific numbers live in [`docs/performance-baseline.md`](docs/performance-
 Per `AGENTS.md`, performance PRs without before/after Criterion evidence are
 rejected.
 
+## How to flamegraph (Issue #37)
+
+Capture an SVG flamegraph for the single-creature fused path and the
+multi-creature directory mode with the cross-platform helper:
+
+```bash
+./scripts/profile-flamegraph.sh
+```
+
+The defaults (2 GiB single-creature corpus, 500 MB × 50 creatures
+multi-creature corpus) take a couple of minutes end-to-end on Apple
+silicon and write:
+
+* `docs/evidence/single-creature.svg`
+* `docs/evidence/multi-creature.svg`
+
+The script builds `rust_scorer` with a dedicated `profiling` Cargo profile
+(release optimisations + `debug = true`) so function names survive into the
+flamegraph, generates deterministic synthetic data via Python's `array`
+module, runs each scenario and feeds raw samples through `inferno`.
+
+One-time install of the toolchain:
+
+```bash
+cargo install inferno           # required for inferno-collapse-sample + inferno-flamegraph
+cargo install flamegraph        # Linux only: provides `cargo flamegraph` on top of `perf`
+# macOS: Xcode command-line tools ship /usr/bin/sample — no sudo needed.
+```
+
+Runtime tunables (override any default positional arg or env var):
+
+```bash
+# size-down for a quick smoke test
+./scripts/profile-flamegraph.sh 209715200 52428800 10
+
+# slim inputs / fewer hidden neurons
+PROFILE_NUM_INPUTS=4 PROFILE_HIDDEN=4 ./scripts/profile-flamegraph.sh
+```
+
+The `profiling` Cargo profile inherits from `release` but turns debug info
+and symbols back on. It is invoked only by this helper — the CI `release`
+build path is unchanged.
+
+Interpretation and the current top-5 cost centres per scenario are
+documented in the **"Hot spots"** section of
+[`docs/performance-baseline.md`](docs/performance-baseline.md). Re-run the
+script after each optimisation sub-issue lands and overwrite the SVGs so
+the hot-spot ordering stays honest.
+
 ## License
 
 Apache-2.0 — see `LICENSE`.

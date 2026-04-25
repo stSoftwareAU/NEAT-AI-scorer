@@ -65,6 +65,81 @@ count. Multiply by the creature count to compare against single-creature
 scoring: at `N=50` the 48 MiB/s shared-scan figure corresponds to roughly
 2.4 GiB/s of work performed (50 networks × 48 MiB/s).
 
+## Hot spots — 25 April 2026 (Issue #37)
+
+Sample-based flamegraphs captured with the cross-platform
+[`scripts/profile-flamegraph.sh`](../scripts/profile-flamegraph.sh) pipeline
+(macOS `sample` → `inferno-collapse-sample` → `inferno-flamegraph`). Equivalent
+output on Linux via `cargo flamegraph` (`perf` + `inferno`). Fixture:
+
+* Single-creature: **2 GiB** synthetic `.bin` corpus, one 8-input / 2-output
+  forward-only MLP with 8 TANH hidden neurons.
+* Multi-creature: **500 MB** corpus, **50** identical synthetic creatures
+  loaded via directory mode.
+
+Host: Apple M4 (10 cores), macOS 26.4.1, `profile = "profiling"`
+(release + `debug = true`). The scorer ran unmodified with default env
+(`NEAT_SCORER_ACTIVATION_THREADS` unset → all CPUs).
+
+Flamegraphs committed under [`docs/evidence/`](evidence/):
+
+* [`single-creature.svg`](evidence/single-creature.svg) — 2,255 samples
+* [`multi-creature.svg`](evidence/multi-creature.svg) — 10,868 samples
+
+### Single-creature fused path — top 5 (leaf / self time)
+
+_Idle scheduler/wait samples excluded._ Numbers show percent of total
+samples (2,255) and percent of **active CPU samples** (749). Because each
+iteration of the forward-only path is small, Rayon workers spend ~67 % of
+wall-clock time sleeping on `swtch_pri` / `__psynch_mutexwait`; those are
+listed under the unscheduled-parallelism finding below.
+
+| # | Function | Total % | Active % | Where it comes from | Addressed by |
+|---|---|---|---|---|---|
+| 1 | `tanhf` (libm activation) | 9.3 % | 27.9 % | Called from `mse_sum_batch_packed` → `mse_sum_batch_4way` inside `neat_core`. Each hidden-layer activation. | Not covered by #38–#42. Suggested **new follow-up**: vectorised / approximate TANH in `neat-core`. PGO (#43) may also help. |
+| 2 | `neat_core::loss::mse_sum_batch_packed` | 8.9 % | 26.8 % | Inner fused MSE + activation loop over the unpacked f32 batch. | Indirectly improved by #40 (feed the loop from aligned `&[f32]` without the unpack copy) and #43 (PGO). |
+| 3 | `_platform_memmove` | 5.9 % | 17.8 % | 72 of 133 leaf samples are under `stream_score::accumulate_mse_sum_forward_only_fused` closure — `pending.extend_from_slice(chunk)` and `pending.copy_within(head.., 0)` compaction; the remainder is inside `mse_sum_batch_packed`. | **#38** (skip copy when chunk is record-aligned and `pending` is empty) and **#39** (pre-size `pending` / tune compaction threshold) both target this directly. |
+| 4 | `neat_core::loss::mse_sum_batch_4way` closure | 5.1 % | 15.2 % | Four-way unrolled inner loop body, called from `mse_sum_batch_packed`. | Improved transitively by #40 (avoids unpack stall) and #43 (PGO). |
+| 5 | `DYLD-STUB$$tanhf` | 1.8 % | 5.3 % | Procedure-linkage-table trampoline for `tanhf`. Effectively part of (1). | Combined with (1); no separate sub-issue. |
+
+### Multi-creature directory mode (50 creatures) — top 5 (leaf / self time)
+
+_Idle scheduler/wait samples excluded._ Numbers show percent of total
+samples (10,868) and percent of active samples (6,196).
+
+| # | Function | Total % | Active % | Where it comes from | Addressed by |
+|---|---|---|---|---|---|
+| 1 | `tanhf` (libm activation) | 18.9 % | 33.1 % | Same path as single-creature, now stacked across 50 creature networks per chunk. | Not covered by #38–#42. Suggested **new follow-up**: vectorised / approximate TANH in `neat-core`. PGO (#43) may help. |
+| 2 | `neat_core::loss::mse_sum_batch_packed` | 15.9 % | 27.8 % | Fused MSE + activation. | **#41** (flatten nested `par_iter_mut`) reduces Rayon split overhead that sits on top of this; #43 (PGO) may also help. |
+| 3 | `neat_core::loss::mse_sum_batch_4way` closure | 11.5 % | 20.2 % | Inner four-way unrolled body. | Same as #2. |
+| 4 | `_platform_memmove` | 4.9 % | 8.6 % | 518 of 535 leaf samples are inside `mse_sum_batch_packed` (worker-side buffer/SIMD moves in `neat-core`); only 17 / 10 868 samples come from our `score_from_creature_dir` closure (`pending.extend_from_slice`). | **#38** / **#39** address the tiny scorer-side portion; the larger share is `neat-core` territory — not in scope for these sub-issues. |
+| 5 | `DYLD-STUB$$tanhf` | 4.3 % | 7.5 % | PLT trampoline for `tanhf`. Part of (1). | Same as (1). |
+
+### Cross-scenario findings
+
+* **Scheduler idle is high on single-creature (66.8 % of wall-clock).** The
+  default activation-parallelism fan-out is too aggressive for workloads of
+  this shape (8→8→2, 2 GiB corpus). Most Rayon workers spend the run sleeping
+  in `swtch_pri` / `__psynch_mutexwait`. **#41** flattens multi-creature
+  nesting but does not directly address single-creature over-parallelism.
+  **New follow-up suggestion:** raise the `effective_workers > 1` threshold
+  in `stream_score::accumulate_mse_sum_forward_only_fused` (or scale workers
+  with `n_records`) so small/fast batches stay single-threaded. Captured for
+  tracking alongside the other sub-issues.
+* **`tanhf` dominates active CPU time in both scenarios (27.9 % / 33.1 %).**
+  None of #38–#42 targets activation. Options: vectorised SIMD TANH, a
+  `tanh` polynomial approximation flag on the squash path, or moving to a
+  cheaper squash where the creature schema allows. This is a `neat-core`
+  concern — suggested **new follow-up** to open against NEAT-AI-core.
+* **Per-worker creature recompilation (#42) is not visible in the steady-state
+  flamegraph.** `compile_creature` is called a fixed number of times at
+  start-up and does not appear in the top-25 leaf or inclusive lists. The
+  optimisation is still worthwhile for latency (cold-start) but will not
+  shift the steady-state numbers recorded here.
+* **Re-profile after each sub-issue lands** and overwrite `single-creature.svg`
+  / `multi-creature.svg` — the Hot spots table above is expected to re-order
+  once the memmove-heavy frames are gone.
+
 ## Refreshing the baseline
 
 1. Run `./scripts/run-benches.sh` (default fixture) and record the median +
