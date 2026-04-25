@@ -8,6 +8,10 @@ description = "Native CLI binary for scoring NEAT-AI creatures against training 
 [lints]
 workspace = true
 
+[lib]
+name = "rust_scorer"
+path = "src/lib.rs"
+
 [[bin]]
 name = "rust_scorer"
 path = "src/main.rs"
@@ -15,6 +19,15 @@ path = "src/main.rs"
 [[bin]]
 name = "float_scan_bench"
 path = "src/bin/float_scan_bench.rs"
+
+# Criterion bench harness — see `benches/scoring.rs` and
+# `docs/performance-baseline.md`. Not wired into `quality.sh` (Criterion runs
+# are slow and non-deterministic enough to be unsuitable as a merge gate);
+# reproduce with `./scripts/run-benches.sh` or `cargo bench -p rust_scorer`.
+[[bench]]
+name = "scoring"
+path = "benches/scoring.rs"
+harness = false
 
 [dependencies]
 # Path relative to this file: `NEAT-AI-scorer/rust_scorer` → sibling `NEAT-AI-core/neat-core`.
@@ -30,3 +43,4 @@ rayon = "1.12"
 
 [dev-dependencies]
 tempfile = "3"
+criterion = { version = "0.8", features = ["html_reports"] }

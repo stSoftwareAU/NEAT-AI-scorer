@@ -220,6 +220,29 @@ where one exists. The policy — minimum majors, tracked Node 20 exceptions
 script so any workflow that adds an unpinned or outdated `uses:` reference
 fails the local gate before CI (Issue #24).
 
+## How to bench
+
+`rust_scorer` ships a Criterion suite (Issue #36) covering the forward-only
+fused path, the multi-creature directory mode, and the inner unpack + MSE
+loop. The bench is **not** part of `quality.sh` — Criterion runs are slow and
+not deterministic enough for a merge gate. Reproduce the baseline with:
+
+```bash
+./scripts/run-benches.sh
+```
+
+Or, for the issue's 50–200 MB target corpus:
+
+```bash
+BENCH_SCORING_BYTES=200000000 ./scripts/run-benches.sh
+```
+
+Tunables (all optional): `BENCH_SCORING_BYTES`, `BENCH_SCORING_INPUTS`,
+`BENCH_SCORING_OUTPUTS`, `BENCH_SCORING_HIDDEN`. Recorded baselines and
+host-specific numbers live in [`docs/performance-baseline.md`](docs/performance-baseline.md).
+Per `AGENTS.md`, performance PRs without before/after Criterion evidence are
+rejected.
+
 ## License
 
 Apache-2.0 — see `LICENSE`.
