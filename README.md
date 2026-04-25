@@ -90,6 +90,8 @@ In directory mode, output is a top-level object keyed by creature filename stem,
 
 This mode uses one shared training-data scan and parallelises scoring across creatures to use available CPU cores by default.
 
+Per-chunk activation runs through a single flat Rayon layer (Issue #41): a worker network pool sized to `activation_threads` is built up-front, and every chunk dispatches one `par_iter_mut` over that pool. When the population meets or exceeds `activation_threads` each creature owns one worker; below that, the thread budget is spread across creatures so a small population still saturates the CPU. The JSON output keeps the same shape — `parallelActivationBatches` and `maxActivationBatchRecords` are not emitted in directory mode.
+
 For forward-only single-creature fused scoring, activation parallelism also
 defaults to all available CPU cores. Set `NEAT_SCORER_ACTIVATION_THREADS` only
 when you want to tune down/up manually.

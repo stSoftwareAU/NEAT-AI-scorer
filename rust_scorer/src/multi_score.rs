@@ -3,9 +3,28 @@
 //! This path loads `*.json` creatures from a directory, validates they can be
 //! scored together, then scans the training corpus exactly once and evaluates
 //! all creatures in parallel across threads.
+//!
+//! ## Parallelism (Issue #41)
+//!
+//! Each chunk of training records is scored through a single flat `par_iter`
+//! over a precomputed pool of worker networks, sized so total parallelism
+//! equals `activation_threads`. There is exactly one Rayon parallel layer in
+//! the per-chunk hot loop:
+//!
+//! - When `loaded.len() >= activation_threads`, every creature owns one
+//!   worker network and the par_iter has `loaded.len()` items.
+//! - When `loaded.len() < activation_threads`, the `activation_threads` budget
+//!   is distributed across creatures (`base + 1` workers for the first
+//!   `rem` creatures), and each chunk's records are partitioned into one
+//!   slice per worker so the par_iter still has `activation_threads` items.
+//!
+//! Earlier revisions ran an outer `par_iter_mut` over creatures and an inner
+//! `par_iter_mut` over per-creature worker networks, which oversubscribed the
+//! global Rayon pool with `creatures × workers` tasks.
 
 use std::collections::BTreeMap;
 use std::fs;
+use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
@@ -28,7 +47,6 @@ struct LoadedCreature {
     key: String,
     path: PathBuf,
     creature: CreatureExport,
-    networks: Vec<CompiledNetwork>,
 }
 
 fn compact_pending_if_needed(pending: &mut Vec<u8>, head: &mut usize) {
@@ -79,14 +97,15 @@ fn unpack_f32s_le(src: &[u8], dst: &mut Vec<f32>, n: usize) {
     }
 }
 
-fn partition_packed_records(
-    records: &[f32],
+/// Partition `n_records` packed records into `workers` ranges over the
+/// flat float buffer. Each returned range is a half-open `[start, end)` over
+/// the f32 slice. `workers` must be in `[1, n_records]`.
+fn partition_packed_record_ranges(
     values_per_record: usize,
     n_records: usize,
     workers: usize,
-) -> Vec<&[f32]> {
+) -> Vec<Range<usize>> {
     debug_assert!(workers > 0 && workers <= n_records);
-    debug_assert_eq!(records.len(), n_records * values_per_record);
     let base = n_records / workers;
     let rem = n_records % workers;
     let mut out = Vec::with_capacity(workers);
@@ -95,7 +114,7 @@ fn partition_packed_records(
         let take = base + usize::from(w < rem);
         let start = record_off * values_per_record;
         let end = (record_off + take) * values_per_record;
-        out.push(&records[start..end]);
+        out.push(start..end);
         record_off += take;
     }
     out
@@ -161,14 +180,10 @@ fn load_creatures_from_dir(creatures_dir: &Path) -> Result<Vec<LoadedCreature>, 
             ));
         }
 
-        let network = compile_creature(&creature)
-            .map_err(|e| format!("Failed compiling creature '{}': {e}", path.display()))?;
-
         loaded.push(LoadedCreature {
             key,
             path,
             creature,
-            networks: vec![network],
         });
     }
 
@@ -193,12 +208,30 @@ fn load_creatures_from_dir(creatures_dir: &Path) -> Result<Vec<LoadedCreature>, 
     Ok(loaded)
 }
 
+/// Compute per-creature worker counts so total parallelism is approximately
+/// `activation_threads`. When `loaded.len() >= activation_threads` each
+/// creature gets exactly one worker (the inner record split is dropped); when
+/// `loaded.len() < activation_threads` the budget is spread across creatures
+/// so total worker count equals `activation_threads`.
+fn workers_per_creature(n_creatures: usize, activation_threads: usize) -> Vec<usize> {
+    debug_assert!(n_creatures > 0);
+    let threads = activation_threads.max(1);
+    if n_creatures >= threads {
+        return vec![1; n_creatures];
+    }
+    let base = threads / n_creatures;
+    let rem = threads % n_creatures;
+    (0..n_creatures)
+        .map(|i| (base + usize::from(i < rem)).max(1))
+        .collect()
+}
+
 pub fn score_from_creature_dir(
     creatures_dir: &Path,
     data_path: &Path,
 ) -> Result<BTreeMap<String, ScoreResult>, String> {
     let started = Instant::now();
-    let mut loaded = load_creatures_from_dir(creatures_dir)?;
+    let loaded = load_creatures_from_dir(creatures_dir)?;
 
     if !data_path.is_dir() {
         return Err(format!(
@@ -233,22 +266,41 @@ pub fn score_from_creature_dir(
     let training_read_backend = training_read_backend_label().to_string();
     let activation_threads = activation_worker_count_for_scorer();
 
-    // Deeper parallelism: split each creature's chunk work across multiple worker
-    // networks. Budget scales with CPU count and population size.
-    let per_creature_workers = activation_threads.div_ceil(loaded.len()).max(1);
-    if per_creature_workers > 1 {
-        for loaded_creature in &mut loaded {
-            loaded_creature.networks.reserve(per_creature_workers - 1);
-            for _ in 1..per_creature_workers {
-                loaded_creature.networks.push(
-                    compile_creature(&loaded_creature.creature).map_err(|e| {
-                        format!(
-                            "Failed compiling worker network for creature '{}': {e}",
-                            loaded_creature.path.display()
-                        )
-                    })?,
-                );
-            }
+    // Issue #41: build a flat pool of worker networks sized to
+    // `activation_threads`. Each chunk runs a single `par_iter_mut` over this
+    // pool — no nested Rayon — so the global thread pool sees at most
+    // `activation_threads` concurrent activation tasks regardless of
+    // population size.
+    let workers_per = workers_per_creature(loaded.len(), activation_threads);
+    let total_workers: usize = workers_per.iter().sum();
+
+    // Prefix-sum offsets: worker i for creature c lives at
+    // `flat_networks[worker_offsets[c] + i]`.
+    let mut worker_offsets: Vec<usize> = Vec::with_capacity(loaded.len() + 1);
+    let mut acc = 0usize;
+    worker_offsets.push(0);
+    for &w in &workers_per {
+        acc += w;
+        worker_offsets.push(acc);
+    }
+
+    // Reverse map: each worker → its owning creature index.
+    let mut worker_creature_idx: Vec<usize> = Vec::with_capacity(total_workers);
+    for (ci, &w) in workers_per.iter().enumerate() {
+        for _ in 0..w {
+            worker_creature_idx.push(ci);
+        }
+    }
+
+    let mut flat_networks: Vec<CompiledNetwork> = Vec::with_capacity(total_workers);
+    for (ci, c) in loaded.iter().enumerate() {
+        for _ in 0..workers_per[ci] {
+            flat_networks.push(compile_creature(&c.creature).map_err(|e| {
+                format!(
+                    "Failed compiling worker network for creature '{}': {e}",
+                    c.path.display()
+                )
+            })?);
         }
     }
 
@@ -257,6 +309,64 @@ pub fn score_from_creature_dir(
     let mut unpack_floats: Vec<f32> = Vec::new();
     let mut total_records = 0_usize;
     let mut total_mse = vec![0.0_f64; loaded.len()];
+    // Reused per-chunk buffers — populated inside `score_chunk`.
+    let mut work_ranges: Vec<Option<Range<usize>>> = vec![None; total_workers];
+    let mut worker_sums: Vec<f64> = vec![0.0; total_workers];
+
+    let mut score_chunk = |floats: &[f32], n_records: usize| -> Result<(), String> {
+        if floats.len() != n_records * values_per_record {
+            return Err("Internal float unpack length mismatch".to_string());
+        }
+        total_records += n_records;
+
+        // Reset per-chunk scratch: ranges default to "no work" so workers
+        // whose creature has fewer records than nominal worker count idle.
+        for slot in work_ranges.iter_mut() {
+            *slot = None;
+        }
+
+        // Fill work_ranges per creature.
+        for (ci, &nominal_w) in workers_per.iter().enumerate() {
+            let off = worker_offsets[ci];
+            let actual_w = nominal_w.min(n_records).max(1);
+            if actual_w == 1 {
+                work_ranges[off] = Some(0..floats.len());
+            } else {
+                let ranges = partition_packed_record_ranges(values_per_record, n_records, actual_w);
+                for (j, r) in ranges.into_iter().enumerate() {
+                    work_ranges[off + j] = Some(r);
+                }
+            }
+        }
+
+        // Single flat par_iter over the worker pool — this is the only
+        // Rayon parallel layer in the per-chunk hot path (Issue #41).
+        flat_networks
+            .par_iter_mut()
+            .zip(worker_sums.par_iter_mut())
+            .enumerate()
+            .for_each(|(worker_idx, (net, sum))| {
+                if let Some(range) = &work_ranges[worker_idx] {
+                    *sum = mse_sum_batch_packed(
+                        net,
+                        &floats[range.clone()],
+                        num_inputs,
+                        num_outputs,
+                        true,
+                    );
+                } else {
+                    *sum = 0.0;
+                }
+            });
+
+        // Reduce per-worker sums into per-creature totals (sequential —
+        // total_workers ≤ activation_threads, so this is cheap).
+        for (worker_idx, &s) in worker_sums.iter().enumerate() {
+            total_mse[worker_creature_idx[worker_idx]] += s;
+        }
+
+        Ok(())
+    };
 
     for_each_read_chunk(&bin_files, fused_read_buf_len, |chunk| {
         // Fast path: when nothing is buffered, score the aligned prefix of
@@ -269,42 +379,7 @@ pub fn score_from_creature_dir(
                 let num_f32 = aligned_len / 4;
                 let n_records = aligned_len / record_bytes;
                 unpack_f32s_le(&chunk[..aligned_len], &mut unpack_floats, num_f32);
-
-                if unpack_floats.len() != n_records * values_per_record {
-                    return Err("Internal float unpack length mismatch".to_string());
-                }
-                total_records += n_records;
-
-                loaded
-                    .par_iter_mut()
-                    .zip(total_mse.par_iter_mut())
-                    .for_each(|(loaded_creature, mse_sum)| {
-                        let worker_count = loaded_creature.networks.len().min(n_records).max(1);
-                        let chunk_sum = if worker_count > 1 {
-                            let slices = partition_packed_records(
-                                &unpack_floats,
-                                values_per_record,
-                                n_records,
-                                worker_count,
-                            );
-                            loaded_creature.networks[..worker_count]
-                                .par_iter_mut()
-                                .zip(slices)
-                                .map(|(net, slice)| {
-                                    mse_sum_batch_packed(net, slice, num_inputs, num_outputs, true)
-                                })
-                                .sum()
-                        } else {
-                            mse_sum_batch_packed(
-                                &mut loaded_creature.networks[0],
-                                &unpack_floats,
-                                num_inputs,
-                                num_outputs,
-                                true,
-                            )
-                        };
-                        *mse_sum += chunk_sum;
-                    });
+                score_chunk(&unpack_floats, n_records)?;
             }
             if aligned_len < chunk.len() {
                 pending.extend_from_slice(&chunk[aligned_len..]);
@@ -331,42 +406,7 @@ pub fn score_from_creature_dir(
             let n_records = complete_len / record_bytes;
             let slice = &pending[head..head + complete_len];
             unpack_f32s_le(slice, &mut unpack_floats, num_f32);
-
-            if unpack_floats.len() != n_records * values_per_record {
-                return Err("Internal float unpack length mismatch".to_string());
-            }
-            total_records += n_records;
-
-            loaded
-                .par_iter_mut()
-                .zip(total_mse.par_iter_mut())
-                .for_each(|(loaded_creature, mse_sum)| {
-                    let worker_count = loaded_creature.networks.len().min(n_records).max(1);
-                    let chunk_sum = if worker_count > 1 {
-                        let slices = partition_packed_records(
-                            &unpack_floats,
-                            values_per_record,
-                            n_records,
-                            worker_count,
-                        );
-                        loaded_creature.networks[..worker_count]
-                            .par_iter_mut()
-                            .zip(slices)
-                            .map(|(net, slice)| {
-                                mse_sum_batch_packed(net, slice, num_inputs, num_outputs, true)
-                            })
-                            .sum()
-                    } else {
-                        mse_sum_batch_packed(
-                            &mut loaded_creature.networks[0],
-                            &unpack_floats,
-                            num_inputs,
-                            num_outputs,
-                            true,
-                        )
-                    };
-                    *mse_sum += chunk_sum;
-                });
+            score_chunk(&unpack_floats, n_records)?;
 
             head += complete_len;
         }
@@ -435,4 +475,59 @@ pub fn score_from_creature_dir(
     }
 
     Ok(results)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn workers_per_creature_one_per_when_population_meets_threads() {
+        // N >= activation_threads → each creature gets exactly one worker.
+        assert_eq!(workers_per_creature(8, 8), vec![1; 8]);
+        assert_eq!(workers_per_creature(50, 8), vec![1; 50]);
+        assert_eq!(workers_per_creature(200, 10), vec![1; 200]);
+    }
+
+    #[test]
+    fn workers_per_creature_distributes_remainder_when_population_below_threads() {
+        // 8 threads / 3 creatures → base=2, rem=2 → [3, 3, 2]; sum == 8.
+        let w = workers_per_creature(3, 8);
+        assert_eq!(w, vec![3, 3, 2]);
+        assert_eq!(w.iter().sum::<usize>(), 8);
+
+        // 10 threads / 4 creatures → base=2, rem=2 → [3, 3, 2, 2]; sum == 10.
+        let w = workers_per_creature(4, 10);
+        assert_eq!(w, vec![3, 3, 2, 2]);
+        assert_eq!(w.iter().sum::<usize>(), 10);
+    }
+
+    #[test]
+    fn workers_per_creature_single_creature_takes_all_threads() {
+        assert_eq!(workers_per_creature(1, 1), vec![1]);
+        assert_eq!(workers_per_creature(1, 8), vec![8]);
+        assert_eq!(workers_per_creature(1, 200), vec![200]);
+    }
+
+    #[test]
+    fn workers_per_creature_clamps_zero_threads_to_one() {
+        // Defensive: activation_threads should already be >=1 from the
+        // env parser, but a zero must not produce zero workers.
+        assert_eq!(workers_per_creature(3, 0), vec![1, 1, 1]);
+    }
+
+    #[test]
+    fn partition_packed_record_ranges_covers_full_buffer_with_no_overlap() {
+        // 7 records / 3 workers → [3, 2, 2]; ranges should tile [0, 7*vpr).
+        let vpr = 4;
+        let ranges = partition_packed_record_ranges(vpr, 7, 3);
+        assert_eq!(ranges.len(), 3);
+        // Concatenated lengths = 7*vpr; each starts at the previous end.
+        assert_eq!(ranges[0].start, 0);
+        assert_eq!(ranges[0].end, 3 * vpr);
+        assert_eq!(ranges[1].start, 3 * vpr);
+        assert_eq!(ranges[1].end, 5 * vpr);
+        assert_eq!(ranges[2].start, 5 * vpr);
+        assert_eq!(ranges[2].end, 7 * vpr);
+    }
 }
