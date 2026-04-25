@@ -182,6 +182,77 @@ pub fn accumulate_mse_sum_forward_only_fused(
     let mut max_records_per_activation_batch = 0_usize;
 
     for_each_read_chunk(bin_files, read_buf_len, |chunk| {
+        // Fast path: when nothing is buffered, score the aligned prefix of
+        // `chunk` directly and only copy any trailing fragment into `pending`.
+        // Saves a full memcpy through `pending` on the common path where the
+        // read buffer is a whole-record multiple. Issue #38.
+        if pending.is_empty() && head == 0 && !chunk.is_empty() {
+            let aligned_len = (chunk.len() / record_bytes) * record_bytes;
+            if aligned_len > 0 {
+                let num_f32 = aligned_len / 4;
+                let n_records = aligned_len / record_bytes;
+                max_records_per_activation_batch = max_records_per_activation_batch.max(n_records);
+                unpack_f32s_le(&chunk[..aligned_len], &mut unpack_floats, num_f32);
+
+                if unpack_floats.len() != n_records * values_per_record {
+                    return Err("Internal float unpack length mismatch".to_string());
+                }
+
+                total_records += n_records;
+                let chunk_sum = match &mut parallel_networks {
+                    Some(nets) => {
+                        let effective_workers = worker_count.min(n_records).max(1);
+                        if effective_workers > 1 {
+                            parallel_activation_batches += 1;
+                            let slices = partition_packed_records(
+                                &unpack_floats,
+                                values_per_record,
+                                n_records,
+                                effective_workers,
+                            );
+                            nets[..effective_workers]
+                                .par_iter_mut()
+                                .zip(slices)
+                                .map(|(net, slice)| {
+                                    mse_sum_batch_packed(
+                                        net,
+                                        slice,
+                                        config.num_inputs,
+                                        config.num_outputs,
+                                        true,
+                                    )
+                                })
+                                .sum()
+                        } else {
+                            mse_sum_batch_packed(
+                                network,
+                                &unpack_floats,
+                                config.num_inputs,
+                                config.num_outputs,
+                                true,
+                            )
+                        }
+                    }
+                    None => mse_sum_batch_packed(
+                        network,
+                        &unpack_floats,
+                        config.num_inputs,
+                        config.num_outputs,
+                        true,
+                    ),
+                };
+                total_mse_sum += chunk_sum;
+            }
+            if aligned_len < chunk.len() {
+                // Buffer only the trailing fragment for the next call.
+                pending.extend_from_slice(&chunk[aligned_len..]);
+                // `head` stays at 0.
+            }
+            return Ok(());
+        }
+
+        // Slow path: residual bytes are buffered in `pending`; merge the new
+        // chunk and consume whole records from the head.
         if !chunk.is_empty() {
             pending.extend_from_slice(chunk);
         }
@@ -250,6 +321,16 @@ pub fn accumulate_mse_sum_forward_only_fused(
             total_mse_sum += chunk_sum;
             head += complete_len;
         }
+
+        // Drop fully-consumed `pending` so the next iteration can take the
+        // fast path again. After the loop `head` may equal `pending.len()`
+        // (no trailing fragment); resetting both keeps `pending.is_empty()`
+        // true and avoids a wasteful compact next time round.
+        if head == pending.len() {
+            pending.clear();
+            head = 0;
+        }
+
         Ok(())
     })?;
 
