@@ -171,9 +171,9 @@ fn fixture() -> &'static Fixture {
 
         // Multi-creature root with a fixed pool of identical creatures; per-N
         // sub-directories are materialised lazily by the directory benchmark.
-        let pool_size = 50;
+        let pool_size = 200;
         for n in 0..pool_size {
-            fs::write(creatures_root.join(format!("creature-{n:02}.json")), &json).unwrap();
+            fs::write(creatures_root.join(format!("creature-{n:03}.json")), &json).unwrap();
         }
 
         write_synthetic_bin(&data_dir, num_inputs, num_outputs, total_bytes);
@@ -226,7 +226,7 @@ fn bench_score_from_creature_dir(c: &mut Criterion) {
     group.measurement_time(Duration::from_secs(15));
     group.throughput(Throughput::Bytes(fix.total_bytes as u64));
 
-    for &n in &[10_usize, 50_usize] {
+    for &n in &[1_usize, 10_usize, 50_usize, 200_usize] {
         // Materialise an N-creature sub-directory by copying from the pool.
         let sub_dir = fix
             .creatures_root
@@ -236,8 +236,8 @@ fn bench_score_from_creature_dir(c: &mut Criterion) {
         if !sub_dir.exists() {
             fs::create_dir_all(&sub_dir).unwrap();
             for i in 0..n {
-                let src = fix.creatures_root.join(format!("creature-{i:02}.json"));
-                let dst = sub_dir.join(format!("creature-{i:02}.json"));
+                let src = fix.creatures_root.join(format!("creature-{i:03}.json"));
+                let dst = sub_dir.join(format!("creature-{i:03}.json"));
                 fs::copy(&src, &dst).expect("copy creature");
             }
         }
