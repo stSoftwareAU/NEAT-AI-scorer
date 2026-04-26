@@ -6,14 +6,17 @@
 //!
 //! Optional **multi-threaded activation** for large in-memory batches (forward-only only):
 //! set **`NEAT_SCORER_ACTIVATION_THREADS`** to a value `> 1` (clamped to 64). Each worker owns
-//! its own [`CompiledNetwork`], (re)built via [`neat_core::creature::compile_creature`] from the
-//! shared [`CreatureExport`], so activations stay independent. Any batch with at least two whole
-//! records may be split across workers (very small batches still pay Rayon scheduling cost).
-//! Summation order may differ slightly (floating-point). JSON **`parallelActivationBatches`**
-//! counts how many batches actually used Rayon.
+//! its own [`CompiledNetwork`]; the caller-supplied template network is cloned once per
+//! additional worker so activation/hint/trace scratch buffers stay independent without paying
+//! a second `compile_creature` cost (Issue #42 — `CompiledNetwork: Clone` landed upstream).
+//! Any batch with at least two whole records may be split across workers (very small batches
+//! still pay Rayon scheduling cost). Summation order may differ slightly (floating-point).
+//! JSON **`parallelActivationBatches`** counts how many batches actually used Rayon.
+
+use std::time::Instant;
 
 use crate::read_tuning::{MAX_READ_BYTES, training_read_target_bytes_from_env};
-use neat_core::creature::{CreatureExport, compile_creature};
+use neat_core::creature::CreatureExport;
 use neat_core::loss::mse_sum_batch_packed;
 use neat_core::network::CompiledNetwork;
 use neat_core::training_bin_stream::for_each_read_chunk;
@@ -140,16 +143,18 @@ fn compact_pending_if_needed(pending: &mut Vec<u8>, head: &mut usize) {
 
 /// Accumulate fused MSE sums over all `.bin` files using env-tuned chunked reads.
 ///
-/// Returns `(mse_sum, record_count, parallel_activation_batches, max_records_per_batch)`.
-/// The last value is the largest `n_records` seen in one activation call (diagnostic: if it stays
-/// `1` while `parallel_activation_batches` is `0`, each read chunk holds at most one full record —
-/// raise **`NEAT_SCORER_READ_BYTES`** so multiple records fit in `pending` at once).
+/// Returns `(mse_sum, record_count, parallel_activation_batches, max_records_per_batch, clone_time_secs)`.
+/// `clone_time_secs` covers any per-worker `CompiledNetwork` clones for activation parallelism
+/// (always `0.0` when `activation_threads <= 1`). The fourth value is the largest `n_records`
+/// seen in one activation call (diagnostic: if it stays `1` while `parallel_activation_batches`
+/// is `0`, each read chunk holds at most one full record — raise **`NEAT_SCORER_READ_BYTES`**
+/// so multiple records fit in `pending` at once).
 pub fn accumulate_mse_sum_forward_only_fused(
     bin_files: &[std::path::PathBuf],
     config: &TrainingDataConfig,
-    creature: &CreatureExport,
+    _creature: &CreatureExport,
     network: &mut CompiledNetwork,
-) -> Result<(f64, usize, usize, usize), String> {
+) -> Result<(f64, usize, usize, usize, f64), String> {
     let record_bytes = config.bytes_per_record();
     if record_bytes == 0 {
         return Err("Invalid record byte length (zero)".to_string());
@@ -160,17 +165,26 @@ pub fn accumulate_mse_sum_forward_only_fused(
     let read_buf_len = effective_fused_read_buf_len(record_bytes, target_read_bytes);
 
     // For multi-threaded activation, each worker needs an independent `CompiledNetwork`
-    // (separate activation/hint/trace buffers). Re-compile from the shared creature export
-    // rather than relying on `CompiledNetwork: Clone` (NEAT-AI-core#11 — not yet landed).
+    // (separate activation/hint/trace buffers). `CompiledNetwork: Clone` landed upstream
+    // (NEAT-AI-core#11), so we now clone the caller-supplied template once per extra worker
+    // instead of paying a second `compile_creature` per thread (Issue #42).
     let worker_count = activation_worker_count_for_scorer();
+    let clone_started = Instant::now();
     let mut parallel_networks: Option<Vec<CompiledNetwork>> = if worker_count > 1 {
         let mut nets = Vec::with_capacity(worker_count);
-        for _ in 0..worker_count {
-            nets.push(compile_creature(creature)?);
+        // Reuse the caller-supplied compiled network as the first worker; clone for the rest.
+        nets.push(network.clone());
+        for _ in 1..worker_count {
+            nets.push(network.clone());
         }
         Some(nets)
     } else {
         None
+    };
+    let clone_time_secs = if worker_count > 1 {
+        clone_started.elapsed().as_secs_f64()
+    } else {
+        0.0
     };
 
     let mut pending: Vec<u8> = Vec::new();
@@ -346,6 +360,7 @@ pub fn accumulate_mse_sum_forward_only_fused(
         total_records,
         parallel_activation_batches,
         max_records_per_activation_batch,
+        clone_time_secs,
     ))
 }
 

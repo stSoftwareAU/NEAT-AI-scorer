@@ -226,6 +226,10 @@ fn bench_score_from_creature_dir(c: &mut Criterion) {
     group.measurement_time(Duration::from_secs(15));
     group.throughput(Throughput::Bytes(fix.total_bytes as u64));
 
+    // Issue #42: directory-mode start-up was dominated by per-worker
+    // `compile_creature` calls (population × `activation_threads`). Sweep the
+    // same population sizes we benchmarked in #36 so the before/after
+    // numbers stay comparable.
     for &n in &[1_usize, 10_usize, 50_usize, 200_usize] {
         // Materialise an N-creature sub-directory by copying from the pool.
         let sub_dir = fix

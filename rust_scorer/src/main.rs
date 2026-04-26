@@ -139,7 +139,9 @@ fn score_from_json(creature_json: &str, data_path: &Path) -> Result<ScoreResult,
         return Err("Creature JSON must set positive input and output counts".to_string());
     }
 
+    let compile_started = Instant::now();
     let mut network = compile_creature(&creature)?;
+    let mut compile_time_secs = compile_started.elapsed().as_secs_f64();
     let num_outputs = creature.output;
 
     if !data_path.is_dir() {
@@ -178,7 +180,7 @@ fn score_from_json(creature_json: &str, data_path: &Path) -> Result<ScoreResult,
 
     let (total_error, record_count, parallel_activation_batches, max_activation_batch_records) =
         if use_fused_stream {
-            let (mse_sum, count, parallel_batches, max_batch) =
+            let (mse_sum, count, parallel_batches, max_batch, clone_secs) =
                 stream_score::accumulate_mse_sum_forward_only_fused(
                     &bin_files,
                     &config,
@@ -188,6 +190,8 @@ fn score_from_json(creature_json: &str, data_path: &Path) -> Result<ScoreResult,
             if count == 0 {
                 return Err("No training records found".to_string());
             }
+            // Per-worker clones run inside the fused accumulator; bundle them into compile time.
+            compile_time_secs += clone_secs;
             (mse_sum, count, parallel_batches, max_batch)
         } else {
             let mut iter = TrainingDataIterator::new(data_path, config.clone())
@@ -263,6 +267,7 @@ fn score_from_json(creature_json: &str, data_path: &Path) -> Result<ScoreResult,
         max_activation_batch_records: activation_threads
             .and_then(|n| (n > 1).then_some(max_activation_batch_records)),
         time_taken_secs: started.elapsed().as_secs_f64(),
+        compile_time_secs: Some(compile_time_secs),
     })
 }
 
@@ -528,6 +533,7 @@ mod tests {
             parallel_activation_batches: Some(1204),
             max_activation_batch_records: Some(2609),
             time_taken_secs: 1.25,
+            compile_time_secs: Some(0.01),
         };
         let json = serde_json::to_string_pretty(&result).unwrap();
         // Verify camelCase keys in output
@@ -544,6 +550,7 @@ mod tests {
         assert!(json.contains("\"activationThreads\""));
         assert!(json.contains("\"parallelActivationBatches\""));
         assert!(json.contains("\"maxActivationBatchRecords\""));
+        assert!(json.contains("\"compileTimeSecs\""));
     }
 
     /// Stdin mode must yield the same `ScoreResult` as the default file mode.
