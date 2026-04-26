@@ -224,6 +224,10 @@ pub struct ScoreResult {
     /// Wall-clock seconds for the full scoring run (read creature, compile, evaluate data).
     #[serde(rename = "timeTaken")]
     pub time_taken_secs: f64,
+    /// Wall-clock seconds spent in `compile_creature` (and any per-worker clone) before scoring.
+    /// Issue #42: useful for diagnosing how much of `timeTaken` is fixed startup vs scoring.
+    #[serde(rename = "compileTimeSecs", skip_serializing_if = "Option::is_none")]
+    pub compile_time_secs: Option<f64>,
 }
 
 #[cfg(test)]

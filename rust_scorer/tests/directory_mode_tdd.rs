@@ -171,6 +171,65 @@ fn directory_mode_record_aligned_fast_path_matches_slow_path() {
     }
 }
 
+/// Issue #42: directory mode used to call `compile_creature` once per
+/// (creature × worker) pair — for a 2-creature run on a 16-CPU host that is
+/// 32 compiles before any scoring runs. After the fix each creature is
+/// compiled exactly once and the resulting `CompiledNetwork` is cloned for
+/// any additional workers, so:
+///
+/// 1. `compileTimeSecs` must appear in the JSON for every creature, and
+/// 2. it must be tightly bounded — well under the wall-clock budget that the
+///    old "compile per worker" loop required for an even slightly non-trivial
+///    creature.
+#[test]
+fn directory_mode_emits_compile_time_secs() {
+    let bin = env!("CARGO_BIN_EXE_rust_scorer");
+    let tmp = tempfile::tempdir().expect("create tempdir");
+    let creatures_dir = tmp.path().join("creatures");
+    let data_dir = tmp.path().join("data");
+    std::fs::create_dir(&creatures_dir).expect("create creatures dir");
+    std::fs::create_dir(&data_dir).expect("create data dir");
+
+    std::fs::write(creatures_dir.join("a.json"), minimal_creature(1, 1, true)).expect("write a");
+    std::fs::write(creatures_dir.join("b.json"), minimal_creature(1, 1, true)).expect("write b");
+    write_training_data(&data_dir, &[(vec![0.5], vec![0.5]), (vec![1.0], vec![1.0])]);
+
+    let output = Command::new(bin)
+        .arg(&creatures_dir)
+        .arg(&data_dir)
+        .output()
+        .expect("spawn scorer");
+    assert!(
+        output.status.success(),
+        "directory mode should succeed, stderr:\n{}",
+        String::from_utf8_lossy(&output.stderr),
+    );
+
+    let parsed: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("directory mode output JSON");
+
+    for key in ["a", "b"] {
+        let entry = parsed
+            .get(key)
+            .unwrap_or_else(|| panic!("missing key {key}"));
+        let compile_secs = entry
+            .get("compileTimeSecs")
+            .and_then(|v| v.as_f64())
+            .unwrap_or_else(|| panic!("compileTimeSecs missing for {key}"));
+        assert!(
+            compile_secs >= 0.0,
+            "compileTimeSecs must be non-negative for {key}, got {compile_secs}",
+        );
+        // Defensive upper bound: a single tiny-creature compile + clone is
+        // sub-millisecond on every supported host. If the per-worker
+        // recompile regresses, this will balloon well past the cap.
+        assert!(
+            compile_secs < 1.0,
+            "compileTimeSecs unexpectedly large for {key}: {compile_secs}s",
+        );
+    }
+}
+
 #[test]
 fn directory_mode_rejects_forward_only_false() {
     let bin = env!("CARGO_BIN_EXE_rust_scorer");

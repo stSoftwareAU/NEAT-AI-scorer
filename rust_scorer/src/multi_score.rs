@@ -292,17 +292,28 @@ pub fn score_from_creature_dir(
         }
     }
 
+    // Issue #42: compile each creature exactly once; clone the resulting
+    // `CompiledNetwork` for any additional workers. `CompiledNetwork: Clone`
+    // landed upstream (NEAT-AI-core#11), so a clone is functionally equivalent
+    // to a second `compile_creature` call but skips JSON-graph traversal,
+    // UUID resolution, and topological ordering. For 50 creatures × 16
+    // workers this collapses 800 compiles into 50.
+    let compile_started = Instant::now();
     let mut flat_networks: Vec<CompiledNetwork> = Vec::with_capacity(total_workers);
     for (ci, c) in loaded.iter().enumerate() {
-        for _ in 0..workers_per[ci] {
-            flat_networks.push(compile_creature(&c.creature).map_err(|e| {
-                format!(
-                    "Failed compiling worker network for creature '{}': {e}",
-                    c.path.display()
-                )
-            })?);
+        let template = compile_creature(&c.creature).map_err(|e| {
+            format!(
+                "Failed compiling worker network for creature '{}': {e}",
+                c.path.display()
+            )
+        })?;
+        let workers = workers_per[ci];
+        for _ in 0..workers.saturating_sub(1) {
+            flat_networks.push(template.clone());
         }
+        flat_networks.push(template);
     }
+    let compile_time_secs = compile_started.elapsed().as_secs_f64();
 
     let mut pending: Vec<u8> = Vec::new();
     let mut head: usize = 0;
@@ -470,6 +481,7 @@ pub fn score_from_creature_dir(
                 parallel_activation_batches: None,
                 max_activation_batch_records: None,
                 time_taken_secs: elapsed,
+                compile_time_secs: Some(compile_time_secs),
             },
         );
     }
