@@ -295,6 +295,90 @@ documented in the **"Hot spots"** section of
 script after each optimisation sub-issue lands and overwrite the SVGs so
 the hot-spot ordering stays honest.
 
+## Optimised release build (PGO) — Issue #43
+
+The default release profile already enables LTO and `codegen-units = 1`.
+**Profile-Guided Optimisation (PGO)** is the next compiler-level lever — a
+recorded profile of a real scoring run feeds back into `rustc` so hot loops
+get better inlining, branch prediction hints, and code layout. PGO often
+yields 5–15 % on numeric inner loops similar to `mse_sum_batch_packed`, and
+since `rust_scorer` is invoked many times per NEAT training run, even a few
+percent per call compounds.
+
+### One-shot build
+
+```bash
+./scripts/build-pgo.sh
+```
+
+The helper drives the standard manual `rustc` flow — no `cargo-pgo` install
+required:
+
+1. Generates a deterministic synthetic training fixture (Python).
+2. Builds an instrumented binary with `RUSTFLAGS="-Cprofile-generate=…"`
+   under the dedicated `pgo` Cargo profile (inherits `release`, keeps
+   `codegen-units = 1`).
+3. Runs the instrumented binary against the fixture in **single-creature**
+   mode and **directory** mode to gather `*.profraw` files.
+4. Merges them via `llvm-profdata merge`.
+5. Re-builds with `RUSTFLAGS="-Cprofile-use=…/merged.profdata"`.
+
+The final binary lands at `target/pgo/rust_scorer`. NEAT-AI can pick it up
+by overriding the scorer path in its launch config — the CLI contract
+(`<creature.json> <data_dir>`) is unchanged.
+
+### Prerequisites
+
+```bash
+rustup component add llvm-tools   # provides llvm-profdata
+# python3 is also required (used to materialise the training fixture)
+```
+
+`build-pgo.sh` auto-discovers `llvm-profdata` via `command -v` first and
+then falls back to `rustc --print sysroot`/`lib/rustlib`. Override with
+`LLVM_PROFDATA=/path/to/llvm-profdata` if needed.
+
+### Tunables
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `PGO_BYTES` | `104857600` (100 MB) | training corpus size for instrumentation |
+| `PGO_NUM_INPUTS` | `8` | inputs per record |
+| `PGO_NUM_OUTPUTS` | `2` | outputs per record |
+| `PGO_HIDDEN` | `8` | hidden neurons per synthetic creature |
+| `PGO_CREATURES` | `10` | creatures used for the directory-mode pass |
+| `PGO_PROFDATA_DIR` | `target/pgo-profiles` | where `*.profraw` and `merged.profdata` land |
+| `PGO_FIXTURE_DIR` | `target/pgo-fixture` | where the synthetic training fixture is materialised |
+
+### Benchmark evidence (Issue #43)
+
+Numbers below come from timing the same `rust_scorer` binary (release vs
+PGO) against an identical 300 MB fixture, 15 timed runs each (median /
+best, lower is better — Apple silicon, see
+`docs/evidence/pgo-bench-300mb.log`):
+
+| Scenario | release median | PGO median | Δ median |
+|---|---:|---:|---:|
+| `score_from_json_fused` (single-creature, 300 MB) | 447.6 ms | 407.7 ms | **−8.9 %** |
+| `score_from_creature_dir` (10 creatures, 300 MB) | 2079.2 ms | 1911.2 ms | **−8.1 %** |
+
+Both scoring paths beat the 3 % acceptance threshold from the issue. The
+gain is most reliable on the directory-mode path (more time spent inside
+the activation/MSE inner loops), and noisier on the small single-creature
+path where CLI start-up makes up a larger share of wall-clock time.
+
+Reproduce on your host by running `./scripts/build-pgo.sh` and then timing
+`target/release/rust_scorer` against `target/pgo/rust_scorer` over the
+fixture the helper wrote to `target/pgo-fixture/`.
+
+### CI
+
+Producing the PGO binary as a release artefact in CI requires committing a
+new workflow YAML, which the worker is not authorised to push (no
+`workflow` OAuth scope — see `AGENTS.md` "Human Escalation"). Run the
+helper locally for now, or have a maintainer wire `build-pgo.sh` into a
+manually triggered workflow under `.github/workflows/`.
+
 ## License
 
 Apache-2.0 — see `LICENSE`.
