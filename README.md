@@ -190,6 +190,48 @@ graph LR
 The graph is validated by `scripts/check-ci-job-graph.sh` (wired into
 `quality.sh`) and covered end-to-end by `tests/scripts/workflow_job_graph.bats`.
 
+### Pre-quality dependency bump (`bump-deps.sh`)
+
+`bump-deps.sh` lives at the repo root and is invoked by the Vibe Coder
+worker before `quality.sh` (per stSoftwareAU/VibeCoding#1613). It refreshes
+the Cargo dependency graph in four stages and prints a one-line summary:
+
+1. **Internal — NEAT-AI-core pin.** When any workspace member's `Cargo.toml`
+   pins `neat-core` to a `git+rev` SHA, the script resolves
+   `gh api repos/stSoftwareAU/NEAT-AI-core/commits/Develop --jq .sha` and
+   advances the `rev = "..."` field if it has moved. The default layout in
+   this repo uses a `path = "..."` sibling clone (see AGENTS.md), so this
+   step is a no-op unless someone switches to a `git+rev` pin.
+2. **External — crates.io.** Runs `cargo update --dry-run`, then for each
+   proposed bump checks the version's publish time against
+   `--quarantine-hours` (default `$VIBE_BUMP_QUARANTINE_HOURS` / 24h).
+   Versions younger than the quarantine window are deferred; older versions
+   are applied with `cargo update -p <crate> --precise <new>`.
+3. **`cargo audit`.** Fails non-zero on any reported advisory, naming the
+   offending crate and advisory ID.
+4. **`cargo build --release`.** Confirms the bumped tree compiles.
+
+Exit `0` means the tree is clean (or no-op); non-zero means a bump was
+rejected and the worker reverts. Override flags (`--skip-internal`,
+`--skip-external`, `--skip-audit`, `--skip-build`) and a hidden
+`--check-published` testing helper are documented under
+`./bump-deps.sh --help`. The script is covered by
+`tests/scripts/bump_deps.bats`.
+
+```mermaid
+flowchart LR
+    A[bump-deps.sh] --> B[Internal: NEAT-AI-core SHA]
+    A --> C[External: cargo update + quarantine]
+    A --> D[cargo audit]
+    A --> E[cargo build --release]
+    D -->|advisory| X[exit 1: revert]
+    E -->|fail| X
+    B --> S[summary]
+    C --> S
+    D --> S
+    E --> S
+```
+
 ### Other PR automation
 
 Besides the quality gate (`.github/workflows/ci.yml`), PRs also run a guarded
