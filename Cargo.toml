@@ -21,6 +21,21 @@ inherits = "release"
 debug = true
 strip = false
 
+# `pgo`: release optimisations used by the Profile-Guided Optimisation flow.
+# `scripts/build-pgo.sh` builds twice with this profile — first instrumented
+# (`-Cprofile-generate`), then with the merged profile (`-Cprofile-use`) — so
+# the LTO + codegen-units = 1 settings stay identical across both compiler
+# passes. See Issue #43 and the "Optimised release build (PGO)" section in
+# `README.md`.
+[profile.pgo]
+inherits = "release"
+
+[profile.pgo.package."*"]
+opt-level = 3
+
+[profile.pgo.package.rust_scorer]
+codegen-units = 1
+
 [workspace.lints.clippy]
 collapsible_if = "deny"
 filter_next = "deny"

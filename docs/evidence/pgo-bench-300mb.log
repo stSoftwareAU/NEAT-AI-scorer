@@ -1,0 +1,7 @@
+=== single-creature score_from_json ===
+release  : median_ns=447579375 best_ns=391768292
+pgo      : median_ns=407722500 best_ns=359622458
+
+=== directory-mode score_from_creature_dir (10 creatures) ===
+release  : median_ns=2079218875 best_ns=1959418417
+pgo      : median_ns=1911213667 best_ns=1824989583
