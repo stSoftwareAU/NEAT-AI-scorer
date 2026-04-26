@@ -38,6 +38,9 @@ echo "🔗 Validating NEAT-AI-core checkout path strategy in workflows..."
 echo "🔐 Validating Gitleaks workflow hardening (Issue #21)..."
 ./scripts/check-gitleaks-workflow.sh
 
+echo "🛡️  Validating Semgrep SAST workflow (Issue #47)..."
+./scripts/check-semgrep-workflow.sh
+
 echo "🪄 Validating auto-format PR workflow (Issue #19)..."
 ./scripts/check-auto-format-workflow.sh
 

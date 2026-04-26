@@ -1,5 +1,24 @@
 name: Semgrep
 
+# Semgrep SAST scanning gate for pull requests (Issue #47).
+#
+# Why the container path?
+#   We run Semgrep via the official `semgrep/semgrep` container — upstream's
+#   recommended PR-scan integration — as the equivalent of the
+#   semgrep/semgrep-action GitHub Action. Both consume `SEMGREP_APP_TOKEN`
+#   from repo secrets and execute `semgrep ci --config <ruleset>`; the
+#   container path simply runs the CLI directly inside the pinned image
+#   instead of through the action wrapper.
+#
+# Why pin the container tag?
+#   * Reproducibility — a given PR always runs the same scanner version,
+#     so rule updates never silently change PR-gating behaviour.
+#   * Transparency — bumping Semgrep is an explicit, reviewable change to
+#     the `image:` tag below.
+#
+# Bump protocol: lift the tag and record the upstream changelog highlights
+# in the PR that does the bump.
+
 on:
   pull_request:
     branches: ["*"]
@@ -12,7 +31,8 @@ jobs:
     name: Semgrep SAST Scanning
     runs-on: ubuntu-latest
     container:
-      image: semgrep/semgrep
+      # Pinned Semgrep release. Equivalent to `uses: semgrep/semgrep-action@v1`.
+      image: semgrep/semgrep:1.86.0
     steps:
       - name: Checkout code
         uses: actions/checkout@v5
