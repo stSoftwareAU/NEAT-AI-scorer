@@ -271,6 +271,19 @@ full CI graph. The workflow is validated by
 `scripts/check-cargo-quality-workflow.sh` (invoked from `quality.sh`) and
 covered end-to-end by `tests/scripts/cargo_quality_workflow.bats`.
 
+A standalone Dependency Review workflow
+(`.github/workflows/dependency-review.yml`, Issue #62) runs
+`actions/dependency-review-action@v4` on every pull request against any
+branch. The action diffs the PR's manifest against the base branch and
+fails the run if any newly introduced dependency carries a known
+vulnerability or disallowed licence — catching supply-chain regressions
+before merge. The reusable `security.yml` workflow runs the same action
+inside the full CI graph; this dedicated workflow gives feature branches
+and stacked PRs the same gate without spinning up CI. The workflow is
+validated by `scripts/check-dependency-review-workflow.sh` (invoked from
+`quality.sh`) and covered end-to-end by
+`tests/scripts/dependency_review_workflow.bats`.
+
 ### GitHub Actions version policy (Node 24 compat)
 
 GitHub is deprecating the Node 20 runtime for JavaScript actions, so the
