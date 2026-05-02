@@ -262,6 +262,15 @@ validated by `scripts/check-cargo-audit-workflow.sh` (invoked from
 `quality.sh`) and covered end-to-end by
 `tests/scripts/cargo_audit_workflow.bats`.
 
+A standalone Cargo Quality workflow (`.github/workflows/cargo-quality.yml`,
+Issue #66) runs `cargo fmt --check` and `cargo clippy -- -D warnings` on
+pull requests against **any** branch (`branches: ["*"]`). `ci.yml` only
+fires for PRs targeting `Develop`, so this dedicated workflow gives feature
+branches and stacked PRs the same fmt + clippy gate without spinning up the
+full CI graph. The workflow is validated by
+`scripts/check-cargo-quality-workflow.sh` (invoked from `quality.sh`) and
+covered end-to-end by `tests/scripts/cargo_quality_workflow.bats`.
+
 ### GitHub Actions version policy (Node 24 compat)
 
 GitHub is deprecating the Node 20 runtime for JavaScript actions, so the

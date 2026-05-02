@@ -44,6 +44,9 @@ echo "🛡️  Validating Semgrep SAST workflow (Issue #47)..."
 echo "🦀 Validating Cargo Security Audit workflow (Issue #64)..."
 ./scripts/check-cargo-audit-workflow.sh
 
+echo "🧹 Validating Cargo Quality (fmt + clippy) workflow (Issue #66)..."
+./scripts/check-cargo-quality-workflow.sh
+
 echo "🪄 Validating auto-format PR workflow (Issue #19)..."
 ./scripts/check-auto-format-workflow.sh
 
