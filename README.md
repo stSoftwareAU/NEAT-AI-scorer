@@ -271,6 +271,16 @@ full CI graph. The workflow is validated by
 `scripts/check-cargo-quality-workflow.sh` (invoked from `quality.sh`) and
 covered end-to-end by `tests/scripts/cargo_quality_workflow.bats`.
 
+A standalone ShellCheck Lint workflow (`.github/workflows/shellcheck.yml`,
+Issue #67) runs `ludeeus/action-shellcheck@2.0.0` on every pull request
+against any branch (`branches: ["*"]`). `ci.yml`'s `shell-checks` job runs
+the same action inside the full CI graph; this dedicated workflow lets
+workflow-sync tooling discover a dedicated `shellcheck.yml` by filename
+without disturbing the existing branch-protection aggregator. The workflow
+is validated by `scripts/check-shellcheck-workflow.sh` (invoked from
+`quality.sh`) and covered end-to-end by
+`tests/scripts/shellcheck_workflow.bats`.
+
 A standalone Dependency Review workflow
 (`.github/workflows/dependency-review.yml`, Issue #62) runs
 `actions/dependency-review-action@v4` on every pull request against any
