@@ -83,6 +83,7 @@ lookup_policy() {
   case "$action" in
     actions/checkout)                 echo "required:5" ;;
     actions/cache)                    echo "required:5" ;;
+    actions/setup-node)               echo "required:4" ;;
     peter-evans/create-pull-request)  echo "required:8" ;;
     ludeeus/action-shellcheck)        echo "required:2" ;;
     # actions/dependency-review-action: action.yml declares `using: node20`

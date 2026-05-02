@@ -50,6 +50,9 @@ echo "🧹 Validating Cargo Quality (fmt + clippy) workflow (Issue #66)..."
 echo "🐚 Validating standalone ShellCheck Lint workflow (Issue #67)..."
 ./scripts/check-shellcheck-workflow.sh
 
+echo "📝 Validating Markdown Lint workflow (Issue #63)..."
+./scripts/check-markdown-lint-workflow.sh
+
 echo "📦 Validating Dependency Review workflow (Issue #62)..."
 ./scripts/check-dependency-review-workflow.sh
 

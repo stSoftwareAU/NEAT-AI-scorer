@@ -1,0 +1,48 @@
+name: Markdown Lint
+
+# Standalone Markdown Lint workflow (Issue #63).
+#
+# Why this exists:
+#   * The repository ships a `.markdownlint-cli2.yaml` config but had no CI
+#     job enforcing it. This workflow runs `markdownlint-cli2` against every
+#     pull request so style regressions in README/docs surface before merge.
+#   * Workflow-sync tooling looks for `markdown-lint.yml` by filename; the
+#     dedicated file keeps the gate discoverable independent of `ci.yml`.
+#
+# Action pinning policy (Issue #24, mirrored by
+# `scripts/check-workflow-action-versions.sh`):
+#   * actions/checkout — `@v5` (Node 24).
+#   * actions/setup-node — `@v4` (Node 24).
+
+on:
+  pull_request:
+    branches: ["*"]
+  push:
+    branches: [main, master]
+
+permissions:
+  contents: read
+
+# Avoid stacking duplicate runs on rapid pushes; PR runs are deduped per branch.
+concurrency:
+  group: markdown-lint-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  markdownlint:
+    name: Markdown Lint
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "lts/*"
+
+      - name: Install markdownlint-cli2
+        run: npm install -g markdownlint-cli2
+
+      - name: Run markdownlint-cli2
+        run: markdownlint-cli2
