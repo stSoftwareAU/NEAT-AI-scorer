@@ -253,6 +253,15 @@ message live in `scripts/auto-format.sh` and are covered by
 `tests/scripts/auto_format.bats`; the workflow itself is validated by
 `scripts/check-auto-format-workflow.sh` (invoked from `quality.sh`).
 
+A standalone Cargo Security Audit workflow (`.github/workflows/cargo-audit.yml`,
+Issue #64) mirrors the `cargo audit` step in the reusable `security.yml` but
+adds a weekly cron schedule (`0 6 * * 1`) plus `workflow_dispatch`. The
+schedule catches advisories published *after* the last PR — the lockfile
+does not change but the RustSec advisory database does. The workflow is
+validated by `scripts/check-cargo-audit-workflow.sh` (invoked from
+`quality.sh`) and covered end-to-end by
+`tests/scripts/cargo_audit_workflow.bats`.
+
 ### GitHub Actions version policy (Node 24 compat)
 
 GitHub is deprecating the Node 20 runtime for JavaScript actions, so the
