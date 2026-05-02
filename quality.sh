@@ -47,6 +47,9 @@ echo "🦀 Validating Cargo Security Audit workflow (Issue #64)..."
 echo "🧹 Validating Cargo Quality (fmt + clippy) workflow (Issue #66)..."
 ./scripts/check-cargo-quality-workflow.sh
 
+echo "📦 Validating Dependency Review workflow (Issue #62)..."
+./scripts/check-dependency-review-workflow.sh
+
 echo "🪄 Validating auto-format PR workflow (Issue #19)..."
 ./scripts/check-auto-format-workflow.sh
 

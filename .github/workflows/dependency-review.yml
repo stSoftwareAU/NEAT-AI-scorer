@@ -1,0 +1,45 @@
+name: Dependency Review
+
+# Standalone Dependency Review workflow (Issue #62).
+#
+# Why a dedicated workflow? The reusable `security.yml` workflow already
+# invokes `actions/dependency-review-action` on PR events as part of CI.
+# This file mirrors that coverage as a self-contained, single-purpose
+# workflow so the dependency-review check is discoverable on its own and
+# runs even on PRs targeting branches that bypass the full CI graph
+# (`ci.yml` only fires for PRs into `Develop`).
+#
+# What it does: `actions/dependency-review-action` diffs the PR's manifest
+# (Cargo.toml / Cargo.lock here) against the base branch and fails the run
+# if any newly introduced dependency carries a known vulnerability or
+# disallowed licence — surfacing supply-chain risk before merge.
+#
+# Trigger: pull_request only. The action requires the diff between base and
+# head, which only makes sense on PR events.
+#
+# Action versions follow `scripts/check-workflow-action-versions.sh`:
+# `actions/checkout@v5` (Node 24 policy) and
+# `actions/dependency-review-action@v4` (tracked Node 20 exception — no v5
+# release upstream yet).
+
+on:
+  pull_request:
+    branches: ["*"]
+
+permissions:
+  contents: read
+
+# Avoid duplicate runs piling up when a PR is updated rapidly.
+concurrency:
+  group: dependency-review-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  dependency-review:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - name: Dependency review
+        uses: actions/dependency-review-action@v4
