@@ -41,6 +41,9 @@ echo "🔐 Validating Gitleaks workflow hardening (Issue #21)..."
 echo "🛡️  Validating Semgrep SAST workflow (Issue #47)..."
 ./scripts/check-semgrep-workflow.sh
 
+echo "🦀 Validating Cargo Security Audit workflow (Issue #64)..."
+./scripts/check-cargo-audit-workflow.sh
+
 echo "🪄 Validating auto-format PR workflow (Issue #19)..."
 ./scripts/check-auto-format-workflow.sh
 
