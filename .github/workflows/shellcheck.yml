@@ -1,0 +1,38 @@
+name: ShellCheck
+
+# Standalone ShellCheck Lint workflow (Issue #67).
+#
+# A duplicate `shell-checks` job already runs inside .github/workflows/ci.yml
+# alongside `bash -n` syntax checks and the bats helper-test suite. The
+# standalone workflow exists so workflow-sync tooling can detect a dedicated
+# `shellcheck.yml` by filename — branch protection should continue to gate on
+# the `ci-required` aggregator from ci.yml, not on this standalone job.
+#
+# Action pinning policy (Issue #24):
+#   * actions/checkout — numeric major (Node 24 compat).
+#   * ludeeus/action-shellcheck — tagged release, NOT @master. A compromised
+#     upstream commit on @master would silently alter CI behaviour.
+
+on:
+  pull_request:
+    branches: ["*"]
+
+permissions:
+  contents: read
+
+jobs:
+  shellcheck:
+    name: ShellCheck Lint
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - name: Run ShellCheck (koalaman/shellcheck via ludeeus/action-shellcheck)
+        uses: ludeeus/action-shellcheck@2.0.0
+        with:
+          scandir: "."
+          severity: warning
+          ignore_paths: "target .git"
+        env:
+          SHELLCHECK_OPTS: -s bash
