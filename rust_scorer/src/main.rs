@@ -27,8 +27,10 @@ use clap::Parser;
 use neat_core::creature::{compile_creature, parse_creature_json};
 use neat_core::training_data::{TrainingDataConfig, TrainingDataIterator, find_bin_files};
 
+use std::sync::Arc;
+
 use crate::gpu::{GpuBackendLabel, GpuMode};
-use crate::multi_score::score_from_creature_dir;
+use crate::multi_score::{score_from_creature_dir, score_from_creature_dir_gpu};
 use crate::read_tuning::{training_read_backend_label, training_read_target_bytes_from_env};
 use crate::scoring::{ScoreResult, calculate_score, compute_score_components};
 use crate::stream_score::activation_worker_count_for_scorer;
@@ -124,7 +126,27 @@ fn run(cli: &Cli) -> Result<RunOutput, String> {
     // it triggers adapter selection now so the same label is passed into
     // every scoring path.
     let mode = gpu::resolve_mode(cli.gpu, std::env::var("NEAT_SCORER_GPU").ok().as_deref())?;
-    let gpu_backend = gpu::resolve_backend(mode)?;
+    let (gpu_backend, gpu_ctx) = match mode {
+        GpuMode::Off => (GpuBackendLabel::CpuFallback, None),
+        GpuMode::Auto => match gpu::select_adapter() {
+            Ok(Some(ctx)) => {
+                let backend = ctx.backend;
+                (backend, Some(Arc::new(ctx)))
+            }
+            // `auto` must never error out — fall back silently to CPU.
+            _ => (GpuBackendLabel::CpuFallback, None),
+        },
+        GpuMode::On => match gpu::select_adapter() {
+            Ok(Some(ctx)) => {
+                let backend = ctx.backend;
+                (backend, Some(Arc::new(ctx)))
+            }
+            Ok(None) => return Err(
+                "No compatible GPU adapter found and --gpu on was requested (use --gpu auto to fall back to CPU, or --gpu off to skip GPU detection entirely)".to_string(),
+            ),
+            Err(e) => return Err(e.to_string()),
+        },
+    };
 
     if cli.creature_stdin {
         let (creature_json, data_path) = resolve_inputs(cli)?;
@@ -138,7 +160,16 @@ fn run(cli: &Cli) -> Result<RunOutput, String> {
     let creature_path = &cli.args[0];
     let data_path = &cli.args[1];
     if creature_path.is_dir() {
-        score_from_creature_dir(creature_path, data_path, gpu_backend).map(RunOutput::Multi)
+        // Issue #82: use the GPU multi-creature batched kernel when an adapter
+        // is available. `inflight_chunks: 2` enables CPU↔GPU pipelining
+        // (double-buffered I/O). When no GPU is available, fall back to the
+        // CPU directory-mode path.
+        if let Some(ctx) = gpu_ctx.clone() {
+            score_from_creature_dir_gpu(creature_path, data_path, gpu_backend, ctx, 2)
+                .map(RunOutput::Multi)
+        } else {
+            score_from_creature_dir(creature_path, data_path, gpu_backend).map(RunOutput::Multi)
+        }
     } else {
         let creature_json = fs::read_to_string(creature_path).map_err(|e| {
             format!(
@@ -292,6 +323,9 @@ fn score_from_json(
             .and_then(|n| (n > 1).then_some(max_activation_batch_records)),
         time_taken_secs: started.elapsed().as_secs_f64(),
         compile_time_secs: Some(compile_time_secs),
+        gpu_kernel: None,
+        gpu_inflight_chunks: None,
+        gpu_dispatch_count: None,
     })
 }
 
@@ -560,6 +594,9 @@ mod tests {
             max_activation_batch_records: Some(2609),
             time_taken_secs: 1.25,
             compile_time_secs: Some(0.01),
+            gpu_kernel: None,
+            gpu_inflight_chunks: None,
+            gpu_dispatch_count: None,
         };
         let json = serde_json::to_string_pretty(&result).unwrap();
         // Verify camelCase keys in output

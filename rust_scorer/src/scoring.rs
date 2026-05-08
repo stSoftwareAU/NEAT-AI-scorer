@@ -236,6 +236,19 @@ pub struct ScoreResult {
     /// Issue #42: useful for diagnosing how much of `timeTaken` is fixed startup vs scoring.
     #[serde(rename = "compileTimeSecs", skip_serializing_if = "Option::is_none")]
     pub compile_time_secs: Option<f64>,
+    /// Issue #82: name of the GPU compute kernel used for this run (e.g.
+    /// `"forward_mse_batched"`). Absent when the run executed on CPU.
+    #[serde(rename = "gpuKernel", skip_serializing_if = "Option::is_none")]
+    pub gpu_kernel: Option<String>,
+    /// Issue #82: cap on chunks held in flight on the GPU at any one time.
+    /// `1` means no pipelining (current chunk's read blocks until the previous
+    /// chunk's compute finishes); `2` means double-buffered I/O.
+    #[serde(rename = "gpuInflightChunks", skip_serializing_if = "Option::is_none")]
+    pub gpu_inflight_chunks: Option<usize>,
+    /// Issue #82: number of `dispatch_workgroups` calls the GPU runner made
+    /// across the whole corpus (one per chunk on the multi-creature path).
+    #[serde(rename = "gpuDispatchCount", skip_serializing_if = "Option::is_none")]
+    pub gpu_dispatch_count: Option<usize>,
 }
 
 #[cfg(test)]

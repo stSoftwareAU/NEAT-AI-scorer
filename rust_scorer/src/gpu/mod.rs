@@ -18,6 +18,14 @@
 //!
 //! The default mode is [`GpuMode::Off`] until the kernel work in #81 lands;
 //! existing callers that do not set `--gpu` keep the current CPU behaviour.
+//!
+//! Issue #82 — multi-creature batched dispatch lives in the
+//! [`forward_mse_batched`] submodule; the directory-mode scorer in
+//! `multi_score::score_from_creature_dir` consumes it through
+//! [`forward_mse_batched::BatchedRunner`] when `--gpu auto|on` resolves to a
+//! native backend.
+
+pub mod forward_mse_batched;
 
 use std::str::FromStr;
 
@@ -211,6 +219,8 @@ pub fn select_adapter() -> Result<Option<GpuContext>, GpuInitError> {
 /// * `Err(message)` — only when `mode == GpuMode::On` and no compatible
 ///   adapter was available, or `request_device` failed. The caller should
 ///   exit non-zero and surface the message to stderr.
+#[allow(dead_code)] // used by benches/tests; main.rs now resolves the adapter directly so it
+// can keep the resulting `GpuContext` for the GPU multi-creature path (Issue #82).
 pub fn resolve_backend(mode: GpuMode) -> Result<GpuBackendLabel, String> {
     match mode {
         GpuMode::Off => Ok(GpuBackendLabel::CpuFallback),
