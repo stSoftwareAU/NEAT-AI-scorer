@@ -140,6 +140,102 @@ samples (10,868) and percent of active samples (6,196).
   / `multi-creature.svg` — the Hot spots table above is expected to re-order
   once the memmove-heavy frames are gone.
 
+## Baseline — 9 May 2026 (Issue #79, 200 MB corpus)
+
+Refresh captured at the issue-target corpus size for the GPU adoption spike
+([Issue #79](https://github.com/stSoftwareAU/NEAT-AI-scorer/issues/79)). The
+older 8 MiB Criterion section and 2 GiB / 500 MB flamegraph hot-spot tables
+above are preserved unchanged so historical numbers stay reproducible.
+
+| Field | Value |
+|---|---|
+| Host CPU | Apple M4 (10 cores) |
+| RAM | 24 GB |
+| OS | macOS 26.4.1 (Darwin 25.4.0, arm64) |
+| Toolchain | rustc 1.95.0 (release profile, `lto = true`, `codegen-units = 1` for `rust_scorer`) |
+| Fixture | `BENCH_SCORING_BYTES=200000000` (≈ 190.7 MiB), `BENCH_SCORING_INPUTS=8`, `BENCH_SCORING_OUTPUTS=2`, `BENCH_SCORING_HIDDEN=8` |
+| `NEAT_SCORER_*` env | unset (defaults) |
+| Criterion | sample size 10 for the end-to-end groups, 100 for the micro-bench |
+
+| Benchmark | Lower | **Median** | Upper | Throughput (median) | Half-width ≈ stddev proxy |
+|---|---|---|---|---|---|
+| `score_from_json_fused/forward_only` | 86.812 ms | **89.871 ms** | 96.135 ms | 2.07 GiB/s | ±4.66 ms |
+| `score_from_creature_dir/creatures/1` | 1.0289 s | **1.3292 s** | 1.5980 s | 143.50 MiB/s | ±285 ms |
+| `score_from_creature_dir/creatures/10` | 570.79 ms | **636.00 ms** | 708.77 ms | 299.90 MiB/s | ±69.0 ms |
+| `score_from_creature_dir/creatures/50` | 2.3035 s | **2.3423 s** | 2.3811 s | 81.43 MiB/s | ±38.8 ms |
+| `score_from_creature_dir/creatures/200` | 6.2199 s | **6.3640 s** | 6.4836 s | 29.97 MiB/s | ±131.9 ms |
+| `unpack_and_mse_inner/unpack_then_mse` | 585.73 µs | **586.82 µs** | 587.93 µs | 1.04 GiB/s | ±1.10 µs |
+
+Source: `BENCH_SCORING_BYTES=200000000 ./scripts/run-benches.sh` on the host
+above. `score_from_creature_dir/creatures/1` is noisy at this size — the wide
+95 % CI is intrinsic to the single-creature directory mode at 200 MB and not a
+host-load artefact (re-run reproduces). Multiplying the shared-scan throughput
+by N gives the effective work performed:
+
+* `creatures/10` ≈ 3.0 GiB/s of network forward-only work.
+* `creatures/50` ≈ 4.0 GiB/s.
+* `creatures/200` ≈ 5.9 GiB/s.
+
+Throughput stops scaling roughly linearly past `N ≈ 50` — cache pressure on
+the per-worker activation buffers and Rayon scheduling cost both rise as the
+worker pool fills up.
+
+### Hot spots — 9 May 2026 (Issue #79)
+
+Sample-based flamegraphs captured with
+[`scripts/profile-flamegraph.sh`](../scripts/profile-flamegraph.sh) at the
+200 MB corpus size (`./scripts/profile-flamegraph.sh 209715200 209715200 50`,
+`PROFILE_SAMPLE_SECONDS=120`). Both runs use the 8→8→2 forward-only synthetic
+creature; the multi-creature run uses 50 identical creatures via directory
+mode. Flamegraphs committed under [`docs/evidence/`](evidence/):
+
+* [`single-creature-200mb.svg`](evidence/single-creature-200mb.svg) — 1,001 samples
+* [`multi-creature-200mb.svg`](evidence/multi-creature-200mb.svg) — 8,123 samples
+
+The older 2 GiB / 500 MB flamegraphs from Issue #37 are kept at
+[`single-creature.svg`](evidence/single-creature.svg) /
+[`multi-creature.svg`](evidence/multi-creature.svg).
+
+#### Single-creature fused path — top 5 (leaf / self time)
+
+_Idle scheduler/wait samples excluded._ Numbers show percent of total samples
+(1,001) and percent of **active CPU samples** (≈ 207 — total minus
+`swtch_pri` 577, `dyld` startup 214, mutex/cv waits ≈ 3). Wall-clock sleep on
+`swtch_pri` / `__psynch_mutexwait` is 57.6 % at this corpus size, down from
+66.8 % at 2 GiB but still material — the over-parallelism finding documented
+in [Cross-scenario findings](#cross-scenario-findings) holds at 200 MB.
+
+| # | Function | Total % | Active % | Notes |
+|---|---|---|---|---|
+| 1 | `neat_core::loss::mse_sum_batch_packed` | 8.4 % | 40.6 % | Inner fused MSE + activation loop. Same shape as the 2 GiB run; share rises because `tanhf` is now a slightly smaller fraction of the active mix. |
+| 2 | `tanhf` (libm activation) | 6.3 % | 30.4 % | Per-hidden-neuron activation. Including the PLT trampoline (`DYLD-STUB$$tanhf`, 0.3 %), the squash cost is ≈ 31 % of active CPU. |
+| 3 | `mse_sum_batch_4way` closure | 2.9 % | 14.0 % | Four-way unrolled inner body called from `mse_sum_batch_packed`. |
+| 4 | `_platform_memmove` | 1.7 % | 8.2 % | `pending` compaction + `mse_sum_batch_packed` worker buffer moves. |
+| 5 | `DYLD-STUB$$tanhf` | 0.3 % | 1.4 % | PLT trampoline for `tanhf`; combine with (2). |
+
+#### Multi-creature directory mode (50 creatures) — top 5 (leaf / self time)
+
+_Idle scheduler/wait samples excluded._ Numbers show percent of total samples
+(8,123) and percent of active samples (≈ 3,584 — total minus `swtch_pri`
+4,525 and mutex/cv waits ≈ 14). `swtch_pri` is 55.7 % of wall-clock, similar
+to the 500 MB / 50-creature reading.
+
+| # | Function | Total % | Active % | Notes |
+|---|---|---|---|---|
+| 1 | `tanhf` (libm activation) | 14.8 % | 41.0 % | Stacked across 50 networks per chunk. Combined with the PLT stub (3.3 %, 7.5 % active) the squash cost is ≈ 48 % of active CPU — the largest single hot spot. |
+| 2 | `neat_core::loss::mse_sum_batch_packed` | 13.4 % | 30.4 % | Fused MSE + activation. |
+| 3 | `mse_sum_batch_4way` closure | 8.0 % | 18.1 % | Inner four-way unrolled body. |
+| 4 | `_platform_memmove` | 3.7 % | 8.4 % | Buffer/SIMD moves; mostly inside `mse_sum_batch_packed` (`neat-core` territory), only a tiny fraction in scorer-side `pending.extend_from_slice`. |
+| 5 | `DYLD-STUB$$tanhf` | 3.3 % | 7.5 % | PLT trampoline for `tanhf`. Combine with (1). |
+
+The ranking matches the 2 GiB / 500 MB capture: `tanhf` plus the fused
+`mse_sum_batch_packed` family dominate active CPU on both single- and
+multi-creature paths. There is **no GPU code path** in `rust_scorer` today —
+no `wgpu` dependency in `rust_scorer/Cargo.toml`, no compute shader, no GPU
+adapter selection. GPU utilisation while the scorer runs is therefore zero;
+[`docs/gpu-scoring-design.md`](gpu-scoring-design.md) compares three
+strategies for closing that gap.
+
 ## Refreshing the baseline
 
 1. Run `./scripts/run-benches.sh` (default fixture) and record the median +
