@@ -43,6 +43,7 @@ use neat_core::creature::{compile_creature, parse_creature_json};
 use neat_core::loss::mse_sum_batch_packed;
 use neat_core::training_data::{TrainingDataConfig, find_bin_files};
 
+use rust_scorer::gpu::GpuBackendLabel;
 use rust_scorer::multi_score::score_from_creature_dir;
 use rust_scorer::stream_score::accumulate_mse_sum_forward_only_fused;
 
@@ -249,7 +250,8 @@ fn bench_score_from_creature_dir(c: &mut Criterion) {
         group.bench_with_input(BenchmarkId::new("creatures", n), &sub_dir, |b, dir| {
             b.iter(|| {
                 let result =
-                    score_from_creature_dir(dir, &fix.data_dir).expect("multi-creature score");
+                    score_from_creature_dir(dir, &fix.data_dir, GpuBackendLabel::CpuFallback)
+                        .expect("multi-creature score");
                 black_box(result);
             });
         });

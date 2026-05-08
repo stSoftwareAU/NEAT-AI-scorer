@@ -56,6 +56,36 @@ rust_scorer <creature.json | creatures_dir> <training_data_dir>
 - `creatures_dir` path: scores every `*.json` in that directory in one pass over training data and returns one JSON object keyed by each file's stem (filename without extension or folders).
 - Directory mode requires `forwardOnly: true` and matching `input` / `output` shape across all files.
 
+### GPU mode (Issue #80)
+
+The scorer can probe for a GPU adapter via `wgpu` and report which backend
+would run kernels. Selection is opt-in via the `--gpu` flag or the
+`NEAT_SCORER_GPU` environment variable; the CLI flag wins when both are set.
+
+| Mode    | Behaviour                                                                                                | `gpuBackend` value                                  |
+|---------|----------------------------------------------------------------------------------------------------------|-----------------------------------------------------|
+| `off`   | Skip GPU detection entirely; run the CPU pipeline. **Default** until GPU kernels (#81) land.             | `"cpu-fallback"`                                    |
+| `auto`  | Probe for a high-performance discrete GPU; silently fall back to CPU when none is found.                 | `"metal"` / `"vulkan"` / `"dx12"` / `"gl"` / `"cpu-fallback"` |
+| `on`    | Require a compatible GPU; exit non-zero with a clear message when none is found (no silent fallback).    | `"metal"` / `"vulkan"` / `"dx12"` / `"gl"`          |
+
+```text
+rust_scorer --gpu auto <creature.json> <training_data_dir>
+NEAT_SCORER_GPU=auto rust_scorer <creature.json> <training_data_dir>
+```
+
+The `gpuBackend` field is added to every JSON output (single-creature and
+directory mode); existing fields and their order are unchanged.
+
+```mermaid
+flowchart LR
+    CLI[--gpu / NEAT_SCORER_GPU] --> Mode{GpuMode}
+    Mode -->|Off| CPU[CPU pipeline<br/>unchanged]
+    Mode -->|Auto/On| Adapter[wgpu adapter<br/>selection]
+    Adapter -->|found| Ctx[GpuContext<br/>passed to kernels<br/>once #81 lands]
+    Adapter -->|none + Auto| CPU
+    Adapter -->|none + On| Err[exit non-zero]
+```
+
 ### Stdin input mode
 
 For restricted worker/sandbox environments where writing a temp file may fail
@@ -71,7 +101,7 @@ single positional argument (`<training_data_dir>`).
 
 ### Output
 
-Single-creature mode JSON includes **`forwardOnly`** (from the creature) and **`trainingReadBackend`**: on a native release build you should see **`pipelined_double_buffer`** when `forwardOnly` is `true` (fused scoring + `training_bin_stream`). If `forwardOnly` is `false`, you get **`record_iterator`** instead (no pipelining — much slower on large data).
+Single-creature mode JSON includes **`forwardOnly`** (from the creature) and **`trainingReadBackend`**: on a native release build you should see **`pipelined_double_buffer`** when `forwardOnly` is `true` (fused scoring + `training_bin_stream`). If `forwardOnly` is `false`, you get **`record_iterator`** instead (no pipelining — much slower on large data). The **`gpuBackend`** field reports which `wgpu` backend the scorer would run on (`"cpu-fallback"` until GPU kernels land; see [GPU mode](#gpu-mode-issue-80) above).
 
 In directory mode, output is a top-level object keyed by creature filename stem, where each value has the same shape as a single-creature `ScoreResult`.
 

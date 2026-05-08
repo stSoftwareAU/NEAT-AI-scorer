@@ -6,6 +6,8 @@
 use neat_core::creature::CreatureExport;
 use neat_core::squash::SquashType;
 
+use crate::gpu::GpuBackendLabel;
+
 /// The current semantic major version matching the TypeScript constant.
 /// Creatures not at this version receive a small penalty.
 pub const SEMANTIC_MAJOR_VERSION: u32 = 4;
@@ -209,6 +211,12 @@ pub struct ScoreResult {
     /// Which training read path ran ([`crate::read_tuning::training_read_backend_label`] when fused), else `record_iterator`.
     #[serde(rename = "trainingReadBackend")]
     pub training_read_backend: String,
+    /// GPU backend selected for this run (Issue #80). `cpu-fallback` when
+    /// `--gpu off` (the default) or when `--gpu auto` finds no compatible
+    /// adapter. Real native labels (`metal`, `vulkan`, `dx12`, `gl`) appear
+    /// once GPU kernels start consuming the device in #81.
+    #[serde(rename = "gpuBackend")]
+    pub gpu_backend: GpuBackendLabel,
     /// Effective `read` buffer size (bytes) after record alignment; set when fused path ran.
     #[serde(rename = "readBufLen", skip_serializing_if = "Option::is_none")]
     pub read_buf_len: Option<usize>,
