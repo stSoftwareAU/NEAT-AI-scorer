@@ -10,6 +10,7 @@
 //!
 //! Issue #1967 - Build Rust CLI scorer application.
 
+mod gpu;
 mod multi_score;
 mod read_tuning;
 mod scoring;
@@ -26,6 +27,7 @@ use clap::Parser;
 use neat_core::creature::{compile_creature, parse_creature_json};
 use neat_core::training_data::{TrainingDataConfig, TrainingDataIterator, find_bin_files};
 
+use crate::gpu::{GpuBackendLabel, GpuMode};
 use crate::multi_score::score_from_creature_dir;
 use crate::read_tuning::{training_read_backend_label, training_read_target_bytes_from_env};
 use crate::scoring::{ScoreResult, calculate_score, compute_score_components};
@@ -53,6 +55,16 @@ struct Cli {
     /// (or similar) may fail even with write permission granted.
     #[arg(long)]
     creature_stdin: bool,
+
+    /// Opt-in GPU mode (Issue #80).
+    ///
+    /// * `off`  — skip GPU detection (default until #81 lands).
+    /// * `auto` — probe for a compatible GPU; silently fall back to CPU.
+    /// * `on`   — require a compatible GPU; non-zero exit if none found.
+    ///
+    /// Falls back to the `NEAT_SCORER_GPU` env var when not provided.
+    #[arg(long, value_enum, value_name = "MODE")]
+    gpu: Option<GpuMode>,
 
     /// Positional arguments.
     ///
@@ -107,9 +119,16 @@ enum RunOutput {
 }
 
 fn run(cli: &Cli) -> Result<RunOutput, String> {
+    // Resolve the GPU backend label up-front. For `--gpu off` (default) this
+    // is a constant `cpu-fallback` and never touches `wgpu`; for `auto`/`on`
+    // it triggers adapter selection now so the same label is passed into
+    // every scoring path.
+    let mode = gpu::resolve_mode(cli.gpu, std::env::var("NEAT_SCORER_GPU").ok().as_deref())?;
+    let gpu_backend = gpu::resolve_backend(mode)?;
+
     if cli.creature_stdin {
         let (creature_json, data_path) = resolve_inputs(cli)?;
-        return score_from_json(&creature_json, &data_path).map(RunOutput::Single);
+        return score_from_json(&creature_json, &data_path, gpu_backend).map(RunOutput::Single);
     }
 
     if cli.args.len() != 2 {
@@ -119,7 +138,7 @@ fn run(cli: &Cli) -> Result<RunOutput, String> {
     let creature_path = &cli.args[0];
     let data_path = &cli.args[1];
     if creature_path.is_dir() {
-        score_from_creature_dir(creature_path, data_path).map(RunOutput::Multi)
+        score_from_creature_dir(creature_path, data_path, gpu_backend).map(RunOutput::Multi)
     } else {
         let creature_json = fs::read_to_string(creature_path).map_err(|e| {
             format!(
@@ -127,11 +146,15 @@ fn run(cli: &Cli) -> Result<RunOutput, String> {
                 creature_path.display()
             )
         })?;
-        score_from_json(&creature_json, data_path).map(RunOutput::Single)
+        score_from_json(&creature_json, data_path, gpu_backend).map(RunOutput::Single)
     }
 }
 
-fn score_from_json(creature_json: &str, data_path: &Path) -> Result<ScoreResult, String> {
+fn score_from_json(
+    creature_json: &str,
+    data_path: &Path,
+    gpu_backend: GpuBackendLabel,
+) -> Result<ScoreResult, String> {
     let started = Instant::now();
     let creature = parse_creature_json(creature_json)?;
 
@@ -260,6 +283,7 @@ fn score_from_json(creature_json: &str, data_path: &Path) -> Result<ScoreResult,
         synapse_count,
         forward_only: creature.forward_only,
         training_read_backend,
+        gpu_backend,
         read_buf_len: use_fused_stream.then_some(fused_read_buf_len),
         activation_threads: activation_threads.and_then(|n| (n > 1).then_some(n)),
         parallel_activation_batches: activation_threads
@@ -365,6 +389,7 @@ mod tests {
     fn cli_for(creature: &std::path::Path, data: &std::path::Path) -> Cli {
         Cli {
             creature_stdin: false,
+            gpu: None,
             args: vec![creature.to_path_buf(), data.to_path_buf()],
         }
     }
@@ -528,6 +553,7 @@ mod tests {
             synapse_count: 2000,
             forward_only: true,
             training_read_backend: "native_pipelined".to_string(),
+            gpu_backend: GpuBackendLabel::CpuFallback,
             read_buf_len: Some(2_097_152),
             activation_threads: Some(8),
             parallel_activation_batches: Some(1204),
@@ -546,6 +572,11 @@ mod tests {
         assert!(json.contains("\"timeTaken\""));
         assert!(json.contains("\"forwardOnly\""));
         assert!(json.contains("\"trainingReadBackend\""));
+        assert!(json.contains("\"gpuBackend\""));
+        assert!(
+            json.contains("\"cpu-fallback\""),
+            "expected gpuBackend serialised as cpu-fallback, got: {json}"
+        );
         assert!(json.contains("\"readBufLen\""));
         assert!(json.contains("\"activationThreads\""));
         assert!(json.contains("\"parallelActivationBatches\""));
@@ -569,7 +600,7 @@ mod tests {
         write_training_data(&data_dir, &[(vec![0.5], vec![0.5])]);
 
         let file_result = run_single(&cli_for(&creature_path, &data_dir)).unwrap();
-        let stdin_result = score_from_json(&json, &data_dir).unwrap();
+        let stdin_result = score_from_json(&json, &data_dir, GpuBackendLabel::CpuFallback).unwrap();
 
         assert!((file_result.score - stdin_result.score).abs() < 1e-12);
         assert!((file_result.error - stdin_result.error).abs() < 1e-12);
@@ -584,6 +615,7 @@ mod tests {
     fn test_stdin_mode_rejects_extra_positional_args() {
         let cli = Cli {
             creature_stdin: true,
+            gpu: None,
             args: vec![PathBuf::from("/tmp/creature.json"), PathBuf::from("/tmp")],
         };
         let err = resolve_inputs(&cli).expect_err("extra positional args should fail");
@@ -598,6 +630,7 @@ mod tests {
     fn test_default_mode_requires_two_positional_args() {
         let cli = Cli {
             creature_stdin: false,
+            gpu: None,
             args: vec![PathBuf::from("/tmp")],
         };
         let err = resolve_inputs(&cli).expect_err("single positional arg should fail");
@@ -615,7 +648,8 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let data_dir = tmp.path().join("data");
         fs::create_dir(&data_dir).unwrap();
-        let err = score_from_json("not json", &data_dir).expect_err("invalid JSON should fail");
+        let err = score_from_json("not json", &data_dir, GpuBackendLabel::CpuFallback)
+            .expect_err("invalid JSON should fail");
         assert!(!err.is_empty());
     }
 
@@ -639,5 +673,73 @@ mod tests {
                 PathBuf::from("/tmp/data"),
             ]
         );
+    }
+
+    /// `--gpu` must accept `auto`, `on`, and `off`, and reject anything else
+    /// at the clap layer (Issue #80).
+    #[test]
+    fn test_cli_parses_gpu_flag_values() {
+        use clap::Parser;
+        let parsed = Cli::try_parse_from([
+            "rust_scorer",
+            "--gpu",
+            "off",
+            "/tmp/creature.json",
+            "/tmp/data",
+        ])
+        .unwrap();
+        assert_eq!(parsed.gpu, Some(GpuMode::Off));
+
+        let parsed = Cli::try_parse_from([
+            "rust_scorer",
+            "--gpu",
+            "auto",
+            "/tmp/creature.json",
+            "/tmp/data",
+        ])
+        .unwrap();
+        assert_eq!(parsed.gpu, Some(GpuMode::Auto));
+
+        let parsed = Cli::try_parse_from([
+            "rust_scorer",
+            "--gpu",
+            "on",
+            "/tmp/creature.json",
+            "/tmp/data",
+        ])
+        .unwrap();
+        assert_eq!(parsed.gpu, Some(GpuMode::On));
+
+        // No `--gpu` -> None (env var fallback handled by `gpu::resolve_mode`).
+        let parsed =
+            Cli::try_parse_from(["rust_scorer", "/tmp/creature.json", "/tmp/data"]).unwrap();
+        assert_eq!(parsed.gpu, None);
+
+        // Bogus value rejected.
+        assert!(
+            Cli::try_parse_from([
+                "rust_scorer",
+                "--gpu",
+                "yolo",
+                "/tmp/creature.json",
+                "/tmp/data",
+            ])
+            .is_err()
+        );
+    }
+
+    /// With `--gpu off` (default), `score_from_json` must report
+    /// `gpu_backend = CpuFallback` in the result. This is the unit-level
+    /// counterpart to the integration test in `tests/scorer_smoke.rs`.
+    #[test]
+    fn test_score_from_json_off_yields_cpu_fallback() {
+        let tmp = TempDir::new().unwrap();
+        let data_dir = tmp.path().join("data");
+        fs::create_dir(&data_dir).unwrap();
+        let json = make_creature_json(1, 1, &[], &[("input-0", "output-0", 1.0)], Some("4.0.0"));
+        write_training_data(&data_dir, &[(vec![0.5], vec![0.5])]);
+
+        let result = score_from_json(&json, &data_dir, GpuBackendLabel::CpuFallback).unwrap();
+        assert_eq!(result.gpu_backend, GpuBackendLabel::CpuFallback);
     }
 }

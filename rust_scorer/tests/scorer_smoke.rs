@@ -170,6 +170,186 @@ fn scorer_binary_record_aligned_multi_chunk_fast_path() {
     );
 }
 
+/// Issue #80: `rust_scorer --gpu off` must produce JSON with the existing
+/// schema plus a new `gpuBackend: "cpu-fallback"` field. The default mode
+/// (no `--gpu` flag) must behave identically. This pins the JSON contract
+/// for downstream callers parsing the scorer's output.
+#[test]
+fn scorer_binary_gpu_off_emits_cpu_fallback_label() {
+    let bin = env!("CARGO_BIN_EXE_rust_scorer");
+    let creature = fixture("identity_creature.json");
+    let data_dir = fixture_data_dir("identity_data.bin");
+
+    // `--gpu off` explicit form.
+    let output = Command::new(bin)
+        .arg("--gpu")
+        .arg("off")
+        .arg(&creature)
+        .arg(data_dir.path())
+        .env_remove("NEAT_SCORER_GPU")
+        .output()
+        .expect("failed to spawn rust_scorer binary");
+    assert!(
+        output.status.success(),
+        "rust_scorer --gpu off exited with status {:?}\nstderr:\n{}",
+        output.status.code(),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    let stdout = String::from_utf8(output.stdout).expect("stdout is utf-8");
+    let parsed: serde_json::Value = serde_json::from_str(&stdout)
+        .unwrap_or_else(|e| panic!("stdout is not JSON: {e}\n{stdout}"));
+    let gpu_backend = parsed
+        .get("gpuBackend")
+        .and_then(|v| v.as_str())
+        .expect("missing `gpuBackend` in scorer JSON");
+    assert_eq!(
+        gpu_backend, "cpu-fallback",
+        "`--gpu off` must always report cpu-fallback, got: {gpu_backend}",
+    );
+
+    // The default mode (no `--gpu` flag) is `off` until #81 lands, so it
+    // must produce the identical label.
+    let default_out = Command::new(bin)
+        .arg(&creature)
+        .arg(data_dir.path())
+        .env_remove("NEAT_SCORER_GPU")
+        .output()
+        .expect("failed to spawn rust_scorer binary");
+    assert!(default_out.status.success());
+    let default_json: serde_json::Value =
+        serde_json::from_slice(&default_out.stdout).expect("default mode stdout is JSON");
+    assert_eq!(
+        default_json
+            .get("gpuBackend")
+            .and_then(|v| v.as_str())
+            .unwrap(),
+        "cpu-fallback",
+    );
+
+    // Existing fields must still appear with the same names — adding the new
+    // key must not have shifted any other JSON field.
+    for key in [
+        "score",
+        "error",
+        "complexityPenalty",
+        "recordCount",
+        "hiddenNeurons",
+        "synapseCount",
+        "forwardOnly",
+        "trainingReadBackend",
+        "timeTaken",
+    ] {
+        assert!(
+            parsed.get(key).is_some(),
+            "expected existing key `{key}` in JSON, got:\n{stdout}",
+        );
+    }
+}
+
+/// Issue #80: `--gpu auto` must never panic, even on a host with no GPU.
+/// The label can be any of the native backends (when a GPU is present) or
+/// `cpu-fallback` (when none is available); we only assert it parses.
+#[test]
+fn scorer_binary_gpu_auto_runs_without_panic() {
+    let bin = env!("CARGO_BIN_EXE_rust_scorer");
+    let creature = fixture("identity_creature.json");
+    let data_dir = fixture_data_dir("identity_data.bin");
+
+    let output = Command::new(bin)
+        .arg("--gpu")
+        .arg("auto")
+        .arg(&creature)
+        .arg(data_dir.path())
+        .env_remove("NEAT_SCORER_GPU")
+        .output()
+        .expect("failed to spawn rust_scorer binary");
+    assert!(
+        output.status.success(),
+        "rust_scorer --gpu auto exited with status {:?}\nstderr:\n{}",
+        output.status.code(),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    let stdout = String::from_utf8(output.stdout).expect("stdout is utf-8");
+    let parsed: serde_json::Value = serde_json::from_str(&stdout)
+        .unwrap_or_else(|e| panic!("stdout is not JSON: {e}\n{stdout}"));
+    let gpu_backend = parsed
+        .get("gpuBackend")
+        .and_then(|v| v.as_str())
+        .expect("missing `gpuBackend` in scorer JSON");
+    assert!(
+        matches!(
+            gpu_backend,
+            "cpu-fallback" | "metal" | "vulkan" | "dx12" | "gl"
+        ),
+        "unexpected gpuBackend label: {gpu_backend}",
+    );
+}
+
+/// Issue #80: `NEAT_SCORER_GPU=off` (env var, no flag) must take effect when
+/// the CLI flag is absent. The CLI flag must override the env var.
+#[test]
+fn scorer_binary_gpu_env_var_is_honoured() {
+    let bin = env!("CARGO_BIN_EXE_rust_scorer");
+    let creature = fixture("identity_creature.json");
+    let data_dir = fixture_data_dir("identity_data.bin");
+
+    // Env var only.
+    let output = Command::new(bin)
+        .env("NEAT_SCORER_GPU", "off")
+        .arg(&creature)
+        .arg(data_dir.path())
+        .output()
+        .expect("failed to spawn rust_scorer binary");
+    assert!(output.status.success());
+    let parsed: serde_json::Value = serde_json::from_slice(&output.stdout).expect("stdout is JSON");
+    assert_eq!(
+        parsed.get("gpuBackend").and_then(|v| v.as_str()).unwrap(),
+        "cpu-fallback",
+    );
+
+    // CLI overrides env var: `--gpu off` wins even when env says `auto`.
+    let output = Command::new(bin)
+        .env("NEAT_SCORER_GPU", "auto")
+        .arg("--gpu")
+        .arg("off")
+        .arg(&creature)
+        .arg(data_dir.path())
+        .output()
+        .expect("failed to spawn rust_scorer binary");
+    assert!(output.status.success());
+    let parsed: serde_json::Value = serde_json::from_slice(&output.stdout).expect("stdout is JSON");
+    assert_eq!(
+        parsed.get("gpuBackend").and_then(|v| v.as_str()).unwrap(),
+        "cpu-fallback",
+        "CLI `--gpu off` must override `NEAT_SCORER_GPU=auto`",
+    );
+}
+
+/// Issue #80: a malformed `NEAT_SCORER_GPU` value must produce a non-zero
+/// exit with a clear error message rather than silently falling back.
+#[test]
+fn scorer_binary_gpu_env_var_rejects_garbage() {
+    let bin = env!("CARGO_BIN_EXE_rust_scorer");
+    let creature = fixture("identity_creature.json");
+    let data_dir = fixture_data_dir("identity_data.bin");
+
+    let output = Command::new(bin)
+        .env("NEAT_SCORER_GPU", "yolo")
+        .arg(&creature)
+        .arg(data_dir.path())
+        .output()
+        .expect("failed to spawn rust_scorer binary");
+    assert!(
+        !output.status.success(),
+        "expected non-zero exit for malformed NEAT_SCORER_GPU",
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("yolo") || stderr.contains("auto"),
+        "stderr should describe the invalid GPU mode, got: {stderr}",
+    );
+}
+
 /// Sanity check: missing creature file produces a non-zero exit and a clear error.
 /// Also serves as a regression for the CLI contract (positional args).
 #[test]

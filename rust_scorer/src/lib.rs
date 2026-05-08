@@ -8,6 +8,7 @@
 //!
 //! Issue #36 — Criterion benchmark infrastructure.
 
+pub mod gpu;
 pub mod multi_score;
 pub mod read_tuning;
 pub mod scoring;

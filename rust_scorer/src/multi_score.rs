@@ -35,6 +35,7 @@ use neat_core::training_bin_stream::for_each_read_chunk;
 use neat_core::training_data::{TrainingDataConfig, find_bin_files};
 use rayon::prelude::*;
 
+use crate::gpu::GpuBackendLabel;
 use crate::read_tuning::{training_read_backend_label, training_read_target_bytes_from_env};
 use crate::scoring::{ScoreResult, calculate_score, compute_score_components, value_penalty};
 use crate::stream_score::{activation_worker_count_for_scorer, effective_fused_read_buf_len};
@@ -229,6 +230,7 @@ fn workers_per_creature(n_creatures: usize, activation_threads: usize) -> Vec<us
 pub fn score_from_creature_dir(
     creatures_dir: &Path,
     data_path: &Path,
+    gpu_backend: GpuBackendLabel,
 ) -> Result<BTreeMap<String, ScoreResult>, String> {
     let started = Instant::now();
     let loaded = load_creatures_from_dir(creatures_dir)?;
@@ -476,6 +478,7 @@ pub fn score_from_creature_dir(
                 synapse_count,
                 forward_only: true,
                 training_read_backend: training_read_backend.clone(),
+                gpu_backend,
                 read_buf_len: Some(fused_read_buf_len),
                 activation_threads: Some(activation_threads),
                 parallel_activation_batches: None,
