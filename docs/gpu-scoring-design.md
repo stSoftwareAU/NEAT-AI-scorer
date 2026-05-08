@@ -311,3 +311,102 @@ Refreshed evidence committed under
 and [`docs/evidence/multi-creature-200mb.svg`](evidence/multi-creature-200mb.svg).
 The earlier 2 GiB / 500 MB flamegraphs from Issue #37 are kept at
 `single-creature.svg` / `multi-creature.svg` for historical comparison.
+
+## Multi-creature batched dispatch — Issue #82
+
+The single-creature kernel (#81) closed as a `negative-result`: per-record
+arithmetic on the synthetic 8→8→2 fixture is too small to amortise wgpu
+dispatch + readback overhead, even at the largest read buffer. Issue #82
+attacks the directory-mode path instead, where the same dispatch is reused
+across **N creatures × records** so per-dispatch arithmetic intensity grows
+with the population.
+
+### Pipeline overview
+
+```mermaid
+sequenceDiagram
+    participant IO as I/O thread
+    participant CH as crossbeam channel<br/>(capacity = inflight_chunks)
+    participant GPU as GPU worker thread
+    participant DEV as wgpu device
+    IO->>IO: read & unpack chunk N
+    IO->>CH: send (floats, n_records)
+    GPU->>CH: recv chunk N
+    GPU->>DEV: write_buffer + dispatch + map_async + poll(Wait)
+    DEV-->>GPU: per-creature partials (f32)
+    GPU->>IO: per-creature MSE sums (f64)
+    par next chunk
+        IO->>IO: read & unpack chunk N+1
+    and current chunk
+        GPU->>DEV: dispatch chunk N
+    end
+    Note over IO,GPU: I/O blocks only when channel is full<br/>(>= inflight_chunks pending).
+```
+
+### Bind group layout
+
+The shader (`rust_scorer/src/shaders/forward_mse_batched.wgsl`) uses one bind
+group with six entries. Per-creature SSBOs are uploaded once per scoring run
+and reused for every chunk; only `header` and `records` are rewritten per
+dispatch.
+
+| Binding | Kind | Contents | Lifecycle |
+|---|---|---|---|
+| 0 | uniform `Header` | record count + dispatch geometry | written every chunk |
+| 1 | storage<read> `records` (f32) | flat `[in0..inN, out0..outM, ...]` | written every chunk |
+| 2 | storage<read> `neurons` (NeuronGpu) | concatenated per-creature non-input neurons | once per run |
+| 3 | storage<read> `synapses` (SynapseGpu) | concatenated per-creature synapses | once per run |
+| 4 | storage<read> `creatures` (CreatureMeta) | per-creature offsets into 2/3 + neuron count | once per run |
+| 5 | storage<read_write> `partials` (f32) | `num_creatures × num_workgroups_x` partials | written by shader, read back by host |
+
+Dispatch geometry: `(records.div_ceil(64), num_creatures, 1)` workgroups,
+workgroup size `(64, 1, 1)`. Each thread evaluates one `(creature, record)`
+pair into private activation scratch, then a workgroup-shared tree reduction
+collapses 64 per-record squared errors into a single `f32` per workgroup.
+Per-creature totals are summed into `f64` on the host after readback to keep
+running-sum precision stable.
+
+### In-flight-chunk lifecycle
+
+`score_from_creature_dir_gpu(.., inflight_chunks)` accepts `1` or `2`:
+
+* `inflight_chunks = 1` — synchronous; the I/O thread waits for each chunk's
+  readback before reading the next. Used as the non-pipelined baseline in the
+  `gpu_pipelining_toggle/inflight/1` Criterion bench.
+* `inflight_chunks = 2` — pipelined; a worker thread runs the GPU dispatch
+  + readback while the I/O thread continues unpacking the next chunk. The
+  bounded `mpsc::sync_channel` of capacity `inflight_chunks` blocks the I/O
+  thread when two chunks are already in flight, capping device memory.
+
+Higher values are clamped to `2` so peak resident GPU memory stays at
+`2 × max_chunk_records × values_per_record × 4 B`. With the default
+`NEAT_SCORER_READ_BYTES`, that is well under 4 MiB.
+
+### Acceptance numbers (`BENCH_SCORING_BYTES=200000000`, Apple Silicon M-series)
+
+| Bench | Median | Throughput | vs CPU baseline |
+|---|---|---|---|
+| `score_from_creature_dir/creatures/50` (CPU baseline) | 3.219 s | 59.2 MiB/s | — |
+| `gpu_score_from_creature_dir/creatures/50` (pipelined, inflight=2) | 2.176 s | 87.7 MiB/s | **−32.4 %** wall-clock |
+| `gpu_score_from_creature_dir/creatures/10` | 977 ms | 195 MiB/s | — (CPU still wins at low N) |
+| `gpu_pipelining_toggle/inflight/1` | 2.147 s | 88.8 MiB/s | — |
+| `gpu_pipelining_toggle/inflight/2` | 2.153 s | 88.6 MiB/s | within 0.3 % of inflight=1 — pipelining adds no measurable cost |
+
+The N=50 result clears the ≥30 % bar set in
+[Acceptance benchmarks](#acceptance-benchmarks). At N=10 the per-dispatch
+arithmetic is too thin to beat the Rayon-parallelised CPU path — directory
+runs at small populations should keep using `--gpu off`. Pipelining is "free"
+on Apple Silicon unified memory: the GPU dispatch + readback never starves
+the I/O thread on this fixture, so the inflight=1 and inflight=2 paths are
+within statistical noise.
+
+### Diagnostic JSON fields
+
+`ScoreResult` gains three optional fields that are populated only when the
+GPU multi-creature path runs:
+
+| Field | Meaning |
+|---|---|
+| `gpuKernel` | `"forward_mse_batched"` whenever the GPU runner ran. Absent on the CPU path so existing JSON consumers see no change. |
+| `gpuInflightChunks` | `1` (synchronous) or `2` (double-buffered I/O). |
+| `gpuDispatchCount` | total `dispatch_workgroups` calls across the corpus — one per chunk, matches `parallelActivationBatches` on the CPU path. |

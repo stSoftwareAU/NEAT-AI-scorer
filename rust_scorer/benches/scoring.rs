@@ -43,8 +43,10 @@ use neat_core::creature::{compile_creature, parse_creature_json};
 use neat_core::loss::mse_sum_batch_packed;
 use neat_core::training_data::{TrainingDataConfig, find_bin_files};
 
-use rust_scorer::gpu::GpuBackendLabel;
-use rust_scorer::multi_score::score_from_creature_dir;
+use std::sync::Arc;
+
+use rust_scorer::gpu::{GpuBackendLabel, GpuMode, resolve_backend, select_adapter};
+use rust_scorer::multi_score::{score_from_creature_dir, score_from_creature_dir_gpu};
 use rust_scorer::stream_score::accumulate_mse_sum_forward_only_fused;
 
 use tempfile::TempDir;
@@ -328,10 +330,132 @@ fn bench_unpack_and_mse_inner(c: &mut Criterion) {
     group.finish();
 }
 
+/// Issue #82: GPU multi-creature batched dispatch bench. Mirrors the CPU
+/// `score_from_creature_dir` group at N=10 and N=50 so before/after numbers
+/// stay directly comparable. When no GPU adapter is available the bench
+/// silently no-ops (the function still records a single sample so Criterion
+/// produces a row in the report), letting CPU-only CI runners pass.
+fn bench_gpu_score_from_creature_dir(c: &mut Criterion) {
+    let fix = fixture();
+    let mut group = c.benchmark_group("gpu_score_from_creature_dir");
+    group.sample_size(10);
+    group.measurement_time(Duration::from_secs(15));
+    group.throughput(Throughput::Bytes(fix.total_bytes as u64));
+
+    // Skip cleanly when no GPU is available.
+    let backend = resolve_backend(GpuMode::Auto).unwrap_or(GpuBackendLabel::CpuFallback);
+    if backend == GpuBackendLabel::CpuFallback {
+        eprintln!("gpu_score_from_creature_dir: no GPU adapter — skipping");
+        group.finish();
+        return;
+    }
+    let ctx = match select_adapter() {
+        Ok(Some(c)) => Arc::new(c),
+        _ => {
+            eprintln!("gpu_score_from_creature_dir: select_adapter returned no context");
+            group.finish();
+            return;
+        }
+    };
+
+    for &n in &[10_usize, 50_usize] {
+        let sub_dir = fix
+            .creatures_root
+            .parent()
+            .unwrap()
+            .join(format!("dir-{n}"));
+        if !sub_dir.exists() {
+            fs::create_dir_all(&sub_dir).unwrap();
+            for i in 0..n {
+                let src = fix.creatures_root.join(format!("creature-{i:03}.json"));
+                let dst = sub_dir.join(format!("creature-{i:03}.json"));
+                fs::copy(&src, &dst).expect("copy creature");
+            }
+        }
+
+        group.bench_with_input(BenchmarkId::new("creatures", n), &sub_dir, |b, dir| {
+            let ctx = ctx.clone();
+            b.iter(|| {
+                let result =
+                    score_from_creature_dir_gpu(dir, &fix.data_dir, backend, ctx.clone(), 2)
+                        .expect("gpu multi-creature score");
+                black_box(result);
+            });
+        });
+    }
+    group.finish();
+}
+
+/// Issue #82: pipelining toggle — same N=50 dataset, run once with
+/// `inflight_chunks=1` (synchronous) and once with `inflight_chunks=2`
+/// (double-buffered). The acceptance criterion is "pipelined ≥ non-pipelined".
+fn bench_gpu_pipelining_toggle(c: &mut Criterion) {
+    let fix = fixture();
+    let mut group = c.benchmark_group("gpu_pipelining_toggle");
+    group.sample_size(10);
+    group.measurement_time(Duration::from_secs(15));
+    group.throughput(Throughput::Bytes(fix.total_bytes as u64));
+
+    let backend = resolve_backend(GpuMode::Auto).unwrap_or(GpuBackendLabel::CpuFallback);
+    if backend == GpuBackendLabel::CpuFallback {
+        eprintln!("gpu_pipelining_toggle: no GPU adapter — skipping");
+        group.finish();
+        return;
+    }
+    let ctx = match select_adapter() {
+        Ok(Some(c)) => Arc::new(c),
+        _ => {
+            eprintln!("gpu_pipelining_toggle: select_adapter returned no context");
+            group.finish();
+            return;
+        }
+    };
+
+    let n = 50_usize;
+    let sub_dir = fix
+        .creatures_root
+        .parent()
+        .unwrap()
+        .join(format!("dir-{n}"));
+    if !sub_dir.exists() {
+        fs::create_dir_all(&sub_dir).unwrap();
+        for i in 0..n {
+            let src = fix.creatures_root.join(format!("creature-{i:03}.json"));
+            let dst = sub_dir.join(format!("creature-{i:03}.json"));
+            fs::copy(&src, &dst).expect("copy creature");
+        }
+    }
+
+    for &inflight in &[1_usize, 2_usize] {
+        group.bench_with_input(
+            BenchmarkId::new("inflight", inflight),
+            &(&sub_dir, inflight),
+            |b, (dir, inflight)| {
+                let ctx = ctx.clone();
+                let inflight = *inflight;
+                b.iter(|| {
+                    let result = score_from_creature_dir_gpu(
+                        dir,
+                        &fix.data_dir,
+                        backend,
+                        ctx.clone(),
+                        inflight,
+                    )
+                    .expect("gpu multi-creature score");
+                    black_box(result);
+                });
+            },
+        );
+    }
+    group.finish();
+}
+
 criterion_group!(
     benches,
     bench_score_from_json_fused,
     bench_score_from_creature_dir,
     bench_unpack_and_mse_inner,
+    bench_gpu_score_from_creature_dir,
+    bench_gpu_pipelining_toggle,
 );
 criterion_main!(benches);

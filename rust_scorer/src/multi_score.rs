@@ -26,6 +26,7 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::Instant;
 
 use neat_core::creature::{CreatureExport, compile_creature, parse_creature_json};
@@ -35,7 +36,8 @@ use neat_core::training_bin_stream::for_each_read_chunk;
 use neat_core::training_data::{TrainingDataConfig, find_bin_files};
 use rayon::prelude::*;
 
-use crate::gpu::GpuBackendLabel;
+use crate::gpu::forward_mse_batched::BatchedRunner;
+use crate::gpu::{GpuBackendLabel, GpuContext};
 use crate::read_tuning::{training_read_backend_label, training_read_target_bytes_from_env};
 use crate::scoring::{ScoreResult, calculate_score, compute_score_components, value_penalty};
 use crate::stream_score::{activation_worker_count_for_scorer, effective_fused_read_buf_len};
@@ -485,11 +487,334 @@ pub fn score_from_creature_dir(
                 max_activation_batch_records: None,
                 time_taken_secs: elapsed,
                 compile_time_secs: Some(compile_time_secs),
+                gpu_kernel: None,
+                gpu_inflight_chunks: None,
+                gpu_dispatch_count: None,
             },
         );
     }
 
     Ok(results)
+}
+
+/// Issue #82 — GPU-backed multi-creature scoring path.
+///
+/// Same I/O envelope as [`score_from_creature_dir`]: load every `*.json`
+/// creature from `creatures_dir`, validate the shared `(num_inputs,
+/// num_outputs)` shape, then stream the training corpus once and accumulate
+/// per-creature MSE. The per-chunk inner loop dispatches a single
+/// `forward_mse_batched` GPU kernel that scores every (creature, record) pair
+/// in the chunk; per-creature partials come back from the GPU summed over
+/// records and are added to the running per-creature totals on the host.
+///
+/// `inflight_chunks` caps in-flight GPU dispatches:
+/// * `1` — synchronous; the I/O thread waits for each chunk's readback
+///   before reading the next one.
+/// * `2` — pipelined; chunk `N+1`'s host unpack overlaps chunk `N`'s GPU
+///   compute via a worker thread fed by a bounded channel. Higher values are
+///   accepted but capped to `2` so device memory stays bounded.
+///
+/// Returns the same per-creature `BTreeMap<String, ScoreResult>` as the CPU
+/// path, with `gpuKernel: "forward_mse_batched"`, `gpuInflightChunks`, and
+/// `gpuDispatchCount` populated for every entry.
+pub fn score_from_creature_dir_gpu(
+    creatures_dir: &Path,
+    data_path: &Path,
+    gpu_backend: GpuBackendLabel,
+    ctx: Arc<GpuContext>,
+    inflight_chunks: usize,
+) -> Result<BTreeMap<String, ScoreResult>, String> {
+    let started = Instant::now();
+    let loaded = load_creatures_from_dir(creatures_dir)?;
+
+    if !data_path.is_dir() {
+        return Err(format!(
+            "Training data path '{}' is not a directory",
+            data_path.display()
+        ));
+    }
+
+    let bin_files = find_bin_files(data_path)
+        .map_err(|e| format!("Failed to read training data directory: {e}"))?;
+    if bin_files.is_empty() {
+        return Err(format!(
+            "No .bin files found in training data directory '{}'",
+            data_path.display()
+        ));
+    }
+
+    let num_inputs = loaded[0].creature.input;
+    let num_outputs = loaded[0].creature.output;
+    let config = TrainingDataConfig {
+        num_inputs,
+        num_outputs,
+    };
+    let record_bytes = config.bytes_per_record();
+    if record_bytes == 0 {
+        return Err("Invalid record byte length (zero)".to_string());
+    }
+    let values_per_record = num_inputs + num_outputs;
+
+    let fused_read_target_bytes = training_read_target_bytes_from_env(record_bytes);
+    let fused_read_buf_len = effective_fused_read_buf_len(record_bytes, fused_read_target_bytes);
+    let training_read_backend = training_read_backend_label().to_string();
+    let activation_threads = activation_worker_count_for_scorer();
+
+    // Compile every creature exactly once — the GPU runner serialises the
+    // resulting topology into flat per-creature SSBOs.
+    let compile_started = Instant::now();
+    let mut networks: Vec<CompiledNetwork> = Vec::with_capacity(loaded.len());
+    for c in &loaded {
+        let net = compile_creature(&c.creature).map_err(|e| {
+            format!(
+                "Failed compiling network for creature '{}': {e}",
+                c.path.display()
+            )
+        })?;
+        networks.push(net);
+    }
+    let compile_time_secs = compile_started.elapsed().as_secs_f64();
+
+    // Build the GPU runner up-front; if any creature is incompatible with the
+    // shader (unsupported squash, too many neurons, shape mismatch) we fall
+    // back to the CPU path so callers still get a result.
+    let mut runner = match BatchedRunner::new(ctx.clone(), &networks, num_inputs, num_outputs) {
+        Ok(r) => r,
+        Err(e) => {
+            return Err(format!(
+                "GPU runner cannot host this creature set ({e}); rerun with --gpu off"
+            ));
+        }
+    };
+
+    let inflight_chunks = inflight_chunks.clamp(1, 2);
+    let mut total_records = 0_usize;
+    let mut total_mse = vec![0.0_f64; loaded.len()];
+    let mut pending: Vec<u8> = Vec::new();
+    let mut head: usize = 0;
+    let mut unpack_floats: Vec<f32> = Vec::new();
+
+    if inflight_chunks <= 1 {
+        // Synchronous: one chunk in flight at a time.
+        let mut score_chunk = |floats: &[f32], n_records: usize| -> Result<(), String> {
+            if floats.len() != n_records * values_per_record {
+                return Err("Internal float unpack length mismatch".to_string());
+            }
+            total_records += n_records;
+            let sums = runner.score_chunk(floats, n_records);
+            for (i, s) in sums.iter().enumerate() {
+                total_mse[i] += s;
+            }
+            Ok(())
+        };
+
+        for_each_read_chunk(&bin_files, fused_read_buf_len, |chunk| {
+            run_io_loop(
+                chunk,
+                &mut pending,
+                &mut head,
+                &mut unpack_floats,
+                record_bytes,
+                &mut score_chunk,
+            )
+        })?;
+    } else {
+        // Pipelined: a worker thread runs GPU dispatches while the I/O thread
+        // continues unpacking. Bounded crossbeam-style channel of capacity
+        // `inflight_chunks` keeps memory bounded under streaming load.
+        use std::sync::mpsc;
+        use std::thread;
+
+        // Move runner into worker thread; results come back through `result_rx`.
+        let n_creatures = loaded.len();
+        let (work_tx, work_rx) = mpsc::sync_channel::<Option<(Vec<f32>, usize)>>(inflight_chunks);
+        let (result_tx, result_rx) = mpsc::channel::<Result<(usize, Vec<f64>), String>>();
+
+        let worker = thread::spawn(move || {
+            while let Ok(Some((floats, n_records))) = work_rx.recv() {
+                if floats.len() != n_records * values_per_record {
+                    let _ =
+                        result_tx.send(Err("Internal float unpack length mismatch".to_string()));
+                    return runner;
+                }
+                let sums = runner.score_chunk(&floats, n_records);
+                if result_tx.send(Ok((n_records, sums))).is_err() {
+                    break;
+                }
+            }
+            runner
+        });
+
+        let mut pending_results: usize = 0;
+        let drain_one = |total_records: &mut usize,
+                         total_mse: &mut [f64],
+                         pending_results: &mut usize|
+         -> Result<(), String> {
+            match result_rx.recv() {
+                Ok(Ok((n_records, sums))) => {
+                    *total_records += n_records;
+                    for (i, s) in sums.iter().enumerate() {
+                        total_mse[i] += s;
+                    }
+                    *pending_results -= 1;
+                    Ok(())
+                }
+                Ok(Err(e)) => Err(e),
+                Err(_) => Err("GPU worker hung up unexpectedly".to_string()),
+            }
+        };
+
+        let mut submit_chunk = |floats: &[f32], n_records: usize| -> Result<(), String> {
+            // Cap in-flight so the channel never queues more than `inflight_chunks`
+            // chunks. When already at the cap, drain one result first.
+            while pending_results >= inflight_chunks {
+                drain_one(&mut total_records, &mut total_mse, &mut pending_results)?;
+            }
+            // Send a copy — the worker thread takes ownership of the Vec.
+            work_tx
+                .send(Some((floats.to_vec(), n_records)))
+                .map_err(|_| "GPU worker hung up before chunk submission".to_string())?;
+            pending_results += 1;
+            Ok(())
+        };
+
+        for_each_read_chunk(&bin_files, fused_read_buf_len, |chunk| {
+            run_io_loop(
+                chunk,
+                &mut pending,
+                &mut head,
+                &mut unpack_floats,
+                record_bytes,
+                &mut submit_chunk,
+            )
+        })?;
+
+        // Drain remaining results before tearing down the worker.
+        while pending_results > 0 {
+            drain_one(&mut total_records, &mut total_mse, &mut pending_results)?;
+        }
+        let _ = work_tx.send(None);
+        let recovered_runner = worker.join().map_err(|_| "GPU worker thread panicked")?;
+        // Move dispatch_count back so we can report it in the JSON.
+        runner = recovered_runner;
+        // Quiet "unused" warnings in release builds.
+        let _ = n_creatures;
+    }
+
+    if head != pending.len() {
+        return Err(format!(
+            "Trailing {} bytes (incomplete record) after reading all training files",
+            pending.len() - head
+        ));
+    }
+    if total_records == 0 {
+        return Err("No training records found".to_string());
+    }
+
+    let elapsed = started.elapsed().as_secs_f64();
+    let dispatch_count = runner.dispatch_count;
+    let mut results = BTreeMap::new();
+    for (loaded_creature, mse_sum) in loaded.iter().zip(total_mse.iter()) {
+        let avg_error = *mse_sum / total_records as f64;
+        let components = compute_score_components(&loaded_creature.creature);
+        let hidden_neurons = components.hidden_neuron_count;
+        let synapse_count = components.synapse_count;
+
+        let weight_bias_penalty = (value_penalty(components.max_weight_bias)
+            + value_penalty(components.avg_weight_bias))
+            / 2.0;
+        let total_penalty = weight_bias_penalty + components.squash_complexity_penalty;
+        let complexity_penalty = hidden_neurons as f64 * GROWTH_COST
+            + synapse_count as f64 * GROWTH_COST / 10.0
+            + total_penalty * GROWTH_COST / 100.0;
+
+        let score = calculate_score(
+            avg_error,
+            &components,
+            GROWTH_COST,
+            loaded_creature.creature.semantic_version.as_deref(),
+        );
+
+        results.insert(
+            loaded_creature.key.clone(),
+            ScoreResult {
+                score,
+                error: avg_error,
+                complexity_penalty,
+                record_count: total_records,
+                hidden_neurons,
+                synapse_count,
+                forward_only: true,
+                training_read_backend: training_read_backend.clone(),
+                gpu_backend,
+                read_buf_len: Some(fused_read_buf_len),
+                activation_threads: Some(activation_threads),
+                parallel_activation_batches: None,
+                max_activation_batch_records: None,
+                time_taken_secs: elapsed,
+                compile_time_secs: Some(compile_time_secs),
+                gpu_kernel: Some("forward_mse_batched".to_string()),
+                gpu_inflight_chunks: Some(inflight_chunks),
+                gpu_dispatch_count: Some(dispatch_count),
+            },
+        );
+    }
+
+    Ok(results)
+}
+
+/// Callback that scores one chunk of decoded packed records. The callee is
+/// expected to update its own per-creature MSE running totals.
+type ScoreChunkFn<'a> = dyn FnMut(&[f32], usize) -> Result<(), String> + 'a;
+
+/// Shared head-and-compact I/O loop reused by both CPU and GPU directory-mode
+/// paths. Calls `score_chunk(floats, n_records)` for each whole-record slice
+/// teased out of the streamed `chunk`.
+fn run_io_loop(
+    chunk: &[u8],
+    pending: &mut Vec<u8>,
+    head: &mut usize,
+    unpack_floats: &mut Vec<f32>,
+    record_bytes: usize,
+    score_chunk: &mut ScoreChunkFn<'_>,
+) -> Result<(), String> {
+    if pending.is_empty() && *head == 0 && !chunk.is_empty() {
+        let aligned_len = (chunk.len() / record_bytes) * record_bytes;
+        if aligned_len > 0 {
+            let num_f32 = aligned_len / 4;
+            let n_records = aligned_len / record_bytes;
+            unpack_f32s_le(&chunk[..aligned_len], unpack_floats, num_f32);
+            score_chunk(unpack_floats, n_records)?;
+        }
+        if aligned_len < chunk.len() {
+            pending.extend_from_slice(&chunk[aligned_len..]);
+        }
+        return Ok(());
+    }
+
+    if !chunk.is_empty() {
+        pending.extend_from_slice(chunk);
+    }
+    compact_pending_if_needed(pending, head);
+
+    loop {
+        let avail = pending.len() - *head;
+        let complete_len = (avail / record_bytes) * record_bytes;
+        if complete_len == 0 {
+            break;
+        }
+        let num_f32 = complete_len / 4;
+        let n_records = complete_len / record_bytes;
+        let slice = &pending[*head..*head + complete_len];
+        unpack_f32s_le(slice, unpack_floats, num_f32);
+        score_chunk(unpack_floats, n_records)?;
+        *head += complete_len;
+    }
+    if *head == pending.len() {
+        pending.clear();
+        *head = 0;
+    }
+    Ok(())
 }
 
 #[cfg(test)]
