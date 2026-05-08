@@ -56,35 +56,77 @@ rust_scorer <creature.json | creatures_dir> <training_data_dir>
 - `creatures_dir` path: scores every `*.json` in that directory in one pass over training data and returns one JSON object keyed by each file's stem (filename without extension or folders).
 - Directory mode requires `forwardOnly: true` and matching `input` / `output` shape across all files.
 
-### GPU mode (Issue #80)
+### GPU mode (Issues #80 / #83)
 
-The scorer can probe for a GPU adapter via `wgpu` and report which backend
-would run kernels. Selection is opt-in via the `--gpu` flag or the
-`NEAT_SCORER_GPU` environment variable; the CLI flag wins when both are set.
+The scorer probes for a GPU adapter via `wgpu` and dispatches the
+multi-creature batched kernel from Issue #82 when bench evidence supports it
+(see [`docs/performance-baseline.md`](docs/performance-baseline.md)). The CLI
+flag wins over the `NEAT_SCORER_GPU` environment variable.
 
-| Mode    | Behaviour                                                                                                | `gpuBackend` value                                  |
-|---------|----------------------------------------------------------------------------------------------------------|-----------------------------------------------------|
-| `off`   | Skip GPU detection entirely; run the CPU pipeline. **Default** until GPU kernels (#81) land.             | `"cpu-fallback"`                                    |
-| `auto`  | Probe for a high-performance discrete GPU; silently fall back to CPU when none is found.                 | `"metal"` / `"vulkan"` / `"dx12"` / `"gl"` / `"cpu-fallback"` |
-| `on`    | Require a compatible GPU; exit non-zero with a clear message when none is found (no silent fallback).    | `"metal"` / `"vulkan"` / `"dx12"` / `"gl"`          |
+| Mode    | Behaviour                                                                                                       | `gpuBackend` value                                  |
+|---------|-----------------------------------------------------------------------------------------------------------------|-----------------------------------------------------|
+| `auto`  | **Default since Issue #83.** Use GPU on paths where bench evidence supports it (directory mode at the issue-target corpus); silently fall back to CPU otherwise. | `"metal"` / `"vulkan"` / `"dx12"` / `"gl"` / `"cpu-fallback"` |
+| `on`    | Require a compatible GPU; exit non-zero with a clear message when none is found (no silent fallback). Forces the GPU path even where bench evidence does not support it. | `"metal"` / `"vulkan"` / `"dx12"` / `"gl"`          |
+| `off`   | Skip GPU detection entirely; run the CPU pipeline.                                                             | `"cpu-fallback"`                                    |
 
 ```text
-rust_scorer --gpu auto <creature.json> <training_data_dir>
-NEAT_SCORER_GPU=auto rust_scorer <creature.json> <training_data_dir>
+rust_scorer <creatures_dir> <training_data_dir>             # Auto by default
+rust_scorer --gpu off <creature.json> <training_data_dir>   # opt out
+NEAT_SCORER_GPU=on rust_scorer <creatures_dir> <training_data_dir>
 ```
 
 The `gpuBackend` field is added to every JSON output (single-creature and
-directory mode); existing fields and their order are unchanged.
+directory mode) and reports the backend that **actually ran** the scoring
+kernel (per Issue #83). Existing fields and their order are unchanged.
 
 ```mermaid
 flowchart LR
     CLI[--gpu / NEAT_SCORER_GPU] --> Mode{GpuMode}
-    Mode -->|Off| CPU[CPU pipeline<br/>unchanged]
+    Mode -->|Off| CPU[CPU pipeline]
     Mode -->|Auto/On| Adapter[wgpu adapter<br/>selection]
-    Adapter -->|found| Ctx[GpuContext<br/>passed to kernels<br/>once #81 lands]
+    Adapter -->|found| Path{ScoringPath?}
     Adapter -->|none + Auto| CPU
     Adapter -->|none + On| Err[exit non-zero]
+    Path -->|SingleCreature<br/>#81 negative| CPU
+    Path -->|CreatureDirectory<br/>#82 wins ≥30 %| GPUKernel[forward_mse_batched<br/>+ I/O pipeline]
+    GPUKernel -->|kernel rejects creature| CPU
 ```
+
+### GPU acceleration (Issue #83)
+
+End-to-end benchmarking at `BENCH_SCORING_BYTES=200000000` showed the
+multi-creature batched kernel from #82 beats CPU+PGO by ≥ 30 % on Apple
+Silicon Metal, well clearing the 3 % bar from
+[`docs/gpu-scoring-design.md`](docs/gpu-scoring-design.md). The
+single-creature path stayed slower on GPU than CPU+PGO in #81 and is held
+on CPU. `auto_should_use_gpu` in `rust_scorer/src/gpu/mod.rs` is the single
+source of truth for the per-path decision; updating either result only
+requires editing that function plus the matching row in the docs table.
+
+| Path                               | GPU vs CPU+PGO @ 200 MB | `Auto` default | Source       |
+|------------------------------------|-------------------------|----------------|--------------|
+| `score_from_json_fused` (single)   | GPU loses               | **CPU**        | Issue #81 (negative result) |
+| `score_from_creature_dir` (N=50)   | **GPU −32.4 %** (Metal) | **GPU**        | Issue #82 PR summary |
+| `score_from_creature_dir` (N=10)   | GPU loses (low N)       | GPU (per-path) | Issue #82 |
+
+`Auto` selects per **path** (single vs directory), not per N — at N=10 the
+per-dispatch overhead dominates, but at the issue-target corpus the
+break-even sits well before N=50 (see [`docs/gpu-scoring-design.md`](docs/gpu-scoring-design.md)).
+Users running directory mode at very low N can opt out with `--gpu off` if
+they observe a regression on their hardware.
+
+Headline numbers (Apple Silicon M-series, 200 MB corpus, from
+[`docs/performance-baseline.md`](docs/performance-baseline.md)):
+
+| Bench                                              | Median  | Throughput  |
+|----------------------------------------------------|---------|-------------|
+| `score_from_creature_dir/creatures/50` (CPU)       | 3.219 s | 59.2 MiB/s  |
+| `gpu_score_from_creature_dir/creatures/50` (GPU)   | 2.176 s | 87.7 MiB/s  |
+| `gpu_pipelining_toggle/inflight/2` (pipelined)     | 2.153 s | 88.6 MiB/s  |
+
+The JSON output adds `gpuKernel: "forward_mse_batched"` plus
+`gpuInflightChunks` and `gpuDispatchCount` diagnostic counters when the
+GPU directory path runs.
 
 ### Stdin input mode
 

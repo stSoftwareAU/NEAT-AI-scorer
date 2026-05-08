@@ -29,7 +29,7 @@ use neat_core::training_data::{TrainingDataConfig, TrainingDataIterator, find_bi
 
 use std::sync::Arc;
 
-use crate::gpu::{GpuBackendLabel, GpuMode};
+use crate::gpu::{GpuBackendLabel, GpuMode, ScoringPath, auto_should_use_gpu};
 use crate::multi_score::{score_from_creature_dir, score_from_creature_dir_gpu};
 use crate::read_tuning::{training_read_backend_label, training_read_target_bytes_from_env};
 use crate::scoring::{ScoreResult, calculate_score, compute_score_components};
@@ -58,11 +58,14 @@ struct Cli {
     #[arg(long)]
     creature_stdin: bool,
 
-    /// Opt-in GPU mode (Issue #80).
+    /// GPU mode (Issue #80, default flipped to `auto` in Issue #83).
     ///
-    /// * `off`  — skip GPU detection (default until #81 lands).
-    /// * `auto` — probe for a compatible GPU; silently fall back to CPU.
+    /// * `auto` — **default**. Probe for a compatible GPU; silently fall
+    ///   back to CPU when none is found, when the GPU kernel cannot host
+    ///   the loaded creatures, or when the scoring path's bench evidence
+    ///   does not support GPU (see [`auto_should_use_gpu`]).
     /// * `on`   — require a compatible GPU; non-zero exit if none found.
+    /// * `off`  — skip GPU detection entirely; run the CPU pipeline.
     ///
     /// Falls back to the `NEAT_SCORER_GPU` env var when not provided.
     #[arg(long, value_enum, value_name = "MODE")]
@@ -121,10 +124,10 @@ enum RunOutput {
 }
 
 fn run(cli: &Cli) -> Result<RunOutput, String> {
-    // Resolve the GPU backend label up-front. For `--gpu off` (default) this
-    // is a constant `cpu-fallback` and never touches `wgpu`; for `auto`/`on`
-    // it triggers adapter selection now so the same label is passed into
-    // every scoring path.
+    // Resolve the GPU backend label up-front. For `--gpu off` this is a
+    // constant `cpu-fallback` and never touches `wgpu`; for `auto` (the
+    // default since Issue #83) and `on` it triggers adapter selection now
+    // so the same label is passed into every scoring path.
     let mode = gpu::resolve_mode(cli.gpu, std::env::var("NEAT_SCORER_GPU").ok().as_deref())?;
     let (gpu_backend, gpu_ctx) = match mode {
         GpuMode::Off => (GpuBackendLabel::CpuFallback, None),
@@ -148,9 +151,26 @@ fn run(cli: &Cli) -> Result<RunOutput, String> {
         },
     };
 
+    // Issue #83 — codified ship/skip decision. `auto_should_use_gpu` is the
+    // single source of truth for which paths default to GPU under Auto mode;
+    // `On` bypasses it (the user explicitly demanded GPU even where bench
+    // evidence does not support it), `Off` skipped GPU detection above.
+    let want_gpu_for_path = |path: ScoringPath| -> bool {
+        match mode {
+            GpuMode::Off => false,
+            GpuMode::On => true,
+            GpuMode::Auto => auto_should_use_gpu(path),
+        }
+    };
+
     if cli.creature_stdin {
         let (creature_json, data_path) = resolve_inputs(cli)?;
-        return score_from_json(&creature_json, &data_path, gpu_backend).map(RunOutput::Single);
+        // Issue #83: single-creature path stays on CPU under every mode
+        // (#81 closed as a negative result — no GPU kernel ships for this
+        // path). The reported `gpuBackend` reflects what actually ran, so
+        // it is `cpu-fallback` here regardless of `gpu_backend` resolution.
+        return score_from_json(&creature_json, &data_path, GpuBackendLabel::CpuFallback)
+            .map(RunOutput::Single);
     }
 
     if cli.args.len() != 2 {
@@ -160,16 +180,32 @@ fn run(cli: &Cli) -> Result<RunOutput, String> {
     let creature_path = &cli.args[0];
     let data_path = &cli.args[1];
     if creature_path.is_dir() {
-        // Issue #82: use the GPU multi-creature batched kernel when an adapter
-        // is available. `inflight_chunks: 2` enables CPU↔GPU pipelining
-        // (double-buffered I/O). When no GPU is available, fall back to the
-        // CPU directory-mode path.
-        if let Some(ctx) = gpu_ctx.clone() {
-            score_from_creature_dir_gpu(creature_path, data_path, gpu_backend, ctx, 2)
-                .map(RunOutput::Multi)
-        } else {
-            score_from_creature_dir(creature_path, data_path, gpu_backend).map(RunOutput::Multi)
+        // Directory mode: per Issue #82+#83 use the GPU multi-creature
+        // batched kernel when (a) an adapter is available and (b) the mode
+        // wants GPU for this path (`Auto` ⇒ yes, `On` ⇒ yes, `Off` ⇒ no).
+        // `inflight_chunks: 2` enables CPU↔GPU pipelining.
+        if want_gpu_for_path(ScoringPath::CreatureDirectory)
+            && let Some(ctx) = gpu_ctx.clone()
+        {
+            match score_from_creature_dir_gpu(creature_path, data_path, gpu_backend, ctx, 2) {
+                Ok(r) => return Ok(RunOutput::Multi(r)),
+                Err(e) => {
+                    // `--gpu on` is a hard requirement — surface the error.
+                    // `--gpu auto` should never abort scoring: silently fall
+                    // back to the CPU path so callers always get a result.
+                    if matches!(mode, GpuMode::On) {
+                        return Err(e);
+                    }
+                    eprintln!("[gpu] auto fallback to CPU directory mode: {e}");
+                }
+            }
         }
+        // CPU directory mode — either Auto declined GPU (no adapter, kernel
+        // could not host the creature set, or the path is not GPU-default),
+        // or the mode is Off. Report `cpu-fallback` so `gpuBackend` reflects
+        // what actually ran (Issue #83).
+        score_from_creature_dir(creature_path, data_path, GpuBackendLabel::CpuFallback)
+            .map(RunOutput::Multi)
     } else {
         let creature_json = fs::read_to_string(creature_path).map_err(|e| {
             format!(
@@ -177,7 +213,10 @@ fn run(cli: &Cli) -> Result<RunOutput, String> {
                 creature_path.display()
             )
         })?;
-        score_from_json(&creature_json, data_path, gpu_backend).map(RunOutput::Single)
+        // See note in the `--creature-stdin` branch — single-creature path
+        // always reports `cpu-fallback`.
+        score_from_json(&creature_json, data_path, GpuBackendLabel::CpuFallback)
+            .map(RunOutput::Single)
     }
 }
 
@@ -765,7 +804,7 @@ mod tests {
         );
     }
 
-    /// With `--gpu off` (default), `score_from_json` must report
+    /// With `--gpu off`, `score_from_json` must report
     /// `gpu_backend = CpuFallback` in the result. This is the unit-level
     /// counterpart to the integration test in `tests/scorer_smoke.rs`.
     #[test]

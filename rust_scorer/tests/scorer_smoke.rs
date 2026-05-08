@@ -207,8 +207,10 @@ fn scorer_binary_gpu_off_emits_cpu_fallback_label() {
         "`--gpu off` must always report cpu-fallback, got: {gpu_backend}",
     );
 
-    // The default mode (no `--gpu` flag) is `off` until #81 lands, so it
-    // must produce the identical label.
+    // Issue #83: the default mode is now `auto`, but the single-creature
+    // path stays on CPU (#81 negative result). The reported `gpuBackend`
+    // reflects what actually ran, so single-creature mode must still
+    // produce `cpu-fallback` regardless of host GPU presence.
     let default_out = Command::new(bin)
         .arg(&creature)
         .arg(data_dir.path())
@@ -224,6 +226,7 @@ fn scorer_binary_gpu_off_emits_cpu_fallback_label() {
             .and_then(|v| v.as_str())
             .unwrap(),
         "cpu-fallback",
+        "single-creature path must report cpu-fallback under default Auto mode (Issue #83)",
     );
 
     // Existing fields must still appear with the same names — adding the new
@@ -244,6 +247,38 @@ fn scorer_binary_gpu_off_emits_cpu_fallback_label() {
             "expected existing key `{key}` in JSON, got:\n{stdout}",
         );
     }
+}
+
+/// Issue #83: `--gpu auto` on the single-creature path must always report
+/// `cpu-fallback` because Issue #81 (single-creature GPU kernel) closed as a
+/// negative result. The path is hard-coded to CPU regardless of which
+/// adapter `wgpu` finds.
+#[test]
+fn scorer_binary_gpu_auto_single_creature_reports_cpu_fallback() {
+    let bin = env!("CARGO_BIN_EXE_rust_scorer");
+    let creature = fixture("identity_creature.json");
+    let data_dir = fixture_data_dir("identity_data.bin");
+
+    let output = Command::new(bin)
+        .arg("--gpu")
+        .arg("auto")
+        .arg(&creature)
+        .arg(data_dir.path())
+        .env_remove("NEAT_SCORER_GPU")
+        .output()
+        .expect("failed to spawn rust_scorer binary");
+    assert!(
+        output.status.success(),
+        "rust_scorer --gpu auto exited with status {:?}\nstderr:\n{}",
+        output.status.code(),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    let parsed: serde_json::Value = serde_json::from_slice(&output.stdout).expect("stdout is JSON");
+    assert_eq!(
+        parsed.get("gpuBackend").and_then(|v| v.as_str()).unwrap(),
+        "cpu-fallback",
+        "single-creature path stays on CPU under Auto (#81 negative result, Issue #83)",
+    );
 }
 
 /// Issue #80: `--gpu auto` must never panic, even on a host with no GPU.
