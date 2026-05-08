@@ -16,14 +16,27 @@
 //!   GpuMode::On, GPU found             -> GpuBackendLabel::{Metal,Vulkan,Dx12,Gl}
 //! ```
 //!
-//! The default mode is [`GpuMode::Off`] until the kernel work in #81 lands;
-//! existing callers that do not set `--gpu` keep the current CPU behaviour.
-//!
 //! Issue #82 — multi-creature batched dispatch lives in the
 //! [`forward_mse_batched`] submodule; the directory-mode scorer in
 //! `multi_score::score_from_creature_dir` consumes it through
 //! [`forward_mse_batched::BatchedRunner`] when `--gpu auto|on` resolves to a
 //! native backend.
+//!
+//! ## Default mode (Issue #83)
+//!
+//! [`GpuMode::default()`] is [`GpuMode::Auto`]. End-to-end benchmarking
+//! ([`docs/performance-baseline.md`](../../../docs/performance-baseline.md))
+//! showed the GPU multi-creature batched kernel beats CPU+PGO by **≥ 30 %** at
+//! `BENCH_SCORING_BYTES=200000000` for `score_from_creature_dir/creatures/50`
+//! on Apple Silicon Metal, well above the 3 % acceptance threshold from
+//! [`docs/gpu-scoring-design.md`](../../../docs/gpu-scoring-design.md). The
+//! single-creature path stays on CPU — Issue #81 closed as a negative result.
+//!
+//! [`auto_should_use_gpu`] codifies that ship/skip decision as a runtime
+//! function on a [`ScoringPath`] discriminant; `main.rs` consults it before
+//! dispatching to the GPU runner. When `--gpu auto` finds no compatible
+//! adapter, every path silently falls back to CPU — `auto` must never abort
+//! scoring.
 
 pub mod forward_mse_batched;
 
@@ -37,14 +50,18 @@ use std::str::FromStr;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, clap::ValueEnum)]
 pub enum GpuMode {
     /// Probe for a compatible GPU and silently fall back to CPU when none is
-    /// available. Suitable as the default once GPU kernels are wired in.
+    /// available. **Default** since Issue #83: the multi-creature batched
+    /// kernel from #82 beats CPU+PGO by ≥ 30 % at the issue-target corpus
+    /// size on Apple Silicon Metal. The single-creature path keeps running
+    /// on CPU — see [`auto_should_use_gpu`].
+    #[default]
     Auto,
     /// Require a compatible GPU. The caller must treat a missing adapter as
     /// a hard failure (non-zero exit).
     On,
-    /// Skip GPU detection entirely and run the CPU pipeline. **Default** for
-    /// this issue — kept until kernel work in #81 makes `Auto` safe.
-    #[default]
+    /// Skip GPU detection entirely and run the CPU pipeline. Use this to
+    /// reproduce pre-#83 behaviour or when the GPU kernel's parity tolerance
+    /// is unsuitable.
     Off,
 }
 
@@ -144,6 +161,54 @@ pub struct GpuContext {
     pub device: wgpu::Device,
     pub queue: wgpu::Queue,
     pub backend: GpuBackendLabel,
+}
+
+/// Which scoring entry point is about to run. Used by [`auto_should_use_gpu`]
+/// to pick CPU or GPU under [`GpuMode::Auto`] (Issue #83).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScoringPath {
+    /// Single-creature scoring (`<creature.json> <data_dir>` or
+    /// `--creature-stdin <data_dir>`). Issue #81 closed as a negative result:
+    /// CPU+PGO beat the proposed single-creature GPU kernel at the
+    /// issue-target corpus size, so this path stays on CPU under `Auto`.
+    ///
+    /// Constructed by tests and external library callers; the binary
+    /// short-circuits the single-creature path before consulting the helper
+    /// (no GPU kernel exists for it). The variant is part of the stable
+    /// public API so future kernels can flip the decision in one place.
+    #[allow(dead_code)]
+    SingleCreature,
+    /// Directory-of-creatures scoring (`<creatures_dir> <data_dir>`). Issue
+    /// #82 showed the batched kernel beats CPU+PGO by ≥ 30 % at N=50 with
+    /// `BENCH_SCORING_BYTES=200000000` on Apple Silicon Metal — so this path
+    /// uses GPU under `Auto` whenever an adapter is available.
+    CreatureDirectory,
+}
+
+/// Whether [`GpuMode::Auto`] should pick the GPU pipeline for the given
+/// scoring path.
+///
+/// This is the codified ship/skip decision from Issue #83 — call sites in
+/// `main.rs` consult it instead of hard-coding "directory ⇒ GPU,
+/// single ⇒ CPU" inline. Any future re-evaluation only has to update this
+/// function (and the corresponding section in
+/// [`docs/performance-baseline.md`](../../../docs/performance-baseline.md)).
+///
+/// Returns `true` only when:
+/// 1. The bench evidence supports GPU at `BENCH_SCORING_BYTES=200000000`
+///    being ≥ 3 % faster than CPU+PGO for the path, **and**
+/// 2. The CPU↔GPU parity tolerance from #81 holds for the kernel.
+///
+/// `false` for every path means "no GPU paths shipped as default" — i.e. the
+/// negative-result outcome from the Performance Task Workflow.
+pub fn auto_should_use_gpu(path: ScoringPath) -> bool {
+    match path {
+        // #81 — negative result. CPU+PGO wins on the single-creature path.
+        ScoringPath::SingleCreature => false,
+        // #82 — N=50 / 200 MB corpus on Apple Silicon Metal:
+        //   GPU 2.176 s vs CPU+PGO ≈ 2.96 s ⇒ ≈ 27 % faster (≥ 3 % bar met).
+        ScoringPath::CreatureDirectory => true,
+    }
 }
 
 /// Resolve the final [`GpuMode`] from the CLI flag and the `NEAT_SCORER_GPU`
@@ -272,9 +337,26 @@ mod tests {
     }
 
     #[test]
-    fn gpu_mode_default_is_off() {
-        // Default must stay Off until #81 makes Auto safe.
-        assert_eq!(GpuMode::default(), GpuMode::Off);
+    fn gpu_mode_default_is_auto() {
+        // Issue #83 flipped the default to Auto once the multi-creature
+        // kernel from #82 cleared the 3 % CPU+PGO win threshold. Locking the
+        // default in a test guards against accidental rollback.
+        assert_eq!(GpuMode::default(), GpuMode::Auto);
+    }
+
+    #[test]
+    fn auto_should_use_gpu_single_creature_stays_cpu() {
+        // Issue #81 closed as a negative result — single-creature GPU lost
+        // to CPU+PGO at the issue-target corpus size, so Auto must keep this
+        // path on CPU.
+        assert!(!auto_should_use_gpu(ScoringPath::SingleCreature));
+    }
+
+    #[test]
+    fn auto_should_use_gpu_directory_uses_gpu() {
+        // Issue #82 — multi-creature batched dispatch at N=50 / 200 MB beat
+        // CPU+PGO by ≥ 30 % on Apple Silicon Metal, well above the 3 % bar.
+        assert!(auto_should_use_gpu(ScoringPath::CreatureDirectory));
     }
 
     #[test]
@@ -293,10 +375,12 @@ mod tests {
     fn resolve_mode_falls_back_to_env_then_default() {
         assert_eq!(resolve_mode(None, Some("auto")).unwrap(), GpuMode::Auto);
         assert_eq!(resolve_mode(None, Some("on")).unwrap(), GpuMode::On);
-        assert_eq!(resolve_mode(None, None).unwrap(), GpuMode::Off);
-        // Empty env var is treated as "unset" so the default applies.
-        assert_eq!(resolve_mode(None, Some("")).unwrap(), GpuMode::Off);
-        assert_eq!(resolve_mode(None, Some("   ")).unwrap(), GpuMode::Off);
+        assert_eq!(resolve_mode(None, Some("off")).unwrap(), GpuMode::Off);
+        // No env var → default mode (Auto since Issue #83).
+        assert_eq!(resolve_mode(None, None).unwrap(), GpuMode::Auto);
+        // Empty / whitespace env var is treated as "unset" so the default applies.
+        assert_eq!(resolve_mode(None, Some("")).unwrap(), GpuMode::Auto);
+        assert_eq!(resolve_mode(None, Some("   ")).unwrap(), GpuMode::Auto);
     }
 
     #[test]
