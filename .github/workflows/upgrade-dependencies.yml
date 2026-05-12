@@ -53,15 +53,20 @@ jobs:
           cargo upgrade --dry-run 2>&1 | tee upgrade-dry-run.txt || true
           cargo upgrade 2>&1 | tee upgrade.log || true
 
-      - name: Check for changes
+      # Issue #90: only raise a PR when at least one Cargo.toml manifest
+      # actually advanced. `cargo upgrade` always touches Cargo.lock to
+      # refresh transitives, so a lockfile-only diff is not a meaningful
+      # upgrade and should not generate a PR (see PR #89 for the noise
+      # case this guards against).
+      - name: Check for manifest changes
         id: changes
         run: |
-          if git diff --quiet -- 'Cargo.toml' '**/Cargo.toml' 'Cargo.lock'; then
-            echo "changed=false" >> "$GITHUB_OUTPUT"
-            echo "No Cargo.toml / Cargo.lock dependency changes."
-          else
-            echo "changed=true" >> "$GITHUB_OUTPUT"
+          result="$(bash scripts/check-upgrade-has-changes.sh)"
+          echo "$result" >> "$GITHUB_OUTPUT"
+          if [[ "$result" == "changed=true" ]]; then
             git diff --stat -- 'Cargo.toml' '**/Cargo.toml' 'Cargo.lock'
+          else
+            echo "No Cargo.toml manifest changes — skipping PR (Cargo.lock-only drift is not a meaningful upgrade)."
           fi
 
       - name: Update Cargo.lock
