@@ -1,5 +1,5 @@
     Checking virtual workspace's dependencies
     Checking rust_scorer's dependencies
 note: Re-run with `--verbose` to show more dependencies
-  latest: 6 packages
+  latest: 9 packages
   local: neat-core
