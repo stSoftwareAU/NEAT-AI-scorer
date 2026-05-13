@@ -12,3 +12,16 @@
 /target/
 **/*.rs.bk
 .DS_Store
+
+# Workflow artefacts that were accidentally committed by PR #89
+# (Issue #90). The upgrade-dependencies workflow now writes these
+# under $RUNNER_TEMP, but keep them here as belt-and-braces.
+/upgrade-dry-run.txt
+/upgrade.log
+
+# NEAT-AI-core lives as a sibling clone at ../../NEAT-AI-core (see
+# AGENTS.md). The weekly upgrade workflow checks it out inside the
+# workspace as `NEAT-AI-core/` for Cargo path resolution; it must
+# never be committed to this repo.
+/NEAT-AI-core/
+/NEAT-AI-core
