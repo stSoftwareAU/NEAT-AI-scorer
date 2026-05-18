@@ -37,8 +37,8 @@ Options:
   --cargo-upgrade        Use 'cargo upgrade' (cargo-edit) to bump Cargo.toml
                          manifest versions instead of 'cargo update' (lockfile
                          only). Each candidate is still gated by the
-                         quarantine window. Used by the weekly
-                         upgrade-dependencies workflow (Issue #101).
+                         quarantine window. Issue #101 — invoked per-PR by a
+                         worker (the weekly schedule was removed by #105).
   --neat-core-sha SHA    Override upstream Develop SHA (testing).
   --manifest PATH        rust_scorer manifest scanned for the neat-core pin
                          (default: rust_scorer/Cargo.toml).
@@ -316,8 +316,9 @@ bump_external() {
     return 1
   fi
   # Issue #101: --cargo-upgrade switches the driver to `cargo upgrade`
-  # (cargo-edit) so the weekly upgrade-dependencies workflow can bump
-  # Cargo.toml manifest versions through the same quarantine gate.
+  # (cargo-edit) so a worker preparing a PR can bump Cargo.toml manifest
+  # versions through the same quarantine gate. The weekly schedule that
+  # originally needed this flag was removed by Issue #105.
   local dry_cmd apply_label
   if [[ "$CARGO_UPGRADE" -eq 1 ]]; then
     if ! cargo upgrade --version >/dev/null 2>&1; then

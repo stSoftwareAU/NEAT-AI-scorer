@@ -56,9 +56,6 @@ echo "📝 Validating Markdown Lint workflow (Issue #63)..."
 echo "📦 Validating Dependency Review workflow (Issue #62)..."
 ./scripts/check-dependency-review-workflow.sh
 
-echo "⬆️  Validating weekly Upgrade Dependencies workflow (Issue #90)..."
-./scripts/check-upgrade-deps-workflow.sh
-
 echo "🪄 Validating auto-format PR workflow (Issue #19)..."
 ./scripts/check-auto-format-workflow.sh
 

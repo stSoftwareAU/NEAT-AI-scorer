@@ -16,15 +16,16 @@
 **/*.rs.bk
 .DS_Store
 
-# Workflow artefacts that were accidentally committed by PR #89
-# (Issue #90). The upgrade-dependencies workflow now writes these
-# under $RUNNER_TEMP, but keep them here as belt-and-braces.
+# Belt-and-braces: bump-deps.sh + cargo upgrade can leave these
+# artefacts in the worktree. Keep them ignored so a future caller
+# cannot accidentally stage them (Issue #90, retained after #105
+# removed the weekly workflow).
 /upgrade-dry-run.txt
 /upgrade.log
 
 # NEAT-AI-core lives as a sibling clone at ../../NEAT-AI-core (see
-# AGENTS.md). The weekly upgrade workflow checks it out inside the
-# workspace as `NEAT-AI-core/` for Cargo path resolution; it must
-# never be committed to this repo.
+# AGENTS.md). If a script ever checks it out inside the workspace
+# as `NEAT-AI-core/` for Cargo path resolution, it must never be
+# committed to this repo.
 /NEAT-AI-core/
 /NEAT-AI-core
