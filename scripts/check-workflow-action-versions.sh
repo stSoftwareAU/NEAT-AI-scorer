@@ -1,26 +1,42 @@
 #!/usr/bin/env bash
-# Validate GitHub Actions versions used across workflows for Node 24
-# compatibility (Issue #24).
+# Validate GitHub Actions across workflows for SHA pinning (Issue #100) and
+# Node 24 compatibility (Issue #24).
 #
 # Why this exists:
-#   * GitHub has begun deprecating the Node 20 runtime for custom actions. Any
-#     action pinned to a major version that still runs on Node 20 emits a
-#     deprecation warning on every run and will eventually stop working on
-#     hosted runners.
+#   * Supply-chain defence (Issue #100). A `uses: foo/bar@v1` line resolves
+#     to whatever commit the tag currently points at; a compromised maintainer
+#     can re-push the tag to a malicious SHA and silently re-execute under
+#     this repo's workflow privileges (`contents: write`, `GITHUB_TOKEN`).
+#     Pinning every `uses:` to a 40-character commit SHA freezes the action
+#     to a specific reviewed commit. Bumps then become explicit, reviewable
+#     changes in PRs.
+#   * Node 24 deprecation (Issue #24). Any action whose latest major still
+#     runs on Node 20 emits a deprecation warning on every CI run and will
+#     eventually stop working on hosted runners. We track this via the
+#     trailing version comment, not the SHA itself.
 #   * A hand-rolled check is lighter than dependabot-for-actions and keeps
 #     policy co-located with the rest of our CI helpers. It also lets us
 #     record explicit, auditable *exceptions* (upstream actions that have no
 #     Node 24 release yet).
 #
-# Policy encoded below (in `lookup_policy`):
-#   * `required:<N>` — action MUST be pinned to at least major version N. If
-#     a workflow references an older major (or a non-numeric ref like
-#     `master`/`main`), the script fails.
+# Required form: every `uses:` line MUST look like
+#
+#     uses: owner/repo@<40-char-hex-sha>  # <version-or-ref label>
+#
+# The 40-char SHA is the supply-chain pin. The trailing `# <label>` records
+# the human-readable upstream version (e.g. `v5`, `v8.1.0`,
+# `stable, frozen 2026-05-18`) so reviewers can spot drift at a glance and
+# bumps stay auditable. The label is also what the Node 24 policy below
+# validates against.
+#
+# Policy encoded below (in `lookup_policy`), keyed on the label:
+#   * `required:<N>` — action MUST track at least major version N. The label
+#     must start with `v<M>` where M >= N (or be `vM.x.y` etc.).
 #   * `node20:<N>` — action's latest stable major still uses Node 20. The
-#     workflow must stay on exactly major N until upstream ships a Node 24
-#     release. Each exception is documented inline.
+#     label must be exactly `v<N>` (or `v<N>.x.y`) until upstream ships a
+#     Node 24 release. Each exception is documented inline.
 #   * `no-node` — composite/shell action that does not ship a Node runtime.
-#     Allowed to use non-semver refs (e.g. `@stable`).
+#     Any descriptive label is permitted (e.g. `stable, frozen YYYY-MM-DD`).
 #   * (no match) — unknown action, warn but do not fail. New actions should
 #     be added to the policy explicitly so they get audited.
 #
@@ -39,8 +55,8 @@ Options:
                     .github/workflows relative to the repo root).
   -h, --help        Show this message.
 
-Exits 0 when every `uses:` reference satisfies the Node 24 compatibility
-policy. Exits non-zero with a descriptive message otherwise.
+Exits 0 when every `uses:` reference is SHA-pinned and satisfies the Node 24
+compatibility policy. Exits non-zero with a descriptive message otherwise.
 EOF
 }
 
@@ -101,7 +117,10 @@ lookup_policy() {
 }
 
 # Scan a single workflow file and emit tab-separated records:
-#   <file>\t<line>\t<action>\t<ref>
+#   <file>\t<line>\t<action>\t<ref>\t<comment>
+# `<comment>` is the trailing `# ...` text (empty when absent). The
+# comment is where reviewers — and this script — read the human-readable
+# version label that backs the SHA pin.
 scan_workflow() {
   local file="$1"
   python3 - "$file" <<'PY'
@@ -109,37 +128,38 @@ import re
 import sys
 
 path = sys.argv[1]
-pattern = re.compile(r"^\s*(?:-\s*)?uses:\s*([^@\s]+)@([^\s#]+)")
+pattern = re.compile(
+    r"^\s*(?:-\s*)?uses:\s*([^@\s]+)@(\S+?)(?:\s+#\s*(.*?))?\s*$"
+)
 with open(path, "r", encoding="utf-8") as fh:
     for lineno, raw in enumerate(fh, start=1):
         # Skip comment lines so policy examples in comments do not trigger.
         stripped = raw.lstrip()
         if stripped.startswith("#"):
             continue
-        match = pattern.match(raw)
+        match = pattern.match(raw.rstrip("\n"))
         if not match:
             continue
-        action, ref = match.group(1), match.group(2)
+        action, ref, comment = match.group(1), match.group(2), (match.group(3) or "")
         # Reusable workflow calls like `./.github/workflows/security.yml`
         # do not carry a version; skip them.
         if action.startswith("./"):
             continue
-        print(f"{path}\t{lineno}\t{action}\t{ref}")
+        print(f"{path}\t{lineno}\t{action}\t{ref}\t{comment}")
 PY
 }
 
-# Parse the major version from a ref like "v5", "v5.0.1", "5", or "master".
-# Sets MAJOR to the parsed integer, or empty when the ref has no numeric
-# major component (branch ref).
-parse_major() {
-  local ref="$1"
-  MAJOR=""
-  local trimmed="${ref#v}"
-  local digits="${trimmed%%[^0-9]*}"
-  if [[ -n "$digits" ]]; then
-    MAJOR="$digits"
+# Extract a vN-style major from a label like "v5", "v5.0.1", or
+# "v8.x.y". Returns empty when the label does not start with `v<digits>`.
+parse_label_major() {
+  local label="$1"
+  LABEL_MAJOR=""
+  if [[ "$label" =~ ^v([0-9]+) ]]; then
+    LABEL_MAJOR="${BASH_REMATCH[1]}"
   fi
 }
+
+SHA_RE='^[0-9a-f]{40}$'
 
 EXIT_CODE=0
 FOUND_ANY=0
@@ -151,40 +171,55 @@ while IFS= read -r workflow; do
   findings="$(scan_workflow "$workflow")"
   [[ -z "$findings" ]] && continue
 
-  while IFS=$'\t' read -r file lineno action ref; do
+  while IFS=$'\t' read -r file lineno action ref comment; do
     [[ -z "${action:-}" ]] && continue
 
     policy="$(lookup_policy "$action")"
-    parse_major "$ref"
-    major="$MAJOR"
+
+    # Supply-chain gate: every `uses:` must be SHA-pinned (Issue #100).
+    if ! [[ "$ref" =~ $SHA_RE ]]; then
+      echo "FAIL $file:$lineno: $action@$ref — not SHA-pinned; pin to a 40-character commit SHA with a trailing '# <version>' comment (Issue #100)." >&2
+      EXIT_CODE=1
+      continue
+    fi
+
+    # SHA-pinned: validate the trailing comment against the Node 24 policy.
+    if [[ -z "$comment" ]]; then
+      echo "FAIL $file:$lineno: $action@$ref — SHA-pinned but missing trailing '# <version>' comment; required for reviewability (Issue #100)." >&2
+      EXIT_CODE=1
+      continue
+    fi
+
+    parse_label_major "$comment"
+    major="$LABEL_MAJOR"
 
     case "$policy" in
       required:*)
         want="${policy#required:}"
         if [[ -z "$major" ]]; then
-          echo "FAIL $file:$lineno: $action@$ref — branch ref disallowed; pin to v$want or newer (Node 24 compat)." >&2
+          echo "FAIL $file:$lineno: $action@$ref ($comment) — version comment must start with v$want or newer (Node 24 compat)." >&2
           EXIT_CODE=1
         elif (( major < want )); then
-          echo "FAIL $file:$lineno: $action@$ref — requires @v$want or newer (Node 24 compat)." >&2
+          echo "FAIL $file:$lineno: $action@$ref ($comment) — requires v$want or newer (Node 24 compat)." >&2
           EXIT_CODE=1
         else
-          echo "OK   $file:$lineno: $action@$ref (>= v$want)"
+          echo "OK   $file:$lineno: $action@$ref ($comment) (>= v$want, SHA-pinned)"
         fi
         ;;
       node20:*)
         want="${policy#node20:}"
         if [[ -z "$major" || "$major" != "$want" ]]; then
-          echo "FAIL $file:$lineno: $action@$ref — tracked Node 20 exception must stay on @v$want until upstream ships a Node 24 release." >&2
+          echo "FAIL $file:$lineno: $action@$ref ($comment) — tracked Node 20 exception must stay on v$want until upstream ships a Node 24 release." >&2
           EXIT_CODE=1
         else
-          echo "OK   $file:$lineno: $action@$ref (Node 20 exception, tracked)"
+          echo "OK   $file:$lineno: $action@$ref ($comment) (Node 20 exception, tracked, SHA-pinned)"
         fi
         ;;
       no-node)
-        echo "OK   $file:$lineno: $action@$ref (no Node runtime — policy not applicable)"
+        echo "OK   $file:$lineno: $action@$ref ($comment) (no Node runtime — SHA-pinned)"
         ;;
       "")
-        echo "WARN $file:$lineno: $action@$ref — not in policy tables; review and add to check-workflow-action-versions.sh."
+        echo "WARN $file:$lineno: $action@$ref ($comment) — not in policy tables; review and add to check-workflow-action-versions.sh."
         ;;
     esac
   done <<< "$findings"

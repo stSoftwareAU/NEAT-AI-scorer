@@ -52,7 +52,7 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v5
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd  # v5
         with:
           fetch-depth: 0
 
@@ -67,7 +67,7 @@ jobs:
       #     the expected sibling without the workflow having to rewrite
       #     Cargo.toml.
       - name: Checkout NEAT-AI-core (path dependency for neat-core)
-        uses: actions/checkout@v5
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd  # v5
         with:
           repository: stSoftwareAU/NEAT-AI-core
           ref: Develop
@@ -90,12 +90,12 @@ jobs:
           df -h /
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8  # stable, frozen 2026-05-18
         with:
           components: rustfmt, clippy
 
       - name: Cache dependencies
-        uses: actions/cache@v5
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5
         with:
           path: |
             ~/.cargo/registry
@@ -155,13 +155,13 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v5
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd  # v5
 
       # NEAT-AI-core checkout path strategy — see note in the `quality` job
       # above. Summary: in-workspace clone + sibling symlink so Cargo resolves
       # the `../../NEAT-AI-core/neat-core` path dependency on the runner.
       - name: Checkout NEAT-AI-core (path dependency for neat-core)
-        uses: actions/checkout@v5
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd  # v5
         with:
           repository: stSoftwareAU/NEAT-AI-core
           ref: Develop
@@ -174,7 +174,7 @@ jobs:
           fi
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8  # stable, frozen 2026-05-18
 
       - name: Check for required files
         run: |
@@ -208,7 +208,7 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v5
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd  # v5
 
       - name: Check bash script syntax
         run: |
@@ -226,7 +226,7 @@ jobs:
       - name: Run ShellCheck (koalaman/shellcheck via ludeeus/action-shellcheck)
         # Pinned to a tagged release (Issue #24) — `@master` is unpinned and
         # a compromised upstream commit would silently alter CI behaviour.
-        uses: ludeeus/action-shellcheck@2.0.0
+        uses: ludeeus/action-shellcheck@00cae500b08a931fb5698e11e79bfbd38e612a38  # v2.0.0
         with:
           scandir: "."
           severity: warning
@@ -249,7 +249,7 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v5
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd  # v5
 
       # Configuration lives in `.codespellrc` at the repo root so CI and the
       # local preflight (`scripts/spell-check.sh`) stay in lock-step — see

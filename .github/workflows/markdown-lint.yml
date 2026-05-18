@@ -9,8 +9,11 @@ name: Markdown Lint
 #   * Workflow-sync tooling looks for `markdown-lint.yml` by filename; the
 #     dedicated file keeps the gate discoverable independent of `ci.yml`.
 #
-# Action pinning policy (Issue #24, mirrored by
-# `scripts/check-workflow-action-versions.sh`):
+# Action pinning policy (Issues #24 and #100, mirrored by
+# `scripts/check-workflow-action-versions.sh`): every `uses:` reference
+# is pinned to a 40-character commit SHA with a trailing `# <version>`
+# comment so a re-tagged or compromised upstream cannot silently re-execute
+# under this workflow's privileges.
 #   * actions/checkout — SHA-pinned to v5 (Node 24).
 #   * actions/setup-node — SHA-pinned to v4 (Node 24).
 
