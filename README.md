@@ -292,12 +292,12 @@ hidden `--check-published` testing helper are documented under
 `./bump-deps.sh --help`. The script is covered by
 `tests/scripts/bump_deps.bats`.
 
-The `--cargo-upgrade` flag (Issue #101) is what the weekly
-`upgrade-dependencies.yml` workflow uses: it routes the scheduled
-manifest-level upgrade through the same quarantine gate that protects
-worker-initiated bumps. Previously the workflow ran `cargo upgrade`
-directly, which let a freshly-published malicious crates.io version land
-in the auto-generated PR within minutes of publication.
+The `--cargo-upgrade` flag (Issue #101) switches the driver from
+`cargo update` (lockfile-only) to `cargo upgrade` (cargo-edit), so a
+worker preparing a PR can bump the `Cargo.toml` manifests through the
+same quarantine gate. Dependency bumps now happen per-PR only (Issue
+#105) — the previous weekly `upgrade-dependencies.yml` schedule has
+been removed.
 
 ```mermaid
 flowchart LR
