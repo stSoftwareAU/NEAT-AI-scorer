@@ -2,9 +2,11 @@
 # Validate the Semgrep SAST scanning workflow (Issue #47).
 #
 # Two configurations are accepted as functionally equivalent:
-#   1. The official container approach — `container: image: semgrep/semgrep:<tag>`
+#   1. The official container approach — `container: image: semgrep/semgrep@sha256:<digest>`
 #      with an explicit `semgrep ci|scan --config <ruleset>` invocation. This
-#      is upstream's recommended PR-scan path.
+#      is upstream's recommended PR-scan path. Pin by digest, not tag —
+#      Docker tags are mutable; only the `sha256:<64-hex>` digest is immutable
+#      (Issue #102).
 #   2. The `semgrep/semgrep-action@vN` GitHub Action — pinned to a numeric
 #      major version so behaviour is reproducible.
 #
@@ -14,8 +16,9 @@
 #   * Pass `SEMGREP_APP_TOKEN` from repo secrets so findings can be posted
 #     to the Semgrep app dashboard. The token is consumed by both the
 #     container CLI (`semgrep ci`) and `semgrep/semgrep-action`.
-#   * Pin the entry point. Container tags must NOT be bare (`semgrep/semgrep`)
-#     or `:latest`; the action ref must NOT be `master`/`main`.
+#   * Pin the entry point. Container images MUST use a `@sha256:<64-hex>`
+#     digest; bare names, `:latest`, and version tags are all rejected.
+#     The action ref must NOT be `master`/`main`.
 #   * Carry a comment block documenting the rationale and why the
 #     container path is equivalent to `semgrep/semgrep-action`.
 #
@@ -98,12 +101,17 @@ container_line="$(grep -nE '^[[:space:]]+image:[[:space:]]*semgrep/semgrep' "$WO
 action_line="$(grep -nE 'uses:[[:space:]]*semgrep/semgrep-action@' "$WORKFLOW" || true)"
 
 if [[ -n "$container_line" ]]; then
-  # Container path. Tag must not be bare or :latest.
-  if echo "$container_line" | grep -qE 'image:[[:space:]]*semgrep/semgrep:[A-Za-z0-9._-]+' \
+  # Container path. Image MUST be pinned by an immutable sha256 digest —
+  # Docker tags are mutable so `:1.86.0` (or any tag) is not a real pin
+  # (Issue #102). Reject bare names, `:latest`, version tags, and malformed
+  # digests; only `semgrep/semgrep@sha256:<64-lowercase-hex>` passes.
+  if echo "$container_line" | grep -qE 'image:[[:space:]]*semgrep/semgrep@sha256:[0-9a-f]{64}([[:space:]]|$)'; then
+    ok "Semgrep container image is pinned by digest (semgrep/semgrep@sha256:<digest>)"
+  elif echo "$container_line" | grep -qE 'image:[[:space:]]*semgrep/semgrep:[A-Za-z0-9._-]+' \
     && ! echo "$container_line" | grep -qE 'image:[[:space:]]*semgrep/semgrep:latest'; then
-    ok "Semgrep container image is pinned (semgrep/semgrep:<tag>)"
+    fail "Semgrep container image is not pinned by digest — Docker tags are mutable; use semgrep/semgrep@sha256:<64-hex> (Issue #102)"
   else
-    fail "Semgrep container image is not pinned — use semgrep/semgrep:<version>, not bare or :latest"
+    fail "Semgrep container image is not pinned by digest — use semgrep/semgrep@sha256:<64-hex>, not bare or :latest"
   fi
 elif [[ -n "$action_line" ]]; then
   # Action path. Ref must be a vN-style pin (numeric major component).
