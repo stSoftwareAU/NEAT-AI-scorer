@@ -366,17 +366,35 @@ validated by `scripts/check-dependency-review-workflow.sh` (invoked from
 `quality.sh`) and covered end-to-end by
 `tests/scripts/dependency_review_workflow.bats`.
 
-### GitHub Actions version policy (Node 24 compat)
+### GitHub Actions pinning policy (SHA pinning + Node 24 compat)
 
-GitHub is deprecating the Node 20 runtime for JavaScript actions, so the
-workflow files pin each `uses:` reference to a major that runs on Node 24
-where one exists. The policy — minimum majors, tracked Node 20 exceptions
-(`actions/dependency-review-action@v4`, `rustsec/audit-check@v2` — no Node
-24 release upstream yet), and composite/shell allow-list — is encoded in
-`scripts/check-workflow-action-versions.sh` and validated end-to-end by
-`tests/scripts/workflow_action_versions.bats`. `quality.sh` invokes the
-script so any workflow that adds an unpinned or outdated `uses:` reference
-fails the local gate before CI (Issue #24).
+Every `uses:` reference across the workflow files is pinned to a
+40-character commit SHA, with the human-readable version recorded in a
+trailing comment, e.g.
+
+```yaml
+uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd  # v5
+uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8  # stable, frozen 2026-05-18
+uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1  # v8
+```
+
+The SHA is the supply-chain pin (Issue #100) — it stops a compromised
+maintainer or re-tagged ref from silently re-executing under workflows
+with `contents: write` and `GITHUB_TOKEN` access. The trailing comment
+keeps bumps reviewable: the SHA changes, the version label tells the
+reviewer what the bump is. **Bump protocol:** resolve the new SHA from
+the upstream tag (`gh api repos/<owner>/<repo>/git/ref/tags/vN`), update
+the SHA and the comment in the same PR, and note the changelog highlights
+in the PR description.
+
+The same script also enforces the Node 24 deprecation policy from the
+trailing comment: minimum majors, tracked Node 20 exceptions
+(`actions/dependency-review-action@v4`, `rustsec/audit-check@v2` — no
+Node 24 release upstream yet), and a composite/shell allow-list. The
+policy lives in `scripts/check-workflow-action-versions.sh` and is
+covered end-to-end by `tests/scripts/workflow_action_versions.bats`.
+`quality.sh` invokes the script so any unpinned or outdated `uses:`
+reference fails the local gate before CI (Issues #24 and #100).
 
 ## How to bench
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env bats
-# Tests for scripts/check-workflow-action-versions.sh — Issue #24.
+# Tests for scripts/check-workflow-action-versions.sh — Issues #24 and #100.
 #
 # Drives the validator with synthetic workflow YAML in a temp directory so
 # policy behaviour (exit codes, reported failures) is verified end-to-end
@@ -17,12 +17,50 @@ teardown() {
   rm -rf "$TMP_WF"
 }
 
-# A minimal compliant workflow — every action referenced satisfies the
-# current policy. Individual failure tests rewrite a single line to break
-# exactly one rule at a time.
+# Forty-character placeholder SHAs used by the synthetic fixtures below.
+# The validator only checks the SHA shape (40 lowercase hex chars), so any
+# distinct hex string is acceptable for the unit tests.
+SHA_CHECKOUT="1111111111111111111111111111111111111111"
+SHA_CACHE="2222222222222222222222222222222222222222"
+SHA_TOOLCHAIN="3333333333333333333333333333333333333333"
+SHA_SHELLCHECK="4444444444444444444444444444444444444444"
+SHA_PR="5555555555555555555555555555555555555555"
+SHA_DEPREV="6666666666666666666666666666666666666666"
+SHA_AUDIT="7777777777777777777777777777777777777777"
+
+# A minimal compliant workflow — every action SHA-pinned with the version
+# label in the trailing comment. Individual failure tests rewrite a single
+# line to break exactly one rule at a time.
 write_compliant_workflow() {
   local file="$1"
-  cat >"$file" <<'EOF'
+  cat >"$file" <<EOF
+name: Example
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@${SHA_CHECKOUT}  # v5
+      - uses: actions/cache@${SHA_CACHE}  # v5
+      - uses: dtolnay/rust-toolchain@${SHA_TOOLCHAIN}  # stable, frozen 2026-05-18
+      - uses: ludeeus/action-shellcheck@${SHA_SHELLCHECK}  # v2.0.0
+      - uses: peter-evans/create-pull-request@${SHA_PR}  # v8
+      - uses: actions/dependency-review-action@${SHA_DEPREV}  # v4.9.0
+      - uses: rustsec/audit-check@${SHA_AUDIT}  # v2.0.0
+EOF
+}
+
+@test "passes on a SHA-pinned workflow that satisfies every policy rule" {
+  write_compliant_workflow "$TMP_WF/example.yml"
+  run "$SCRIPT_UNDER_TEST" --workflows "$TMP_WF"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"actions/checkout@${SHA_CHECKOUT}"* ]]
+  [[ "$output" == *"SHA-pinned"* ]]
+  [[ "$output" == *"Node 20 exception, tracked"* ]]
+}
+
+@test "fails when an action is pinned to a version tag instead of a SHA" {
+  cat >"$TMP_WF/example.yml" <<'EOF'
 name: Example
 on: [push]
 jobs:
@@ -30,105 +68,110 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
-      - uses: actions/cache@v5
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: ludeeus/action-shellcheck@2.0.0
-      - uses: peter-evans/create-pull-request@v8
-      - uses: actions/dependency-review-action@v4
-      - uses: rustsec/audit-check@v2
 EOF
-}
-
-@test "passes on a workflow that satisfies every policy rule" {
-  write_compliant_workflow "$TMP_WF/example.yml"
   run "$SCRIPT_UNDER_TEST" --workflows "$TMP_WF"
-  [ "$status" -eq 0 ]
+  [ "$status" -ne 0 ]
   [[ "$output" == *"actions/checkout@v5"* ]]
-  [[ "$output" == *"actions/cache@v5"* ]]
-  [[ "$output" == *"peter-evans/create-pull-request@v8"* ]]
-  [[ "$output" == *"ludeeus/action-shellcheck@2.0.0"* ]]
-  [[ "$output" == *"Node 20 exception, tracked"* ]]
+  [[ "$output" == *"not SHA-pinned"* ]]
 }
 
-@test "fails when actions/checkout is older than v5" {
-  write_compliant_workflow "$TMP_WF/example.yml"
-  sed -i.bak 's|actions/checkout@v5|actions/checkout@v4|' "$TMP_WF/example.yml"
+@test "fails when an action is pinned to a branch ref instead of a SHA" {
+  cat >"$TMP_WF/example.yml" <<'EOF'
+name: Example
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: dtolnay/rust-toolchain@stable
+EOF
   run "$SCRIPT_UNDER_TEST" --workflows "$TMP_WF"
   [ "$status" -ne 0 ]
-  [[ "$output" == *"actions/checkout@v4"* ]]
-  [[ "$output" == *"requires @v5 or newer"* ]]
+  [[ "$output" == *"dtolnay/rust-toolchain@stable"* ]]
+  [[ "$output" == *"not SHA-pinned"* ]]
 }
 
-@test "fails when actions/cache is older than v5" {
-  write_compliant_workflow "$TMP_WF/example.yml"
-  sed -i.bak 's|actions/cache@v5|actions/cache@v4|' "$TMP_WF/example.yml"
+@test "fails when a SHA-pinned action has no trailing version comment" {
+  cat >"$TMP_WF/example.yml" <<EOF
+name: Example
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@${SHA_CHECKOUT}
+EOF
   run "$SCRIPT_UNDER_TEST" --workflows "$TMP_WF"
   [ "$status" -ne 0 ]
-  [[ "$output" == *"actions/cache@v4"* ]]
-  [[ "$output" == *"requires @v5 or newer"* ]]
+  [[ "$output" == *"missing trailing"* ]]
 }
 
-@test "fails when peter-evans/create-pull-request is older than v8" {
+@test "fails when actions/checkout version comment is older than v5" {
   write_compliant_workflow "$TMP_WF/example.yml"
-  sed -i.bak 's|peter-evans/create-pull-request@v8|peter-evans/create-pull-request@v7|' "$TMP_WF/example.yml"
+  sed -i.bak "s|actions/checkout@${SHA_CHECKOUT}  # v5|actions/checkout@${SHA_CHECKOUT}  # v4|" "$TMP_WF/example.yml"
   run "$SCRIPT_UNDER_TEST" --workflows "$TMP_WF"
   [ "$status" -ne 0 ]
-  [[ "$output" == *"peter-evans/create-pull-request@v7"* ]]
-  [[ "$output" == *"requires @v8 or newer"* ]]
+  [[ "$output" == *"requires v5 or newer"* ]]
 }
 
-@test "fails when ludeeus/action-shellcheck uses a branch ref" {
+@test "fails when actions/cache version comment is older than v5" {
   write_compliant_workflow "$TMP_WF/example.yml"
-  sed -i.bak 's|ludeeus/action-shellcheck@2.0.0|ludeeus/action-shellcheck@master|' "$TMP_WF/example.yml"
+  sed -i.bak "s|actions/cache@${SHA_CACHE}  # v5|actions/cache@${SHA_CACHE}  # v4|" "$TMP_WF/example.yml"
   run "$SCRIPT_UNDER_TEST" --workflows "$TMP_WF"
   [ "$status" -ne 0 ]
-  [[ "$output" == *"ludeeus/action-shellcheck@master"* ]]
-  [[ "$output" == *"branch ref disallowed"* ]]
+  [[ "$output" == *"requires v5 or newer"* ]]
+}
+
+@test "fails when peter-evans/create-pull-request comment is older than v8" {
+  write_compliant_workflow "$TMP_WF/example.yml"
+  sed -i.bak "s|peter-evans/create-pull-request@${SHA_PR}  # v8|peter-evans/create-pull-request@${SHA_PR}  # v7|" "$TMP_WF/example.yml"
+  run "$SCRIPT_UNDER_TEST" --workflows "$TMP_WF"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"requires v8 or newer"* ]]
 }
 
 @test "fails when a Node 20 exception is bumped to an unknown major" {
   write_compliant_workflow "$TMP_WF/example.yml"
   # rustsec/audit-check has no v3 yet — enforcing "stay on v2" surfaces the
   # accidental bump so someone can verify the new major before we adopt it.
-  sed -i.bak 's|rustsec/audit-check@v2|rustsec/audit-check@v3|' "$TMP_WF/example.yml"
+  sed -i.bak "s|rustsec/audit-check@${SHA_AUDIT}  # v2.0.0|rustsec/audit-check@${SHA_AUDIT}  # v3.0.0|" "$TMP_WF/example.yml"
   run "$SCRIPT_UNDER_TEST" --workflows "$TMP_WF"
   [ "$status" -ne 0 ]
-  [[ "$output" == *"rustsec/audit-check@v3"* ]]
   [[ "$output" == *"tracked Node 20 exception"* ]]
 }
 
-@test "warns but does not fail on an unknown action" {
-  cat >"$TMP_WF/example.yml" <<'EOF'
+@test "warns but does not fail on an unknown SHA-pinned action" {
+  cat >"$TMP_WF/example.yml" <<EOF
 name: Example
 on: [push]
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - uses: some-random/action@v1
+      - uses: some-random/action@${SHA_CHECKOUT}  # v1
 EOF
   run "$SCRIPT_UNDER_TEST" --workflows "$TMP_WF"
   [ "$status" -eq 0 ]
   [[ "$output" == *"WARN"* ]]
-  [[ "$output" == *"some-random/action@v1"* ]]
+  [[ "$output" == *"some-random/action"* ]]
   [[ "$output" == *"not in policy tables"* ]]
 }
 
 @test "ignores uses lines that live inside YAML comments" {
-  cat >"$TMP_WF/example.yml" <<'EOF'
+  cat >"$TMP_WF/example.yml" <<EOF
 name: Example
 on: [push]
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      # Historical note: we used to rely on `uses: actions/checkout@v4`.
-      - uses: actions/checkout@v5
+      # Historical note: we used to rely on \`uses: actions/checkout@v4\`.
+      - uses: actions/checkout@${SHA_CHECKOUT}  # v5
 EOF
   run "$SCRIPT_UNDER_TEST" --workflows "$TMP_WF"
   [ "$status" -eq 0 ]
   [[ "$output" != *"actions/checkout@v4"* ]]
-  [[ "$output" == *"actions/checkout@v5"* ]]
+  [[ "$output" == *"actions/checkout@${SHA_CHECKOUT}"* ]]
 }
 
 @test "ignores reusable-workflow calls (./.github/workflows/*.yml)" {
