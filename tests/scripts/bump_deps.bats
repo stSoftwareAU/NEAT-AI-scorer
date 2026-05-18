@@ -160,3 +160,24 @@ EOF
   run "$SCRIPT_UNDER_TEST" --check-published "not-a-date" 24
   [ "$status" -ne 0 ]
 }
+
+# Issue #101: the weekly Upgrade Cargo Dependencies workflow must route its
+# `cargo upgrade` invocation through bump-deps.sh so the same quarantine
+# window applies to scheduled bumps as worker-initiated bumps. The new
+# `--cargo-upgrade` flag selects manifest-level upgrades while keeping the
+# per-crate quarantine gate.
+
+@test "accepts --cargo-upgrade flag (Issue #101)" {
+  write_path_manifest
+  run "$SCRIPT_UNDER_TEST" \
+    --cargo-upgrade \
+    --skip-internal --skip-external --skip-audit --skip-build \
+    --repo "$TMP_REPO"
+  [ "$status" -eq 0 ]
+}
+
+@test "--help advertises --cargo-upgrade (Issue #101)" {
+  run "$SCRIPT_UNDER_TEST" --help
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"--cargo-upgrade"* ]]
+}

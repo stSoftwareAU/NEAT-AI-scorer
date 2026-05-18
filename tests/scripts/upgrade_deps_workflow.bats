@@ -49,11 +49,11 @@ jobs:
         with:
           repository: stSoftwareAU/NEAT-AI-core
           path: NEAT-AI-core
-      - name: Upgrade dependencies
+      - name: Upgrade dependencies via quarantined gate
         run: |
           set -euo pipefail
-          cargo upgrade --dry-run 2>&1 | tee "${RUNNER_TEMP}/upgrade-dry-run.txt"
-          cargo upgrade 2>&1 | tee "${RUNNER_TEMP}/upgrade.log"
+          ./bump-deps.sh --skip-internal --skip-audit --skip-build --cargo-upgrade \
+            2>&1 | tee "${RUNNER_TEMP}/upgrade.log"
       - name: Check for changes
         id: changes
         run: |
@@ -241,4 +241,53 @@ EOF
   [ "$status" -eq 0 ]
   [[ "$output" == *"OK"* ]]
   [[ "$output" != *"FAIL"* ]]
+}
+
+# Issue #101: supply-chain — the weekly workflow MUST route its dependency
+# bumps through bump-deps.sh so the same quarantine gate
+# (VIBE_BUMP_QUARANTINE_HOURS) that protects worker-initiated bumps also
+# protects the scheduled bump. Calling `cargo upgrade` directly bypasses
+# the gate and lets a freshly-published malicious crates.io version land
+# in the auto-generated PR within minutes.
+
+@test "fails when the workflow invokes cargo upgrade directly without bump-deps.sh (Issue #101)" {
+  cat >"$TMP_WF/bad.yml" <<'EOF'
+name: Upgrade
+on: [workflow_dispatch]
+jobs:
+  upgrade:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Upgrade dependencies
+        run: |
+          cargo upgrade --dry-run 2>&1 | tee "${RUNNER_TEMP}/upgrade-dry-run.txt"
+          cargo upgrade 2>&1 | tee "${RUNNER_TEMP}/upgrade.log"
+      - name: Build summary
+        id: summary
+        run: |
+          {
+            echo 'body<<BODY_EOF'
+            git diff --stat -- 'Cargo.toml' '**/Cargo.toml' 'Cargo.lock'
+            echo 'BODY_EOF'
+          } >> "$GITHUB_OUTPUT"
+      - name: Create pull request
+        uses: peter-evans/create-pull-request@v8
+        with:
+          add-paths: |
+            Cargo.toml
+            **/Cargo.toml
+            Cargo.lock
+          branch: chore/upgrade-dependencies
+          body: ${{ steps.summary.outputs.body }}
+EOF
+  run "$SCRIPT_UNDER_TEST" --workflow "$TMP_WF/bad.yml"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"bump-deps.sh"* || "$output" == *"quarantine"* ]]
+}
+
+@test "passes when the workflow routes the upgrade through bump-deps.sh (Issue #101)" {
+  write_good_workflow "$TMP_WF/good.yml"
+  run "$SCRIPT_UNDER_TEST" --workflow "$TMP_WF/good.yml"
+  [ "$status" -eq 0 ]
 }
