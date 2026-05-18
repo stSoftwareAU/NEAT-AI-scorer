@@ -268,4 +268,15 @@ else
   fail "PR body does not run 'git diff … Cargo.(lock|toml)' — reviewer cannot see the actual bumps"
 fi
 
+# --- Rule 4 (Issue #101): the scheduled bump MUST be routed through
+# bump-deps.sh so the VIBE_BUMP_QUARANTINE_HOURS gate (default 24h) is
+# applied. Calling `cargo upgrade` directly bypasses the gate and lets
+# a freshly-published malicious crates.io version reach the
+# auto-generated PR within minutes of publication.
+if grep -qE '(^|[^[:alnum:]_/.-])(\./)?bump-deps\.sh([[:space:]]|$)' "$WORKFLOW"; then
+  ok "scheduled bump is routed through bump-deps.sh (quarantine gate)"
+else
+  fail "workflow invokes 'cargo upgrade' without bump-deps.sh — the quarantine gate is bypassed (Issue #101)"
+fi
+
 exit "$EXIT_CODE"

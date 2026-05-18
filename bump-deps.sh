@@ -34,6 +34,11 @@ Options:
   --skip-external        Skip cargo update (crates.io).
   --skip-audit           Skip cargo audit.
   --skip-build           Skip cargo build --release.
+  --cargo-upgrade        Use 'cargo upgrade' (cargo-edit) to bump Cargo.toml
+                         manifest versions instead of 'cargo update' (lockfile
+                         only). Each candidate is still gated by the
+                         quarantine window. Used by the weekly
+                         upgrade-dependencies workflow (Issue #101).
   --neat-core-sha SHA    Override upstream Develop SHA (testing).
   --manifest PATH        rust_scorer manifest scanned for the neat-core pin
                          (default: rust_scorer/Cargo.toml).
@@ -54,6 +59,7 @@ SKIP_INTERNAL=0
 SKIP_EXTERNAL=0
 SKIP_AUDIT=0
 SKIP_BUILD=0
+CARGO_UPGRADE=0
 NEAT_CORE_SHA_OVERRIDE=""
 MANIFEST="rust_scorer/Cargo.toml"
 REPO_DIR="."
@@ -68,6 +74,7 @@ while [[ $# -gt 0 ]]; do
     --skip-external)    SKIP_EXTERNAL=1; shift ;;
     --skip-audit)       SKIP_AUDIT=1; shift ;;
     --skip-build)       SKIP_BUILD=1; shift ;;
+    --cargo-upgrade)    CARGO_UPGRADE=1; shift ;;
     --neat-core-sha)    NEAT_CORE_SHA_OVERRIDE="$2"; shift 2 ;;
     --manifest)         MANIFEST="$2"; shift 2 ;;
     --repo)             REPO_DIR="$2"; shift 2 ;;
@@ -308,14 +315,31 @@ bump_external() {
     external_msg="error"
     return 1
   fi
+  # Issue #101: --cargo-upgrade switches the driver to `cargo upgrade`
+  # (cargo-edit) so the weekly upgrade-dependencies workflow can bump
+  # Cargo.toml manifest versions through the same quarantine gate.
+  local dry_cmd apply_label
+  if [[ "$CARGO_UPGRADE" -eq 1 ]]; then
+    if ! cargo upgrade --version >/dev/null 2>&1; then
+      echo "Error: cargo upgrade not available — install with 'cargo install cargo-edit'" >&2
+      external_msg="error"
+      return 1
+    fi
+    dry_cmd=(cargo upgrade --dry-run)
+    apply_label="upgrade"
+  else
+    dry_cmd=(cargo update --dry-run)
+    apply_label="update"
+  fi
   local dry_log
-  dry_log="$(cd "$REPO_DIR" && cargo update --dry-run 2>&1 || true)"
+  dry_log="$(cd "$REPO_DIR" && "${dry_cmd[@]}" 2>&1 || true)"
   local applied=0 deferred=0 failed=0
   while IFS= read -r line; do
     # Match lines like:
-    #   Updating clap v4.5.20 -> v4.5.21
-    #   Bumping  serde v1.0.210 -> v1.0.211
-    if [[ "$line" =~ (Updating|Bumping)[[:space:]]+([a-zA-Z0-9_-]+)[[:space:]]+v([0-9A-Za-z.+-]+)[[:space:]]+-\>[[:space:]]+v([0-9A-Za-z.+-]+) ]]; then
+    #   Updating  clap v4.5.20 -> v4.5.21       (cargo update)
+    #   Bumping   serde v1.0.210 -> v1.0.211    (cargo update output variant)
+    #   Upgrading clap v4.5.20 -> v4.5.21       (cargo upgrade)
+    if [[ "$line" =~ (Updating|Bumping|Upgrading)[[:space:]]+([a-zA-Z0-9_-]+)[[:space:]]+v([0-9A-Za-z.+-]+)[[:space:]]+-\>[[:space:]]+v([0-9A-Za-z.+-]+) ]]; then
       local crate="${BASH_REMATCH[2]}"
       local new_v="${BASH_REMATCH[4]}"
       # Internal stSoftware path deps don't appear in cargo update output;
@@ -330,12 +354,18 @@ bump_external() {
         continue
       fi
       if is_older_than_hours "$published_at" "$QUARANTINE_HOURS"; then
-        if (cd "$REPO_DIR" && cargo update -p "$crate" --precise "$new_v") >/dev/null 2>&1; then
+        local apply_ok=1
+        if [[ "$CARGO_UPGRADE" -eq 1 ]]; then
+          (cd "$REPO_DIR" && cargo upgrade -p "$crate@$new_v") >/dev/null 2>&1 || apply_ok=0
+        else
+          (cd "$REPO_DIR" && cargo update -p "$crate" --precise "$new_v") >/dev/null 2>&1 || apply_ok=0
+        fi
+        if [[ "$apply_ok" -eq 1 ]]; then
           applied=$((applied + 1))
           echo "  bump: $crate -> $new_v"
         else
           failed=$((failed + 1))
-          echo "  fail: $crate -> $new_v (cargo update rejected)"
+          echo "  fail: $crate -> $new_v (cargo $apply_label rejected)"
         fi
       else
         deferred=$((deferred + 1))

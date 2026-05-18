@@ -274,21 +274,30 @@ the Cargo dependency graph in four stages and prints a one-line summary:
    advances the `rev = "..."` field if it has moved. The default layout in
    this repo uses a `path = "..."` sibling clone (see AGENTS.md), so this
    step is a no-op unless someone switches to a `git+rev` pin.
-2. **External — crates.io.** Runs `cargo update --dry-run`, then for each
-   proposed bump checks the version's publish time against
+2. **External — crates.io.** Runs `cargo update --dry-run` (or
+   `cargo upgrade --dry-run` under `--cargo-upgrade`, see below), then for
+   each proposed bump checks the version's publish time against
    `--quarantine-hours` (default `$VIBE_BUMP_QUARANTINE_HOURS` / 24h).
    Versions younger than the quarantine window are deferred; older versions
-   are applied with `cargo update -p <crate> --precise <new>`.
+   are applied with `cargo update -p <crate> --precise <new>` (or
+   `cargo upgrade -p <crate>@<new>`).
 3. **`cargo audit`.** Fails non-zero on any reported advisory, naming the
    offending crate and advisory ID.
 4. **`cargo build --release`.** Confirms the bumped tree compiles.
 
 Exit `0` means the tree is clean (or no-op); non-zero means a bump was
 rejected and the worker reverts. Override flags (`--skip-internal`,
-`--skip-external`, `--skip-audit`, `--skip-build`) and a hidden
-`--check-published` testing helper are documented under
+`--skip-external`, `--skip-audit`, `--skip-build`, `--cargo-upgrade`) and a
+hidden `--check-published` testing helper are documented under
 `./bump-deps.sh --help`. The script is covered by
 `tests/scripts/bump_deps.bats`.
+
+The `--cargo-upgrade` flag (Issue #101) is what the weekly
+`upgrade-dependencies.yml` workflow uses: it routes the scheduled
+manifest-level upgrade through the same quarantine gate that protects
+worker-initiated bumps. Previously the workflow ran `cargo upgrade`
+directly, which let a freshly-published malicious crates.io version land
+in the auto-generated PR within minutes of publication.
 
 ```mermaid
 flowchart LR
