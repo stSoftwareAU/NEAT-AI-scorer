@@ -11,8 +11,8 @@ name: Markdown Lint
 #
 # Action pinning policy (Issue #24, mirrored by
 # `scripts/check-workflow-action-versions.sh`):
-#   * actions/checkout — `@v5` (Node 24).
-#   * actions/setup-node — `@v4` (Node 24).
+#   * actions/checkout — SHA-pinned to v5 (Node 24).
+#   * actions/setup-node — SHA-pinned to v4 (Node 24).
 
 on:
   pull_request:
@@ -34,10 +34,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
-        uses: actions/checkout@v5
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd  # v5
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4
         with:
           node-version: "lts/*"
 

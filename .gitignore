@@ -6,6 +6,9 @@
 !.github/
 !.gitleaks.toml
 !.codespellrc
+!.markdownlint.json
+!.markdownlintignore
+!.markdownlint-cli2.yaml
 
 
 

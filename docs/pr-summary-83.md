@@ -33,7 +33,7 @@ flowchart LR
 
 Two evidence sets recorded in `docs/performance-baseline.md`:
 
-**Quiet host (#82 PR #86 numbers)**
+#### Quiet host (#82 PR #86 numbers)
 
 | Bench | Median | Throughput |
 |---|---|---|

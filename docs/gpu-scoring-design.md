@@ -175,7 +175,7 @@ in the shader, the per-record GPU compute time is ~0.05 ns; CPU
 bytes ≈ 27.9 M records/s). Break-even with a 200 µs dispatch + 100 µs
 transfer + 100 µs readback (400 µs total fixed cost) needs:
 
-```
+```text
   400 µs ≤ n_records × (110 ns − 0.05 ns)
   n_records ≥ 400 µs / 110 ns ≈ 3,640 records
 ```
@@ -353,11 +353,11 @@ dispatch.
 | Binding | Kind | Contents | Lifecycle |
 |---|---|---|---|
 | 0 | uniform `Header` | record count + dispatch geometry | written every chunk |
-| 1 | storage<read> `records` (f32) | flat `[in0..inN, out0..outM, ...]` | written every chunk |
-| 2 | storage<read> `neurons` (NeuronGpu) | concatenated per-creature non-input neurons | once per run |
-| 3 | storage<read> `synapses` (SynapseGpu) | concatenated per-creature synapses | once per run |
-| 4 | storage<read> `creatures` (CreatureMeta) | per-creature offsets into 2/3 + neuron count | once per run |
-| 5 | storage<read_write> `partials` (f32) | `num_creatures × num_workgroups_x` partials | written by shader, read back by host |
+| 1 | `storage<read>` `records` (f32) | flat `[in0..inN, out0..outM, ...]` | written every chunk |
+| 2 | `storage<read>` `neurons` (NeuronGpu) | concatenated per-creature non-input neurons | once per run |
+| 3 | `storage<read>` `synapses` (SynapseGpu) | concatenated per-creature synapses | once per run |
+| 4 | `storage<read>` `creatures` (CreatureMeta) | per-creature offsets into 2/3 + neuron count | once per run |
+| 5 | `storage<read_write>` `partials` (f32) | `num_creatures × num_workgroups_x` partials | written by shader, read back by host |
 
 Dispatch geometry: `(records.div_ceil(64), num_creatures, 1)` workgroups,
 workgroup size `(64, 1, 1)`. Each thread evaluates one `(creature, record)`

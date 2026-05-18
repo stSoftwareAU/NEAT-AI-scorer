@@ -143,7 +143,7 @@ single positional argument (`<training_data_dir>`).
 
 ### Output
 
-Single-creature mode JSON includes **`forwardOnly`** (from the creature) and **`trainingReadBackend`**: on a native release build you should see **`pipelined_double_buffer`** when `forwardOnly` is `true` (fused scoring + `training_bin_stream`). If `forwardOnly` is `false`, you get **`record_iterator`** instead (no pipelining — much slower on large data). The **`gpuBackend`** field reports which `wgpu` backend the scorer would run on (`"cpu-fallback"` until GPU kernels land; see [GPU mode](#gpu-mode-issue-80) above).
+Single-creature mode JSON includes **`forwardOnly`** (from the creature) and **`trainingReadBackend`**: on a native release build you should see **`pipelined_double_buffer`** when `forwardOnly` is `true` (fused scoring + `training_bin_stream`). If `forwardOnly` is `false`, you get **`record_iterator`** instead (no pipelining — much slower on large data). The **`gpuBackend`** field reports which `wgpu` backend the scorer would run on (`"cpu-fallback"` until GPU kernels land; see [GPU mode](#gpu-mode-issues-80--83) above).
 
 In directory mode, output is a top-level object keyed by creature filename stem, where each value has the same shape as a single-creature `ScoreResult`.
 

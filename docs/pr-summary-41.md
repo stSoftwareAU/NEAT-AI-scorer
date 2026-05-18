@@ -15,7 +15,7 @@ Backend / CLI change — no UI screenshot. Performance improvement verified with
 
 Every population improved; in particular N=1 is non-regressed (the single-creature inner-split path is now the default flat distribution and is faster) and N ≥ activation_threads (10 on the bench host) shows clear gains. Reproduce with:
 
-```
+```sh
 cargo bench -p rust_scorer --bench scoring -- score_from_creature_dir
 ```
 

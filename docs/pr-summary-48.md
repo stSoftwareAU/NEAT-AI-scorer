@@ -14,7 +14,7 @@ CLI/docs change with no UI surface, so no screenshot is captured. The
 behaviour is verified by the new bats suite which is wired into
 `./quality.sh`:
 
-```
+```text
 ok 15 README.md declares at least one Mermaid code block
 ok 16 README.md CI job dependency graph is a Mermaid block
 ok 17 living docs contain no box-drawing ASCII diagrams

@@ -47,7 +47,8 @@ CLI change only — no UI. Evidence for each acceptance criterion:
    `.github/workflows/upgrade-dependencies.yml`.
 
 Quality gate output (excerpt — full run passed):
-```
+
+```text
 🔗 Validating NEAT-AI-core checkout path strategy in workflows...
 OK   .github/workflows/ci.yml: NEAT-AI-core checkout path='NEAT-AI-core'
 OK   .github/workflows/ci.yml: NEAT-AI-core checkout path='NEAT-AI-core'
