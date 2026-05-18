@@ -335,8 +335,7 @@ quiet-host re-run.
 directory mode at N=10/300 MB). Direct CPU+PGO re-run at 200 MB on Host A
 is queued as a host refresh and tracked under the follow-up issue.
 
-**Decision: `Auto` ⇒ GPU for `CreatureDirectory`.** Aligned with Issue
-#82's positive bench result and reconfirmed by the fresh loaded-host
+**Decision: `Auto` ⇒ GPU for `CreatureDirectory`.** Aligned with Issue #82's positive bench result and reconfirmed by the fresh loaded-host
 re-run above. Codified in
 [`auto_should_use_gpu(CreatureDirectory) == true`](../rust_scorer/src/gpu/mod.rs).
 

@@ -21,7 +21,7 @@ Backend / CLI change — no UI to screenshot. Evidence is the passing quality ga
 
 Quality gate (full `./quality.sh`):
 
-```
+```text
 test result: ok. 23 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
      Running tests/scorer_smoke.rs (target/debug/deps/scorer_smoke-<hash>)
 
@@ -38,7 +38,7 @@ test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; fini
 
 Build regression — before fix:
 
-```
+```text
 error[E0432]: unresolved import `neat_core::mse_mean_record`
 error[E0599]: no method named `clone` found for mutable reference `&mut CompiledNetwork`
 ```

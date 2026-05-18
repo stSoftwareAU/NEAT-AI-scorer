@@ -9,7 +9,7 @@ check. Re-runs and partial failures are deterministic: the aggregator uses
 
 ## Graph
 
-```
+```text
 validation ──┬── quality ─────────────┐
              │                         │
              └── security ─────────────┤
@@ -38,7 +38,7 @@ suite and the YAML validator:
 * `python3 -c "import yaml; ..."` confirms the `jobs` map and `needs`
   edges match the design exactly:
 
-  ```
+  ```text
   quality ['validation']
   security ['validation']
   validation None

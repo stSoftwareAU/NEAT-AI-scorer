@@ -40,7 +40,7 @@ This is a CI/tooling change with no web interface to screenshot. The evidence
 is the full local quality gate running clean against the upgraded workflows
 and the new validator:
 
-```
+```text
 $ ./quality.sh < /dev/null
 ...
 🔢 Validating workflow action versions for Node 24 compat (Issue #24)...

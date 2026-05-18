@@ -17,7 +17,7 @@ Closes #55.
 
 CLI-only change — no UI to screenshot. The script was exercised end-to-end against the live repo (path-dep manifest, all stages skipped except internal):
 
-```
+```sh
 $ ./bump-deps.sh --skip-external --skip-audit --skip-build
 internal: NEAT-AI-core resolved via path dependency — no SHA pin to refresh
 bump-deps: no bumps (internal=path dependency (no SHA pin); external=skipped; audit=skipped; build=skipped)
