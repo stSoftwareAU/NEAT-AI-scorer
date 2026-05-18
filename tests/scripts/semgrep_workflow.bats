@@ -17,16 +17,20 @@ teardown() {
   rm -rf "$TMP_WF"
 }
 
+# Placeholder digest used by the synthetic fixtures below. The validator only
+# checks the digest shape (sha256:<64-hex>), so any 64-hex string is fine.
+FIXTURE_DIGEST="sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+
 # Canonical hardened workflow using the container path. Failure tests mutate
 # this fixture to drop or break one rule at a time.
 write_container_workflow() {
   local file="$1"
-  cat >"$file" <<'EOF'
+  cat >"$file" <<EOF
 name: Semgrep
 
 # Semgrep SAST scanning. We use the official semgrep/semgrep container as
 # the equivalent of the semgrep/semgrep-action GitHub Action — both consume
-# SEMGREP_APP_TOKEN and run `semgrep ci`. The container path is upstream's
+# SEMGREP_APP_TOKEN and run \`semgrep ci\`. The container path is upstream's
 # recommended PR-scan integration.
 
 on:
@@ -41,7 +45,8 @@ jobs:
     name: Semgrep SAST Scanning
     runs-on: ubuntu-latest
     container:
-      image: semgrep/semgrep:1.86.0
+      # Semgrep v1.86.0, frozen 2026-05-18.
+      image: semgrep/semgrep@${FIXTURE_DIGEST}
     steps:
       - name: Checkout code
         uses: actions/checkout@v5
@@ -49,7 +54,7 @@ jobs:
       - name: Run Semgrep
         run: semgrep ci --config p/default
         env:
-          SEMGREP_APP_TOKEN: ${{ secrets.SEMGREP_APP_TOKEN }}
+          SEMGREP_APP_TOKEN: \${{ secrets.SEMGREP_APP_TOKEN }}
 EOF
 }
 
@@ -86,7 +91,7 @@ EOF
   [ "$status" -eq 0 ]
   [[ "$output" == *"triggers on pull_request"* ]]
   [[ "$output" == *"permissions block grants only contents: read"* ]]
-  [[ "$output" == *"Semgrep container image is pinned"* ]]
+  [[ "$output" == *"Semgrep container image is pinned by digest"* ]]
   [[ "$output" == *"semgrep CLI invocation present"* ]]
   [[ "$output" == *"explicit --config"* ]]
   [[ "$output" == *"SEMGREP_APP_TOKEN sourced from secrets"* ]]
@@ -134,9 +139,9 @@ PY
   [[ "$output" == *"no 'permissions: contents: read'"* ]]
 }
 
-@test "fails when the container image is unpinned (no tag)" {
+@test "fails when the container image is unpinned (no digest)" {
   write_container_workflow "$TMP_WF/semgrep.yml"
-  sed -i.bak 's|semgrep/semgrep:1.86.0|semgrep/semgrep|' "$TMP_WF/semgrep.yml"
+  sed -i.bak "s|semgrep/semgrep@${FIXTURE_DIGEST}|semgrep/semgrep|" "$TMP_WF/semgrep.yml"
   run "$SCRIPT_UNDER_TEST" --workflow "$TMP_WF/semgrep.yml"
   [ "$status" -ne 0 ]
   [[ "$output" == *"container image is not pinned"* ]]
@@ -144,10 +149,26 @@ PY
 
 @test "fails when the container image is pinned to :latest" {
   write_container_workflow "$TMP_WF/semgrep.yml"
-  sed -i.bak 's|semgrep/semgrep:1.86.0|semgrep/semgrep:latest|' "$TMP_WF/semgrep.yml"
+  sed -i.bak "s|semgrep/semgrep@${FIXTURE_DIGEST}|semgrep/semgrep:latest|" "$TMP_WF/semgrep.yml"
   run "$SCRIPT_UNDER_TEST" --workflow "$TMP_WF/semgrep.yml"
   [ "$status" -ne 0 ]
   [[ "$output" == *"container image is not pinned"* ]]
+}
+
+@test "fails when the container image is pinned to a mutable tag (issue #102)" {
+  write_container_workflow "$TMP_WF/semgrep.yml"
+  sed -i.bak "s|semgrep/semgrep@${FIXTURE_DIGEST}|semgrep/semgrep:1.86.0|" "$TMP_WF/semgrep.yml"
+  run "$SCRIPT_UNDER_TEST" --workflow "$TMP_WF/semgrep.yml"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"container image is not pinned by digest"* ]]
+}
+
+@test "fails when the container image digest is malformed" {
+  write_container_workflow "$TMP_WF/semgrep.yml"
+  sed -i.bak "s|@${FIXTURE_DIGEST}|@sha256:notavalidhex|" "$TMP_WF/semgrep.yml"
+  run "$SCRIPT_UNDER_TEST" --workflow "$TMP_WF/semgrep.yml"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"container image is not pinned by digest"* ]]
 }
 
 @test "fails when no semgrep entry point is present" {
