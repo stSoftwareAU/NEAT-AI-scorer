@@ -72,8 +72,21 @@ fn reserve_unpack_capacity(buf: &mut Vec<f32>, n: usize) {
     }
 }
 
+/// Decode little-endian `f32` bytes.
+///
+/// # Panics
+/// Panics if `src.len() != n * 4`. This runtime check runs in both debug and
+/// release builds because the `little` branch performs raw pointer arithmetic
+/// that relies on the length invariant — a malformed `.bin` chunk must not be
+/// allowed to drive an out-of-bounds read (Issue #103).
 fn unpack_f32s_le(src: &[u8], dst: &mut Vec<f32>, n: usize) {
-    debug_assert_eq!(src.len(), n * 4);
+    assert_eq!(
+        src.len(),
+        n * 4,
+        "unpack_f32s_le: src.len() ({}) != n * 4 ({})",
+        src.len(),
+        n * 4
+    );
     dst.clear();
     reserve_unpack_capacity(dst, n);
 
@@ -820,6 +833,36 @@ fn run_io_loop(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unpack_f32s_le_decodes_exact_length_buffer() {
+        // Two little-endian f32s: 3.5 and 0.0.
+        let mut src = Vec::new();
+        src.extend_from_slice(&3.5_f32.to_le_bytes());
+        src.extend_from_slice(&0.0_f32.to_le_bytes());
+        let mut dst = Vec::new();
+        unpack_f32s_le(&src, &mut dst, 2);
+        assert_eq!(dst, vec![3.5_f32, 0.0_f32]);
+    }
+
+    #[test]
+    #[should_panic(expected = "unpack_f32s_le: src.len()")]
+    fn unpack_f32s_le_rejects_short_buffer_in_release() {
+        // Length 7 with n=2 means src.len() != n*4 (=8). Must panic in
+        // both debug and release builds (Issue #103) — never enter the
+        // unsafe loop with a short slice.
+        let src = vec![0u8; 7];
+        let mut dst = Vec::new();
+        unpack_f32s_le(&src, &mut dst, 2);
+    }
+
+    #[test]
+    #[should_panic(expected = "unpack_f32s_le: src.len()")]
+    fn unpack_f32s_le_rejects_oversize_buffer() {
+        let src = vec![0u8; 9];
+        let mut dst = Vec::new();
+        unpack_f32s_le(&src, &mut dst, 2);
+    }
 
     #[test]
     fn workers_per_creature_one_per_when_population_meets_threads() {
