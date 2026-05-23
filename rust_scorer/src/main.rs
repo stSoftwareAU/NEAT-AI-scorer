@@ -40,15 +40,18 @@ use crate::stream_score::activation_worker_count_for_scorer;
 /// Matches `DEFAULT_COST_OF_GROWTH` in `src/config/NeatConfig.ts` (CLI is KISS: no flag).
 const GROWTH_COST: f64 = 0.000_000_1;
 
-/// Full-dataset MSE score for a NEAT creature (native, minimal CLI).
+/// Full-dataset fitness score for a NEAT creature (native, minimal CLI).
 ///
 /// Two input modes (positional contract unchanged):
 /// * default: `rust_scorer <creature.json> <data_dir>`
 /// * stdin:   `rust_scorer --creature-stdin <data_dir>` (creature JSON on stdin)
+///
+/// Loss is `MSE` by default; pick another with `--cost <NAME>` (see the
+/// README "Cost function selector" section for the full list and examples).
 #[derive(Parser, Debug)]
 #[command(
     name = "rust_scorer",
-    about = "Full-dataset MSE fitness score for a NEAT creature (fast native path)",
+    about = "Full-dataset fitness score for a NEAT creature (fast native path; see README for --cost names)",
     arg_required_else_help = true
 )]
 struct Cli {
@@ -73,7 +76,7 @@ struct Cli {
     #[arg(long, value_enum, value_name = "MODE")]
     gpu: Option<GpuMode>,
 
-    /// Built-in cost function (Issue #120).
+    /// Built-in cost function (Issues #120, #121).
     ///
     /// Names match the TypeScript `BUILT_IN_COST_NAMES` strings exactly —
     /// see `NEAT-AI/src/Costs.ts`. Defaults to `MSE`, preserving the
@@ -81,8 +84,18 @@ struct Cli {
     /// override (KISS); unknown values are rejected by clap with a
     /// non-zero exit and a stderr message listing the supported set.
     ///
-    /// Dispatch onto the new cost kinds lands in the follow-up issue
-    /// (#119-3); for now every cost selection still computes MSE.
+    /// Dispatch is wired (#121): the fused forward-only path and the
+    /// per-record recurrent path both call `accumulate_cost_sum`, so
+    /// `MSE`, `MAE`, `MAPE`, `MSLE`, `HINGE` and `CROSS_ENTROPY` all
+    /// compute the requested loss. `CATEGORICAL_ERROR` is blocked on
+    /// `stSoftwareAU/NEAT-AI-core#88` and hard-errors at runtime.
+    ///
+    /// GPU constraint: the `forward_mse_batched` kernel is **MSE-only**.
+    /// Non-MSE costs under `--gpu auto` silently fall back to the CPU
+    /// pipeline; under `--gpu on` they hard-error before any scoring runs.
+    ///
+    /// See the README "Cost function selector" section for per-cost
+    /// usage examples.
     #[arg(long, value_enum, value_name = "NAME", default_value_t = CostKind::default())]
     cost: CostKind,
 
@@ -944,6 +957,67 @@ mod tests {
         let parsed =
             Cli::try_parse_from(["rust_scorer", "/tmp/creature.json", "/tmp/data"]).unwrap();
         assert_eq!(parsed.cost, CostKind::Mse);
+    }
+
+    /// Issue #123: `--help` must enumerate every supported cost name so a
+    /// user can discover the contract without leaving the CLI. Renders the
+    /// long help (which includes `Possible values:`) and checks the full
+    /// `BUILT_IN_COST_NAMES` set is present.
+    #[test]
+    fn test_help_enumerates_every_built_in_cost_name() {
+        use clap::CommandFactory;
+        let mut cmd = Cli::command();
+        let help = cmd.render_long_help().to_string();
+        for name in [
+            "MSE",
+            "MAE",
+            "MAPE",
+            "MSLE",
+            "HINGE",
+            "CROSS_ENTROPY",
+            "CATEGORICAL_ERROR",
+        ] {
+            assert!(
+                help.contains(name),
+                "rendered --help must enumerate cost '{name}', got:\n{help}"
+            );
+        }
+        assert!(
+            help.contains("--cost"),
+            "rendered --help must mention --cost flag, got:\n{help}"
+        );
+    }
+
+    /// Issue #123: `--help` must note the GPU constraint (only MSE is GPU
+    /// supported today) so users picking a non-MSE cost understand they
+    /// will run on the CPU pipeline.
+    #[test]
+    fn test_help_notes_gpu_mse_only_constraint() {
+        use clap::CommandFactory;
+        let mut cmd = Cli::command();
+        let help = cmd.render_long_help().to_string();
+        // The doc comment on the `--cost` flag must mention the MSE-only
+        // GPU kernel; phrasing kept loose so future kernel work can update
+        // the wording without breaking the contract.
+        let lower = help.to_lowercase();
+        assert!(
+            lower.contains("gpu") && (lower.contains("mse-only") || lower.contains("mse only")),
+            "rendered --help must note GPU is MSE-only, got:\n{help}"
+        );
+    }
+
+    /// Issue #123: `--help` must point users at the README so the
+    /// long-form documentation (per-cost examples, dispatch behaviour) is
+    /// discoverable from the CLI.
+    #[test]
+    fn test_help_links_to_readme() {
+        use clap::CommandFactory;
+        let mut cmd = Cli::command();
+        let help = cmd.render_long_help().to_string();
+        assert!(
+            help.contains("README"),
+            "rendered --help must reference the README, got:\n{help}"
+        );
     }
 
     /// Issue #120: unknown cost names must be rejected at the clap layer

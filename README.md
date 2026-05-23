@@ -128,39 +128,55 @@ The JSON output adds `gpuKernel: "forward_mse_batched"` plus
 `gpuInflightChunks` and `gpuDispatchCount` diagnostic counters when the
 GPU directory path runs.
 
-### Cost function selector (Issue #120)
+### Cost function selector (Issues #120, #121)
 
 The `--cost <NAME>` flag selects which built-in loss function the scorer
-will dispatch when scoring a creature. Names match the TypeScript
+dispatches when scoring a creature. Names match the TypeScript
 `BUILT_IN_COST_NAMES` strings exactly (see
 [`NEAT-AI/src/Costs.ts`](https://github.com/stSoftwareAU/NEAT-AI/blob/Develop/src/Costs.ts))
 so callers can pass `NeatOptions.costName` through unchanged.
 
-| Value               | Meaning                                |
-|---------------------|----------------------------------------|
-| `MSE` (**default**) | Mean Squared Error                      |
-| `MAE`               | Mean Absolute Error                     |
-| `MAPE`              | Mean Absolute Percentage Error          |
-| `MSLE`              | Mean Squared Logarithmic Error          |
-| `HINGE`             | Hinge loss                              |
-| `CROSS_ENTROPY`     | Cross-entropy                           |
-| `CATEGORICAL_ERROR` | Categorical (top-1 mismatch) error      |
-
-```text
-rust_scorer --cost MSE <creature.json> <training_data_dir>   # default; unchanged behaviour
-rust_scorer --cost MAE <creature.json> <training_data_dir>   # parses; runs MSE pending #119-3
-rust_scorer --cost FOO <creature.json> <training_data_dir>   # exits non-zero — unknown cost
-```
+| Value               | Meaning                              | Dispatch helper (`neat_core::loss`) | GPU?           |
+|---------------------|--------------------------------------|--------------------------------------|----------------|
+| `MSE` (**default**) | Mean Squared Error                   | `mse_sum_batch_packed`               | **Yes**        |
+| `MAE`               | Mean Absolute Error                  | `mae_sum_batch_packed`               | No (CPU)       |
+| `MAPE`              | Mean Absolute Percentage Error       | `mape_sum_batch_packed`              | No (CPU)       |
+| `MSLE`              | Mean Squared Logarithmic Error       | `msle_sum_batch_packed`              | No (CPU)       |
+| `HINGE`             | Hinge loss                           | `hinge_sum_batch_packed`             | No (CPU)       |
+| `CROSS_ENTROPY`     | Cross-entropy                        | `cross_entropy_sum_batch_packed`     | No (CPU)       |
+| `CATEGORICAL_ERROR` | Categorical (top-1 mismatch) error   | _blocked on [`NEAT-AI-core#88`](https://github.com/stSoftwareAU/NEAT-AI-core/issues/88)_ | No (CPU)       |
 
 Unknown values are rejected by `clap` with a non-zero exit and a stderr
 message listing the supported set. There is **no** `NEAT_SCORER_COST`
 environment-variable override — KISS, the CLI flag is the only knob.
+The resolved cost name is echoed back as the `costName` JSON field on
+every `ScoreResult`.
 
-This change is the foundational plumbing only; **every cost selection
-still computes MSE** until dispatch wiring lands in the follow-up issue
-(`#119-3`). The CLI surface is published now so downstream callers
-(`NEAT-AI` passing `costName` to the binary) can build against a stable
-contract.
+#### Per-cost examples
+
+```text
+rust_scorer --cost MSE               <creature.json> <training_data_dir>  # default; unchanged behaviour
+rust_scorer --cost MAE               <creature.json> <training_data_dir>  # absolute-error regression
+rust_scorer --cost MAPE              <creature.json> <training_data_dir>  # percentage-error regression
+rust_scorer --cost MSLE              <creature.json> <training_data_dir>  # log-scale regression
+rust_scorer --cost HINGE             <creature.json> <training_data_dir>  # margin classifier
+rust_scorer --cost CROSS_ENTROPY     <creature.json> <training_data_dir>  # probabilistic classifier
+rust_scorer --cost CATEGORICAL_ERROR <creature.json> <training_data_dir>  # blocked on NEAT-AI-core#88 — hard-errors at runtime
+rust_scorer --cost FOO               <creature.json> <training_data_dir>  # exits non-zero — unknown cost
+```
+
+#### GPU constraint — MSE-only kernel
+
+The `forward_mse_batched` GPU kernel currently computes **MSE only**.
+Any non-MSE `--cost` selection forces the CPU pipeline:
+
+- Under `--gpu auto` (the default since Issue #83) a non-MSE cost
+  silently routes to the CPU directory/streaming path — the
+  `gpuBackend` field on the result reports `"cpu-fallback"` so the
+  caller can see what actually ran.
+- Under `--gpu on` a non-MSE cost is a hard error before any scoring
+  runs (no silent downgrade — `--gpu on` is a strict requirement).
+- Under `--gpu off` GPU detection is skipped regardless of `--cost`.
 
 ```mermaid
 flowchart LR
@@ -168,7 +184,9 @@ flowchart LR
     Parse --> Valid{Valid name?}
     Valid -->|yes| CostKind[CostKind enum]
     Valid -->|no| Err[stderr + exit 2]
-    CostKind --> Scorer[passed to scoring entry points]
+    CostKind --> Dispatch[accumulate_cost_sum]
+    Dispatch -->|MSE + GPU adapter| GPU[forward_mse_batched]
+    Dispatch -->|non-MSE OR no GPU| CPU[CPU pipeline]
 ```
 
 ### Stdin input mode
@@ -246,30 +264,31 @@ graph TD
     Explore[NEAT-AI-Explore] -->|reads| Snapshot
 ```
 
-## Cost dispatch (Issue #120 + #119-3)
+## Cost dispatch (Issues #120, #121)
 
-The CLI now accepts a `--cost <NAME>` flag listing every TypeScript
-`BUILT_IN_COST_NAMES` value, but the **scoring calculation itself is still
-MSE** until the dispatch wiring lands in `#119-3`. Until then:
+The CLI accepts a `--cost <NAME>` flag listing every TypeScript
+`BUILT_IN_COST_NAMES` value, and (since #121) the scoring calculation
+honours the selection. The dispatch site is a single helper
+(`rust_scorer::cost::accumulate_cost_sum`) shared by both the fused
+forward-only path and the per-record recurrent path:
 
-- **Fused fast path is MSE.** The forward-only path calls
-  `neat_core::loss::mse_sum_batch_packed` directly so error accumulation stays
-  inside the same SIMD-friendly pass that reads packed `[inputs..., targets...]`
-  records. The non-fused recurrent path (`forwardOnly: false`) uses
-  `neat_core::mse_mean_record` to match the TypeScript `MSE.calculate()` mean.
-- **`neat-core` exposes the full set.** The sibling crate already ships fused
-  batch variants for MAE, cross-entropy, MAPE, MSLE, and hinge
-  (`neat_core::loss::{mae,cross_entropy,mape,msle,hinge}_sum_batch_packed`).
-  `#119-3` wires those into the scorer; this PR (`#120`) is the foundational
-  plumbing only — a stable CLI contract for `NeatOptions.costName`
-  pass-through, validated with `clap::ValueEnum` so unknown costs hard-error
-  with a non-zero exit.
-- **Why split the work.** Landing the CLI surface first lets NEAT-AI roll out
-  the `costName` flag end-to-end (pipe through the binary, exercise the
-  reject-unknown path) without waiting on the dispatch refactor; `#119-3`
-  then becomes a pure-internals change.
+- **Fused forward-only path.** `stream_score::accumulate_cost_sum_forward_only_fused`
+  routes every chunk through `accumulate_cost_sum`, which calls the matching
+  `neat_core::loss::*_sum_batch_packed` helper. Adding a future cost is a
+  one-line addition to the dispatch site.
+- **Per-record recurrent path.** `forwardOnly: false` creatures use
+  `TrainingDataIterator` to feed `[inputs..., targets...]` packed records into
+  the same `accumulate_cost_sum` helper one record at a time, so every
+  supported cost works here too.
+- **`CATEGORICAL_ERROR` is blocked** on
+  [`NEAT-AI-core#88`](https://github.com/stSoftwareAU/NEAT-AI-core/issues/88) —
+  no `categorical_error_sum_batch_packed` helper exists upstream yet, so the
+  dispatch returns a clear runtime error rather than silently computing MSE.
+- **GPU kernel is MSE-only.** `forward_mse_batched` does not yet have
+  per-cost variants; non-MSE costs route to the CPU pipeline (silent
+  fallback under `--gpu auto`, hard error under `--gpu on`).
 
-See the [Cost function selector](#cost-function-selector-issue-120) section
+See the [Cost function selector](#cost-function-selector-issues-120-121) section
 above for the supported names and CLI surface.
 
 ## CI
