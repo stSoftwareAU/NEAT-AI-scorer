@@ -380,6 +380,67 @@ The codified rule is one match expression in
 suite (or the Vulkan host run) only requires updating that function plus
 the table above; no other call site embeds the per-path decision.
 
+## Per-cost CPU baseline — 24 May 2026 (Issue #124)
+
+Issue #124 is the "bench-and-decide" step that the parent issue
+([#119](https://github.com/stSoftwareAU/NEAT-AI-scorer/issues/119))
+defers GPU kernel work behind: for every non-MSE cost, measure CPU
+throughput and only raise a follow-up GPU kernel issue if a candidate
+GPU port shows a clear (≥ 2×) repeatable win. The CPU numbers below come
+from the new
+[`cost_scan_bench`](../rust_scorer/src/bin/cost_scan_bench.rs) bin
+driving
+[`accumulate_cost_sum_forward_only_fused`](../rust_scorer/src/stream_score.rs)
+through every supported `CostKind` on the standard synthetic fixture
+(8 inputs, 2 outputs, 8 hidden TANH; ≈ 16 MiB / 419 430 records per
+run, 5 runs, median).
+
+Host A — Apple Silicon (release build, no PGO; PGO typically shaves
+8–10 % so the CPU baseline below is conservative).
+
+| Cost | Median (ms) | Throughput (records/s) | GPU candidate | Per-cost decision |
+|---|---:|---:|---|---|
+| `MSE` | 128.47 | 3 264 722 | `forward_mse_batched` (shipped #82) | Already on GPU under `Auto` (`auto_should_use_gpu`) |
+| `MAE` | 105.69 | 3 968 549 | none (would need new WGSL) | **no candidate kernel — skip** |
+| `MAPE` | 145.82 | 2 876 412 | none (would need new WGSL) | **no candidate kernel — skip** |
+| `MSLE` | 87.05 | 4 818 302 | none (would need new WGSL) | **no candidate kernel — skip** |
+| `HINGE` | 40.50 | 10 355 273 | none (would need new WGSL) | **no candidate kernel — skip** (CPU is already > 10 M records/s — GPU dispatch overhead unlikely to pay back) |
+| `CROSS_ENTROPY` | 92.27 | 4 545 531 | none (would need new WGSL) | **no candidate kernel — skip** |
+| `CATEGORICAL_ERROR` | — | — | n/a | **blocked** on `stSoftwareAU/NEAT-AI-core#88` (`categorical_error_sum_batch_packed` not in `neat-core` yet) |
+
+**Decision: no follow-up GPU kernel issues raised.** The only existing
+GPU shader is `forward_mse_batched.wgsl`, which inlines `d * d` for the
+loss step — a "quick GPU port" of any other cost would require:
+
+* a new WGSL kernel encoding the cost-specific math
+  (e.g. `abs(d)` for MAE, `max(0, 1 - target*pred)` for HINGE,
+  `-target * log(pred)` for CROSS_ENTROPY), and
+* a Rust runner mirroring `gpu::forward_mse_batched::BatchedRunner`, and
+* parity tests + corpus-size sweeps against the CPU baseline above.
+
+No such candidate kernel exists for any non-MSE cost today, so the
+per-cost branch of the issue's flowchart is **"no candidate kernel —
+skip"** for every row. The decision is recorded here (per Issue #124's
+"No win" branch) rather than as fresh per-cost GPU follow-ups; a future
+PR that lands a candidate kernel for any cost should re-run
+`cost_scan_bench` on the same fixture and raise a per-cost GPU follow-up
+issue only when the 2× bar is met.
+
+Host B (Linux + NVIDIA Vulkan) is tracked separately under
+[Issue #87](https://github.com/stSoftwareAU/NEAT-AI-scorer/issues/87) —
+the per-cost CPU numbers above are macOS-only. The bench bin is
+host-agnostic, so the Linux host run only needs to repeat the command in
+"Refreshing the baseline" below and append a Host B row to the table.
+
+```mermaid
+flowchart LR
+    A[Per-cost row] --> B{Candidate GPU kernel?}
+    B -->|No #124| Skip[no candidate kernel — skip]
+    B -->|Yes| C{≥ 2× CPU+PGO?}
+    C -->|Yes| Issue[Raise GPU kernel follow-up]
+    C -->|No| Negative[Comment numbers, close negative]
+```
+
 ## Refreshing the baseline
 
 1. Run `./scripts/run-benches.sh` (default fixture) and record the median +
@@ -391,3 +452,12 @@ the table above; no other call site embeds the per-path decision.
 3. When proposing a perf PR, paste the Criterion comparison output (or the
    before/after median + CI) into the PR summary. PRs without before/after
    evidence are rejected per `AGENTS.md`.
+4. For a per-cost CPU refresh (Issue #124), build the bench bin and run it
+   against any synthetic creature + `.bin` corpus:
+
+   ```bash
+   cargo build --release -p rust_scorer --bin cost_scan_bench
+   ./target/release/cost_scan_bench <creature.json> <data_dir> --runs 5
+   ```
+
+   Append a new dated Host row to the "Per-cost CPU baseline" table.

@@ -1,6 +1,6 @@
 [package]
 name = "rust_scorer"
-version = "0.5.30"
+version = "0.5.31"
 edition = "2024"
 license = "Apache-2.0"
 description = "Native CLI binary for scoring NEAT-AI creatures against training data."
@@ -25,6 +25,14 @@ path = "src/main.rs"
 [[bin]]
 name = "float_scan_bench"
 path = "src/bin/float_scan_bench.rs"
+
+# Per-cost CPU throughput bench (Issue #124). Sister to `float_scan_bench` —
+# drives `accumulate_cost_sum_forward_only_fused` for every supported
+# `CostKind` so each non-MSE cost gets the bench-and-decide step the parent
+# issue (#119) defers GPU kernel work behind.
+[[bin]]
+name = "cost_scan_bench"
+path = "src/bin/cost_scan_bench.rs"
 
 # Criterion bench harness — see `benches/scoring.rs` and
 # `docs/performance-baseline.md`. Not wired into `quality.sh` (Criterion runs
