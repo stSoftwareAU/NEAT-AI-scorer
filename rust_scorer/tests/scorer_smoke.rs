@@ -550,3 +550,232 @@ fn scorer_binary_directory_mode_matches_single_mode_results() {
         );
     }
 }
+
+/// Issue #120: `--cost MSE` must run identically to the current default
+/// (no `--cost` flag) — score, error, and record count must match exactly.
+/// Pins the "MSE preserves historical behaviour" acceptance criterion.
+#[test]
+fn scorer_binary_cost_mse_matches_default() {
+    let bin = env!("CARGO_BIN_EXE_rust_scorer");
+    let creature = fixture("identity_creature.json");
+    let data_dir = fixture_data_dir("identity_data.bin");
+
+    let baseline = Command::new(bin)
+        .arg(&creature)
+        .arg(data_dir.path())
+        .output()
+        .expect("failed to spawn rust_scorer (baseline)");
+    assert!(
+        baseline.status.success(),
+        "baseline exited with status {:?}\nstderr:\n{}",
+        baseline.status.code(),
+        String::from_utf8_lossy(&baseline.stderr),
+    );
+    let baseline_stdout = String::from_utf8(baseline.stdout).expect("stdout is utf-8");
+    let baseline_json: serde_json::Value =
+        serde_json::from_str(&baseline_stdout).expect("baseline stdout is JSON");
+
+    let with_mse = Command::new(bin)
+        .arg("--cost")
+        .arg("MSE")
+        .arg(&creature)
+        .arg(data_dir.path())
+        .output()
+        .expect("failed to spawn rust_scorer (--cost MSE)");
+    assert!(
+        with_mse.status.success(),
+        "--cost MSE exited with status {:?}\nstderr:\n{}",
+        with_mse.status.code(),
+        String::from_utf8_lossy(&with_mse.stderr),
+    );
+    let mse_stdout = String::from_utf8(with_mse.stdout).expect("stdout is utf-8");
+    let mse_json: serde_json::Value =
+        serde_json::from_str(&mse_stdout).expect("--cost MSE stdout is JSON");
+
+    assert_eq!(
+        baseline_json.get("error"),
+        mse_json.get("error"),
+        "--cost MSE must match the default scoring path"
+    );
+    assert_eq!(
+        baseline_json.get("score"),
+        mse_json.get("score"),
+        "--cost MSE must match the default scoring path"
+    );
+    assert_eq!(
+        baseline_json.get("recordCount"),
+        mse_json.get("recordCount"),
+    );
+}
+
+/// Issue #120: `--cost MAE` must parse cleanly and still compute MSE for now
+/// (dispatch lands in #119-3). Asserts the binary exits 0 and emits the
+/// same numeric result as MSE — proves the plumbing accepts the flag and
+/// has not changed the calculation yet.
+#[test]
+fn scorer_binary_cost_mae_parses_and_runs_as_mse() {
+    let bin = env!("CARGO_BIN_EXE_rust_scorer");
+    let creature = fixture("identity_creature.json");
+    let data_dir = fixture_data_dir("identity_data.bin");
+
+    let baseline = Command::new(bin)
+        .arg("--cost")
+        .arg("MSE")
+        .arg(&creature)
+        .arg(data_dir.path())
+        .output()
+        .expect("failed to spawn rust_scorer (--cost MSE)");
+    assert!(baseline.status.success());
+    let baseline_json: serde_json::Value =
+        serde_json::from_slice(&baseline.stdout).expect("baseline stdout is JSON");
+
+    let with_mae = Command::new(bin)
+        .arg("--cost")
+        .arg("MAE")
+        .arg(&creature)
+        .arg(data_dir.path())
+        .output()
+        .expect("failed to spawn rust_scorer (--cost MAE)");
+    assert!(
+        with_mae.status.success(),
+        "--cost MAE exited with status {:?}\nstderr:\n{}",
+        with_mae.status.code(),
+        String::from_utf8_lossy(&with_mae.stderr),
+    );
+    let mae_json: serde_json::Value =
+        serde_json::from_slice(&with_mae.stdout).expect("--cost MAE stdout is JSON");
+
+    // Identical numeric result: dispatch lands in #119-3, this PR only
+    // wires the CLI surface.
+    assert_eq!(baseline_json.get("error"), mae_json.get("error"));
+    assert_eq!(baseline_json.get("score"), mae_json.get("score"));
+}
+
+/// Issue #120: every built-in cost name must parse and run cleanly
+/// (still computing MSE until #119-3 lands).
+#[test]
+fn scorer_binary_accepts_every_built_in_cost_name() {
+    let bin = env!("CARGO_BIN_EXE_rust_scorer");
+    let creature = fixture("identity_creature.json");
+    let data_dir = fixture_data_dir("identity_data.bin");
+
+    for name in [
+        "MSE",
+        "MAE",
+        "MAPE",
+        "MSLE",
+        "HINGE",
+        "CROSS_ENTROPY",
+        "CATEGORICAL_ERROR",
+    ] {
+        let out = Command::new(bin)
+            .arg("--cost")
+            .arg(name)
+            .arg(&creature)
+            .arg(data_dir.path())
+            .output()
+            .unwrap_or_else(|e| panic!("failed to spawn rust_scorer for cost {name}: {e}"));
+        assert!(
+            out.status.success(),
+            "--cost {name} exited with status {:?}\nstderr:\n{}",
+            out.status.code(),
+            String::from_utf8_lossy(&out.stderr),
+        );
+    }
+}
+
+/// Issue #120: an unknown `--cost` value must produce a non-zero exit
+/// and a stderr message naming the supported set. Pins the "hard-error
+/// on unknown cost" acceptance criterion.
+#[test]
+fn scorer_binary_rejects_unknown_cost() {
+    let bin = env!("CARGO_BIN_EXE_rust_scorer");
+    let creature = fixture("identity_creature.json");
+    let data_dir = fixture_data_dir("identity_data.bin");
+
+    let out = Command::new(bin)
+        .arg("--cost")
+        .arg("FOO")
+        .arg(&creature)
+        .arg(data_dir.path())
+        .output()
+        .expect("failed to spawn rust_scorer");
+    assert!(
+        !out.status.success(),
+        "--cost FOO must exit non-zero, got status {:?}",
+        out.status.code(),
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("FOO"),
+        "stderr must echo bad value, got: {stderr}"
+    );
+    // clap renders "[possible values: MSE, MAE, ...]"; assert the
+    // supported set is mentioned.
+    assert!(
+        stderr.contains("MSE") && stderr.contains("CROSS_ENTROPY"),
+        "stderr must list supported costs, got: {stderr}"
+    );
+}
+
+/// Issue #120: `--help` must document the `--cost` flag and its supported
+/// values so callers can discover them without reading source.
+#[test]
+fn scorer_binary_help_lists_cost_flag_and_values() {
+    let bin = env!("CARGO_BIN_EXE_rust_scorer");
+    let out = Command::new(bin)
+        .arg("--help")
+        .output()
+        .expect("failed to spawn rust_scorer --help");
+    assert!(
+        out.status.success(),
+        "--help exited with status {:?}",
+        out.status.code()
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("--cost"),
+        "--help must mention --cost, got:\n{stdout}"
+    );
+    for name in [
+        "MSE",
+        "MAE",
+        "MAPE",
+        "MSLE",
+        "HINGE",
+        "CROSS_ENTROPY",
+        "CATEGORICAL_ERROR",
+    ] {
+        assert!(
+            stdout.contains(name),
+            "--help must list supported cost '{name}', got:\n{stdout}"
+        );
+    }
+}
+
+/// Issue #120 explicitly forbids a `NEAT_SCORER_COST` env-var override
+/// (KISS — the CLI flag is the only knob). Pin that contract by setting
+/// the env var to an invalid value and asserting the binary still runs
+/// using the default (`MSE`) — i.e. the env var is ignored.
+#[test]
+fn scorer_binary_ignores_neat_scorer_cost_env_var() {
+    let bin = env!("CARGO_BIN_EXE_rust_scorer");
+    let creature = fixture("identity_creature.json");
+    let data_dir = fixture_data_dir("identity_data.bin");
+
+    let out = Command::new(bin)
+        // If this env var had any effect, "FOO" would either be picked up
+        // (impossible — not a valid CostKind) or trigger a parse error.
+        // The binary must ignore it and use the default.
+        .env("NEAT_SCORER_COST", "FOO")
+        .arg(&creature)
+        .arg(data_dir.path())
+        .output()
+        .expect("failed to spawn rust_scorer");
+    assert!(
+        out.status.success(),
+        "binary must ignore NEAT_SCORER_COST, got status {:?}\nstderr:\n{}",
+        out.status.code(),
+        String::from_utf8_lossy(&out.stderr),
+    );
+}

@@ -128,6 +128,49 @@ The JSON output adds `gpuKernel: "forward_mse_batched"` plus
 `gpuInflightChunks` and `gpuDispatchCount` diagnostic counters when the
 GPU directory path runs.
 
+### Cost function selector (Issue #120)
+
+The `--cost <NAME>` flag selects which built-in loss function the scorer
+will dispatch when scoring a creature. Names match the TypeScript
+`BUILT_IN_COST_NAMES` strings exactly (see
+[`NEAT-AI/src/Costs.ts`](https://github.com/stSoftwareAU/NEAT-AI/blob/Develop/src/Costs.ts))
+so callers can pass `NeatOptions.costName` through unchanged.
+
+| Value               | Meaning                                |
+|---------------------|----------------------------------------|
+| `MSE` (**default**) | Mean Squared Error                      |
+| `MAE`               | Mean Absolute Error                     |
+| `MAPE`              | Mean Absolute Percentage Error          |
+| `MSLE`              | Mean Squared Logarithmic Error          |
+| `HINGE`             | Hinge loss                              |
+| `CROSS_ENTROPY`     | Cross-entropy                           |
+| `CATEGORICAL_ERROR` | Categorical (top-1 mismatch) error      |
+
+```text
+rust_scorer --cost MSE <creature.json> <training_data_dir>   # default; unchanged behaviour
+rust_scorer --cost MAE <creature.json> <training_data_dir>   # parses; runs MSE pending #119-3
+rust_scorer --cost FOO <creature.json> <training_data_dir>   # exits non-zero — unknown cost
+```
+
+Unknown values are rejected by `clap` with a non-zero exit and a stderr
+message listing the supported set. There is **no** `NEAT_SCORER_COST`
+environment-variable override — KISS, the CLI flag is the only knob.
+
+This change is the foundational plumbing only; **every cost selection
+still computes MSE** until dispatch wiring lands in the follow-up issue
+(`#119-3`). The CLI surface is published now so downstream callers
+(`NEAT-AI` passing `costName` to the binary) can build against a stable
+contract.
+
+```mermaid
+flowchart LR
+    CLI[--cost NAME] --> Parse[clap ValueEnum]
+    Parse --> Valid{Valid name?}
+    Valid -->|yes| CostKind[CostKind enum]
+    Valid -->|no| Err[stderr + exit 2]
+    CostKind --> Scorer[passed to scoring entry points]
+```
+
 ### Stdin input mode
 
 For restricted worker/sandbox environments where writing a temp file may fail
@@ -203,32 +246,31 @@ graph TD
     Explore[NEAT-AI-Explore] -->|reads| Snapshot
 ```
 
-## Why MSE-only?
+## Cost dispatch (Issue #120 + #119-3)
 
-The CLI scores creatures with **mean squared error** only — there is no `--cost` flag
-and no runtime dispatch across loss functions.
+The CLI now accepts a `--cost <NAME>` flag listing every TypeScript
+`BUILT_IN_COST_NAMES` value, but the **scoring calculation itself is still
+MSE** until the dispatch wiring lands in `#119-3`. Until then:
 
 - **Fused fast path is MSE.** The forward-only path calls
   `neat_core::loss::mse_sum_batch_packed` directly so error accumulation stays
   inside the same SIMD-friendly pass that reads packed `[inputs..., targets...]`
   records. The non-fused recurrent path (`forwardOnly: false`) uses
   `neat_core::mse_mean_record` to match the TypeScript `MSE.calculate()` mean.
-- **Scope matches today's callers.** NEAT-AI `Develop` invokes this binary with
-  the fixed positional contract `<creature.json> <data_dir>` (see `AGENTS.md`)
-  and never requests a non-MSE score. `GROWTH_COST` and the fitness formula in
-  `scoring.rs` are defined against MSE.
-- **`neat-core` still exposes the full set.** The sibling crate already ships
-  fused batch variants for MAE, cross-entropy, MAPE, MSLE, and hinge
+- **`neat-core` exposes the full set.** The sibling crate already ships fused
+  batch variants for MAE, cross-entropy, MAPE, MSLE, and hinge
   (`neat_core::loss::{mae,cross_entropy,mape,msle,hinge}_sum_batch_packed`).
-  Re-adding a `--cost` dispatch would be CLI wiring plus tests — no new math —
-  but until a downstream caller needs it, keeping the surface area small wins
-  on KISS grounds and preserves the stable positional CLI contract.
+  `#119-3` wires those into the scorer; this PR (`#120`) is the foundational
+  plumbing only — a stable CLI contract for `NeatOptions.costName`
+  pass-through, validated with `clap::ValueEnum` so unknown costs hard-error
+  with a non-zero exit.
+- **Why split the work.** Landing the CLI surface first lets NEAT-AI roll out
+  the `costName` flag end-to-end (pipe through the binary, exercise the
+  reject-unknown path) without waiting on the dispatch refactor; `#119-3`
+  then becomes a pure-internals change.
 
-If a downstream caller ever needs non-MSE scoring at this boundary, the
-existing fused batch-packed losses in `neat-core` are the drop-in entry points;
-see the in-tree `rust_scorer/` experiment on
-[`milestone/pure-rust-scorer-experiment`](https://github.com/stSoftwareAU/NEAT-AI/blob/milestone/pure-rust-scorer-experiment/rust_scorer/src/cost.rs)
-for the six-way dispatch pattern.
+See the [Cost function selector](#cost-function-selector-issue-120) section
+above for the supported names and CLI surface.
 
 ## CI
 

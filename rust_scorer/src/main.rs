@@ -10,6 +10,7 @@
 //!
 //! Issue #1967 - Build Rust CLI scorer application.
 
+mod cost;
 mod gpu;
 mod multi_score;
 mod read_tuning;
@@ -29,6 +30,7 @@ use neat_core::training_data::{TrainingDataConfig, TrainingDataIterator, find_bi
 
 use std::sync::Arc;
 
+use crate::cost::CostKind;
 use crate::gpu::{GpuBackendLabel, GpuMode, ScoringPath, auto_should_use_gpu};
 use crate::multi_score::{score_from_creature_dir, score_from_creature_dir_gpu};
 use crate::read_tuning::{training_read_backend_label, training_read_target_bytes_from_env};
@@ -70,6 +72,19 @@ struct Cli {
     /// Falls back to the `NEAT_SCORER_GPU` env var when not provided.
     #[arg(long, value_enum, value_name = "MODE")]
     gpu: Option<GpuMode>,
+
+    /// Built-in cost function (Issue #120).
+    ///
+    /// Names match the TypeScript `BUILT_IN_COST_NAMES` strings exactly —
+    /// see `NEAT-AI/src/Costs.ts`. Defaults to `MSE`, preserving the
+    /// historical scoring behaviour. There is **no** environment-variable
+    /// override (KISS); unknown values are rejected by clap with a
+    /// non-zero exit and a stderr message listing the supported set.
+    ///
+    /// Dispatch onto the new cost kinds lands in the follow-up issue
+    /// (#119-3); for now every cost selection still computes MSE.
+    #[arg(long, value_enum, value_name = "NAME", default_value_t = CostKind::default())]
+    cost: CostKind,
 
     /// Positional arguments.
     ///
@@ -169,8 +184,13 @@ fn run(cli: &Cli) -> Result<RunOutput, String> {
         // (#81 closed as a negative result — no GPU kernel ships for this
         // path). The reported `gpuBackend` reflects what actually ran, so
         // it is `cpu-fallback` here regardless of `gpu_backend` resolution.
-        return score_from_json(&creature_json, &data_path, GpuBackendLabel::CpuFallback)
-            .map(RunOutput::Single);
+        return score_from_json(
+            &creature_json,
+            &data_path,
+            GpuBackendLabel::CpuFallback,
+            cli.cost,
+        )
+        .map(RunOutput::Single);
     }
 
     if cli.args.len() != 2 {
@@ -187,7 +207,14 @@ fn run(cli: &Cli) -> Result<RunOutput, String> {
         if want_gpu_for_path(ScoringPath::CreatureDirectory)
             && let Some(ctx) = gpu_ctx.clone()
         {
-            match score_from_creature_dir_gpu(creature_path, data_path, gpu_backend, ctx, 2) {
+            match score_from_creature_dir_gpu(
+                creature_path,
+                data_path,
+                gpu_backend,
+                ctx,
+                2,
+                cli.cost,
+            ) {
                 Ok(r) => return Ok(RunOutput::Multi(r)),
                 Err(e) => {
                     // `--gpu on` is a hard requirement — surface the error.
@@ -204,8 +231,13 @@ fn run(cli: &Cli) -> Result<RunOutput, String> {
         // could not host the creature set, or the path is not GPU-default),
         // or the mode is Off. Report `cpu-fallback` so `gpuBackend` reflects
         // what actually ran (Issue #83).
-        score_from_creature_dir(creature_path, data_path, GpuBackendLabel::CpuFallback)
-            .map(RunOutput::Multi)
+        score_from_creature_dir(
+            creature_path,
+            data_path,
+            GpuBackendLabel::CpuFallback,
+            cli.cost,
+        )
+        .map(RunOutput::Multi)
     } else {
         let creature_json = fs::read_to_string(creature_path).map_err(|e| {
             format!(
@@ -215,8 +247,13 @@ fn run(cli: &Cli) -> Result<RunOutput, String> {
         })?;
         // See note in the `--creature-stdin` branch — single-creature path
         // always reports `cpu-fallback`.
-        score_from_json(&creature_json, data_path, GpuBackendLabel::CpuFallback)
-            .map(RunOutput::Single)
+        score_from_json(
+            &creature_json,
+            data_path,
+            GpuBackendLabel::CpuFallback,
+            cli.cost,
+        )
+        .map(RunOutput::Single)
     }
 }
 
@@ -224,6 +261,11 @@ fn score_from_json(
     creature_json: &str,
     data_path: &Path,
     gpu_backend: GpuBackendLabel,
+    // Issue #120 — resolved cost selector. Dispatch lands in #119-3;
+    // the parameter is accepted now so the CLI contract is stable and
+    // every scoring entry point has a uniform signature. The MSE path
+    // continues to call `mse_sum_batch_packed` regardless of the value.
+    _cost: CostKind,
 ) -> Result<ScoreResult, String> {
     let started = Instant::now();
     let creature = parse_creature_json(creature_json)?;
@@ -463,6 +505,7 @@ mod tests {
         Cli {
             creature_stdin: false,
             gpu: None,
+            cost: CostKind::default(),
             args: vec![creature.to_path_buf(), data.to_path_buf()],
         }
     }
@@ -676,7 +719,13 @@ mod tests {
         write_training_data(&data_dir, &[(vec![0.5], vec![0.5])]);
 
         let file_result = run_single(&cli_for(&creature_path, &data_dir)).unwrap();
-        let stdin_result = score_from_json(&json, &data_dir, GpuBackendLabel::CpuFallback).unwrap();
+        let stdin_result = score_from_json(
+            &json,
+            &data_dir,
+            GpuBackendLabel::CpuFallback,
+            CostKind::default(),
+        )
+        .unwrap();
 
         assert!((file_result.score - stdin_result.score).abs() < 1e-12);
         assert!((file_result.error - stdin_result.error).abs() < 1e-12);
@@ -692,6 +741,7 @@ mod tests {
         let cli = Cli {
             creature_stdin: true,
             gpu: None,
+            cost: CostKind::default(),
             args: vec![PathBuf::from("/tmp/creature.json"), PathBuf::from("/tmp")],
         };
         let err = resolve_inputs(&cli).expect_err("extra positional args should fail");
@@ -707,6 +757,7 @@ mod tests {
         let cli = Cli {
             creature_stdin: false,
             gpu: None,
+            cost: CostKind::default(),
             args: vec![PathBuf::from("/tmp")],
         };
         let err = resolve_inputs(&cli).expect_err("single positional arg should fail");
@@ -724,8 +775,13 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let data_dir = tmp.path().join("data");
         fs::create_dir(&data_dir).unwrap();
-        let err = score_from_json("not json", &data_dir, GpuBackendLabel::CpuFallback)
-            .expect_err("invalid JSON should fail");
+        let err = score_from_json(
+            "not json",
+            &data_dir,
+            GpuBackendLabel::CpuFallback,
+            CostKind::default(),
+        )
+        .expect_err("invalid JSON should fail");
         assert!(!err.is_empty());
     }
 
@@ -815,7 +871,78 @@ mod tests {
         let json = make_creature_json(1, 1, &[], &[("input-0", "output-0", 1.0)], Some("4.0.0"));
         write_training_data(&data_dir, &[(vec![0.5], vec![0.5])]);
 
-        let result = score_from_json(&json, &data_dir, GpuBackendLabel::CpuFallback).unwrap();
+        let result = score_from_json(
+            &json,
+            &data_dir,
+            GpuBackendLabel::CpuFallback,
+            CostKind::default(),
+        )
+        .unwrap();
         assert_eq!(result.gpu_backend, GpuBackendLabel::CpuFallback);
+    }
+
+    /// Issue #120: clap must accept every TS `BUILT_IN_COST_NAMES` value
+    /// via `--cost` and store the corresponding `CostKind`.
+    #[test]
+    fn test_cli_parses_every_built_in_cost_name() {
+        use clap::Parser;
+
+        let cases = [
+            ("MSE", CostKind::Mse),
+            ("MAE", CostKind::Mae),
+            ("MAPE", CostKind::Mape),
+            ("MSLE", CostKind::Msle),
+            ("HINGE", CostKind::Hinge),
+            ("CROSS_ENTROPY", CostKind::CrossEntropy),
+            ("CATEGORICAL_ERROR", CostKind::CategoricalError),
+        ];
+        for (name, expected) in cases {
+            let parsed = Cli::try_parse_from([
+                "rust_scorer",
+                "--cost",
+                name,
+                "/tmp/creature.json",
+                "/tmp/data",
+            ])
+            .unwrap_or_else(|e| panic!("clap rejected --cost {name}: {e}"));
+            assert_eq!(parsed.cost, expected);
+        }
+    }
+
+    /// Issue #120: omitting `--cost` must default to MSE so historical
+    /// scoring behaviour is preserved.
+    #[test]
+    fn test_cli_default_cost_is_mse() {
+        use clap::Parser;
+        let parsed =
+            Cli::try_parse_from(["rust_scorer", "/tmp/creature.json", "/tmp/data"]).unwrap();
+        assert_eq!(parsed.cost, CostKind::Mse);
+    }
+
+    /// Issue #120: unknown cost names must be rejected at the clap layer
+    /// with a non-zero exit. The error message must mention the supported
+    /// set so users can recover.
+    #[test]
+    fn test_cli_rejects_unknown_cost_name() {
+        use clap::Parser;
+        let err = Cli::try_parse_from([
+            "rust_scorer",
+            "--cost",
+            "FOO",
+            "/tmp/creature.json",
+            "/tmp/data",
+        ])
+        .expect_err("unknown cost must be rejected");
+        let rendered = err.to_string();
+        // clap renders an error like "invalid value 'FOO' for '--cost <NAME>'
+        // [possible values: MSE, MAE, ...]".
+        assert!(
+            rendered.contains("FOO"),
+            "error must echo bad value, got: {rendered}"
+        );
+        assert!(
+            rendered.contains("MSE") && rendered.contains("CROSS_ENTROPY"),
+            "error must list supported costs, got: {rendered}"
+        );
     }
 }

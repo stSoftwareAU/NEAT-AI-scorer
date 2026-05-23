@@ -36,6 +36,7 @@ use neat_core::training_bin_stream::for_each_read_chunk;
 use neat_core::training_data::{TrainingDataConfig, find_bin_files};
 use rayon::prelude::*;
 
+use crate::cost::CostKind;
 use crate::gpu::forward_mse_batched::BatchedRunner;
 use crate::gpu::{GpuBackendLabel, GpuContext};
 use crate::read_tuning::{training_read_backend_label, training_read_target_bytes_from_env};
@@ -246,6 +247,10 @@ pub fn score_from_creature_dir(
     creatures_dir: &Path,
     data_path: &Path,
     gpu_backend: GpuBackendLabel,
+    // Issue #120 — resolved cost selector; dispatch lands in #119-3. Held
+    // here so the CPU directory entry point has the same signature as the
+    // single-creature and GPU paths.
+    _cost: CostKind,
 ) -> Result<BTreeMap<String, ScoreResult>, String> {
     let started = Instant::now();
     let loaded = load_creatures_from_dir(creatures_dir)?;
@@ -536,6 +541,9 @@ pub fn score_from_creature_dir_gpu(
     gpu_backend: GpuBackendLabel,
     ctx: Arc<GpuContext>,
     inflight_chunks: usize,
+    // Issue #120 — resolved cost selector; dispatch lands in #119-3. The
+    // GPU `forward_mse_batched` kernel keeps computing MSE for now.
+    _cost: CostKind,
 ) -> Result<BTreeMap<String, ScoreResult>, String> {
     let started = Instant::now();
     let loaded = load_creatures_from_dir(creatures_dir)?;
