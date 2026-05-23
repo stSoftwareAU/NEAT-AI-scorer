@@ -4,7 +4,7 @@
 //! synthetic creature(s) and `.bin` corpus are paid for **once per process**:
 //!
 //! * `score_from_json_fused` — forward-only fused path, exercised through
-//!   [`rust_scorer::stream_score::accumulate_mse_sum_forward_only_fused`] (the
+//!   [`rust_scorer::stream_score::accumulate_cost_sum_forward_only_fused`] (the
 //!   same hot path the CLI runs in default mode).
 //! * `score_from_creature_dir` — directory mode at `N=10` and `N=50` creatures,
 //!   exercised through [`rust_scorer::multi_score::score_from_creature_dir`].
@@ -48,7 +48,7 @@ use std::sync::Arc;
 use rust_scorer::cost::CostKind;
 use rust_scorer::gpu::{GpuBackendLabel, GpuMode, resolve_backend, select_adapter};
 use rust_scorer::multi_score::{score_from_creature_dir, score_from_creature_dir_gpu};
-use rust_scorer::stream_score::accumulate_mse_sum_forward_only_fused;
+use rust_scorer::stream_score::accumulate_cost_sum_forward_only_fused;
 
 use tempfile::TempDir;
 
@@ -212,9 +212,14 @@ fn bench_score_from_json_fused(c: &mut Criterion) {
         b.iter_batched(
             || compile_creature(&creature).expect("compile"),
             |mut net| {
-                let r =
-                    accumulate_mse_sum_forward_only_fused(&bin_files, &config, &creature, &mut net)
-                        .expect("fused MSE accumulate");
+                let r = accumulate_cost_sum_forward_only_fused(
+                    CostKind::Mse,
+                    &bin_files,
+                    &config,
+                    &creature,
+                    &mut net,
+                )
+                .expect("fused MSE accumulate");
                 black_box(r);
             },
             BatchSize::PerIteration,

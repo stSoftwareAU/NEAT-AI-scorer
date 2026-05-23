@@ -15,9 +15,9 @@
 
 use std::time::Instant;
 
+use crate::cost::{CostKind, accumulate_cost_sum};
 use crate::read_tuning::{MAX_READ_BYTES, training_read_target_bytes_from_env};
 use neat_core::creature::CreatureExport;
-use neat_core::loss::mse_sum_batch_packed;
 use neat_core::network::CompiledNetwork;
 use neat_core::training_bin_stream::for_each_read_chunk;
 use neat_core::training_data::TrainingDataConfig;
@@ -149,15 +149,19 @@ fn compact_pending_if_needed(pending: &mut Vec<u8>, head: &mut usize) {
     *head = 0;
 }
 
-/// Accumulate fused MSE sums over all `.bin` files using env-tuned chunked reads.
+/// Accumulate fused cost-function sums over all `.bin` files using env-tuned
+/// chunked reads. Issue #121 generalises this from MSE-only to dispatch via
+/// [`accumulate_cost_sum`] so every supported [`CostKind`] runs through the
+/// same I/O envelope.
 ///
-/// Returns `(mse_sum, record_count, parallel_activation_batches, max_records_per_batch, clone_time_secs)`.
+/// Returns `(loss_sum, record_count, parallel_activation_batches, max_records_per_batch, clone_time_secs)`.
 /// `clone_time_secs` covers any per-worker `CompiledNetwork` clones for activation parallelism
 /// (always `0.0` when `activation_threads <= 1`). The fourth value is the largest `n_records`
 /// seen in one activation call (diagnostic: if it stays `1` while `parallel_activation_batches`
 /// is `0`, each read chunk holds at most one full record — raise **`NEAT_SCORER_READ_BYTES`**
 /// so multiple records fit in `pending` at once).
-pub fn accumulate_mse_sum_forward_only_fused(
+pub fn accumulate_cost_sum_forward_only_fused(
+    cost: CostKind,
     bin_files: &[std::path::PathBuf],
     config: &TrainingDataConfig,
     _creature: &CreatureExport,
@@ -167,6 +171,19 @@ pub fn accumulate_mse_sum_forward_only_fused(
     if record_bytes == 0 {
         return Err("Invalid record byte length (zero)".to_string());
     }
+
+    // Issue #121: validate the cost is dispatchable up-front so the inner
+    // par_iter can safely use `accumulate_cost_sum(...).unwrap()` — if the
+    // cost is blocked (e.g. CATEGORICAL_ERROR pending NEAT-AI-core#88) we
+    // surface the error before reading a single byte.
+    accumulate_cost_sum(
+        cost,
+        network,
+        &[],
+        config.num_inputs,
+        config.num_outputs,
+        true,
+    )?;
 
     let values_per_record = config.num_inputs + config.num_outputs;
     let target_read_bytes = training_read_target_bytes_from_env(record_bytes);
@@ -236,32 +253,40 @@ pub fn accumulate_mse_sum_forward_only_fused(
                                 .par_iter_mut()
                                 .zip(slices)
                                 .map(|(net, slice)| {
-                                    mse_sum_batch_packed(
+                                    // SAFETY: cost validated above — only
+                                    // dispatchable variants reach this point.
+                                    accumulate_cost_sum(
+                                        cost,
                                         net,
                                         slice,
                                         config.num_inputs,
                                         config.num_outputs,
                                         true,
                                     )
+                                    .expect("cost validated before stream loop")
                                 })
                                 .sum()
                         } else {
-                            mse_sum_batch_packed(
+                            accumulate_cost_sum(
+                                cost,
                                 network,
                                 &unpack_floats,
                                 config.num_inputs,
                                 config.num_outputs,
                                 true,
                             )
+                            .expect("cost validated before stream loop")
                         }
                     }
-                    None => mse_sum_batch_packed(
+                    None => accumulate_cost_sum(
+                        cost,
                         network,
                         &unpack_floats,
                         config.num_inputs,
                         config.num_outputs,
                         true,
-                    ),
+                    )
+                    .expect("cost validated before stream loop"),
                 };
                 total_mse_sum += chunk_sum;
             }
@@ -313,32 +338,38 @@ pub fn accumulate_mse_sum_forward_only_fused(
                             .par_iter_mut()
                             .zip(slices)
                             .map(|(net, slice)| {
-                                mse_sum_batch_packed(
+                                accumulate_cost_sum(
+                                    cost,
                                     net,
                                     slice,
                                     config.num_inputs,
                                     config.num_outputs,
                                     true,
                                 )
+                                .expect("cost validated before stream loop")
                             })
                             .sum()
                     } else {
-                        mse_sum_batch_packed(
+                        accumulate_cost_sum(
+                            cost,
                             network,
                             &unpack_floats,
                             config.num_inputs,
                             config.num_outputs,
                             true,
                         )
+                        .expect("cost validated before stream loop")
                     }
                 }
-                None => mse_sum_batch_packed(
+                None => accumulate_cost_sum(
+                    cost,
                     network,
                     &unpack_floats,
                     config.num_inputs,
                     config.num_outputs,
                     true,
-                ),
+                )
+                .expect("cost validated before stream loop"),
             };
             total_mse_sum += chunk_sum;
             head += complete_len;

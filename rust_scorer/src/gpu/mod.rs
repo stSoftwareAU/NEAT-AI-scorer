@@ -186,7 +186,7 @@ pub enum ScoringPath {
 }
 
 /// Whether [`GpuMode::Auto`] should pick the GPU pipeline for the given
-/// scoring path.
+/// scoring path **and cost kind** (Issue #121).
 ///
 /// This is the codified ship/skip decision from Issue #83 — call sites in
 /// `main.rs` consult it instead of hard-coding "directory ⇒ GPU,
@@ -197,11 +197,18 @@ pub enum ScoringPath {
 /// Returns `true` only when:
 /// 1. The bench evidence supports GPU at `BENCH_SCORING_BYTES=200000000`
 ///    being ≥ 3 % faster than CPU+PGO for the path, **and**
-/// 2. The CPU↔GPU parity tolerance from #81 holds for the kernel.
+/// 2. The CPU↔GPU parity tolerance from #81 holds for the kernel, **and**
+/// 3. The requested cost is one the GPU kernel actually implements
+///    ([`crate::cost::CostKind::gpu_supported`] — currently MSE only).
 ///
 /// `false` for every path means "no GPU paths shipped as default" — i.e. the
 /// negative-result outcome from the Performance Task Workflow.
-pub fn auto_should_use_gpu(path: ScoringPath) -> bool {
+pub fn auto_should_use_gpu(path: ScoringPath, cost: crate::cost::CostKind) -> bool {
+    // Issue #121: the GPU `forward_mse_batched` kernel only computes MSE.
+    // Any other cost forces a silent CPU fallback under Auto.
+    if !cost.gpu_supported() {
+        return false;
+    }
     match path {
         // #81 — negative result. CPU+PGO wins on the single-creature path.
         ScoringPath::SingleCreature => false,
@@ -349,14 +356,41 @@ mod tests {
         // Issue #81 closed as a negative result — single-creature GPU lost
         // to CPU+PGO at the issue-target corpus size, so Auto must keep this
         // path on CPU.
-        assert!(!auto_should_use_gpu(ScoringPath::SingleCreature));
+        assert!(!auto_should_use_gpu(
+            ScoringPath::SingleCreature,
+            crate::cost::CostKind::Mse
+        ));
     }
 
     #[test]
     fn auto_should_use_gpu_directory_uses_gpu() {
         // Issue #82 — multi-creature batched dispatch at N=50 / 200 MB beat
         // CPU+PGO by ≥ 30 % on Apple Silicon Metal, well above the 3 % bar.
-        assert!(auto_should_use_gpu(ScoringPath::CreatureDirectory));
+        assert!(auto_should_use_gpu(
+            ScoringPath::CreatureDirectory,
+            crate::cost::CostKind::Mse
+        ));
+    }
+
+    /// Issue #121: Auto must keep the directory path on CPU when the
+    /// requested cost is not one the GPU kernel implements — today that
+    /// means every cost except MSE forces CPU fallback.
+    #[test]
+    fn auto_should_use_gpu_directory_falls_back_to_cpu_for_non_mse_costs() {
+        for cost in [
+            crate::cost::CostKind::Mae,
+            crate::cost::CostKind::Mape,
+            crate::cost::CostKind::Msle,
+            crate::cost::CostKind::Hinge,
+            crate::cost::CostKind::CrossEntropy,
+            crate::cost::CostKind::CategoricalError,
+        ] {
+            assert!(
+                !auto_should_use_gpu(ScoringPath::CreatureDirectory, cost),
+                "Auto must fall back to CPU for non-MSE cost {} until a kernel ships",
+                cost.as_str()
+            );
+        }
     }
 
     #[test]

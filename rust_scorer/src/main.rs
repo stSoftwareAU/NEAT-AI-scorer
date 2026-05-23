@@ -134,7 +134,11 @@ fn resolve_inputs(cli: &Cli) -> Result<(String, PathBuf), String> {
 }
 
 enum RunOutput {
-    Single(ScoreResult),
+    // Issue #121: `ScoreResult` now also carries `cost_name: String`. The
+    // total variant size crossed clippy's `large_enum_variant` threshold,
+    // so box the single-creature payload — `Multi` is already a `BTreeMap`
+    // (one heap pointer) and stays small.
+    Single(Box<ScoreResult>),
     Multi(BTreeMap<String, ScoreResult>),
 }
 
@@ -166,15 +170,29 @@ fn run(cli: &Cli) -> Result<RunOutput, String> {
         },
     };
 
+    // Issue #121: `--gpu on --cost X != MSE` is a hard error — the GPU kernel
+    // only knows how to compute MSE today, so silently downgrading would
+    // produce a wrong scoring result. `--gpu auto` (the default) falls back
+    // to CPU instead; `--gpu off` never touches the GPU and is fine.
+    if matches!(mode, GpuMode::On) && !cli.cost.gpu_supported() {
+        return Err(format!(
+            "GPU kernel not implemented for cost {}: forward_mse_batched only handles MSE \
+             (use --gpu auto to silently fall back to CPU, or --gpu off to skip GPU detection)",
+            cli.cost.as_str()
+        ));
+    }
+
     // Issue #83 — codified ship/skip decision. `auto_should_use_gpu` is the
     // single source of truth for which paths default to GPU under Auto mode;
     // `On` bypasses it (the user explicitly demanded GPU even where bench
     // evidence does not support it), `Off` skipped GPU detection above.
+    // Issue #121 extends the predicate with the resolved cost so non-MSE
+    // costs under `--gpu auto` route to the CPU path.
     let want_gpu_for_path = |path: ScoringPath| -> bool {
         match mode {
             GpuMode::Off => false,
             GpuMode::On => true,
-            GpuMode::Auto => auto_should_use_gpu(path),
+            GpuMode::Auto => auto_should_use_gpu(path, cli.cost),
         }
     };
 
@@ -190,7 +208,7 @@ fn run(cli: &Cli) -> Result<RunOutput, String> {
             GpuBackendLabel::CpuFallback,
             cli.cost,
         )
-        .map(RunOutput::Single);
+        .map(|r| RunOutput::Single(Box::new(r)));
     }
 
     if cli.args.len() != 2 {
@@ -253,7 +271,7 @@ fn run(cli: &Cli) -> Result<RunOutput, String> {
             GpuBackendLabel::CpuFallback,
             cli.cost,
         )
-        .map(RunOutput::Single)
+        .map(|r| RunOutput::Single(Box::new(r)))
     }
 }
 
@@ -261,11 +279,10 @@ fn score_from_json(
     creature_json: &str,
     data_path: &Path,
     gpu_backend: GpuBackendLabel,
-    // Issue #120 — resolved cost selector. Dispatch lands in #119-3;
-    // the parameter is accepted now so the CLI contract is stable and
-    // every scoring entry point has a uniform signature. The MSE path
-    // continues to call `mse_sum_batch_packed` regardless of the value.
-    _cost: CostKind,
+    // Issue #121 — resolved cost selector. Dispatched through the fused
+    // streaming path for `forwardOnly` creatures and through a per-record
+    // `accumulate_cost_sum` call for recurrent creatures.
+    cost: CostKind,
 ) -> Result<ScoreResult, String> {
     let started = Instant::now();
     let creature = parse_creature_json(creature_json)?;
@@ -315,8 +332,9 @@ fn score_from_json(
 
     let (total_error, record_count, parallel_activation_batches, max_activation_batch_records) =
         if use_fused_stream {
-            let (mse_sum, count, parallel_batches, max_batch, clone_secs) =
-                stream_score::accumulate_mse_sum_forward_only_fused(
+            let (loss_sum, count, parallel_batches, max_batch, clone_secs) =
+                stream_score::accumulate_cost_sum_forward_only_fused(
+                    cost,
                     &bin_files,
                     &config,
                     &creature,
@@ -327,35 +345,35 @@ fn score_from_json(
             }
             // Per-worker clones run inside the fused accumulator; bundle them into compile time.
             compile_time_secs += clone_secs;
-            (mse_sum, count, parallel_batches, max_batch)
+            (loss_sum, count, parallel_batches, max_batch)
         } else {
+            // Recurrent / non-forward-only path. Issue #121: dispatch the
+            // requested cost on a per-record packed buffer so every supported
+            // CostKind works here too. The `forward_only = false` arg to
+            // `accumulate_cost_sum` makes the underlying helper reset the
+            // network state per record, matching the explicit `reset_state()`
+            // the old MSE-only loop used to call.
             let mut iter = TrainingDataIterator::new(data_path, config.clone())
                 .map_err(|e| format!("Failed to open training data iterator: {e}"))?;
             let mut total_error = 0.0_f64;
             let mut record_count: usize = 0;
-            let mut output_buf = vec![0.0_f32; num_outputs];
-            let inv_outputs = if num_outputs > 0 {
-                1.0_f64 / num_outputs as f64
-            } else {
-                0.0
-            };
+            let mut packed: Vec<f32> = Vec::with_capacity(creature.input + num_outputs);
 
             while let Some(record) = iter
                 .next_record()
                 .map_err(|e| format!("Failed reading training record: {e}"))?
             {
-                network.reset_state();
-                let outputs = network.activate(&record.inputs, num_outputs);
-                output_buf.copy_from_slice(&outputs);
-                // Per-record MSE = mean over outputs of (target - output)^2.
-                // Computed inline to keep the recurrent loop independent of
-                // `mse_mean_record`'s packed/batched signature in NEAT-AI-core.
-                let mut sq_sum = 0.0_f64;
-                for (target, predicted) in record.outputs.iter().zip(output_buf.iter()) {
-                    let diff = (*target - *predicted) as f64;
-                    sq_sum += diff * diff;
-                }
-                total_error += sq_sum * inv_outputs;
+                packed.clear();
+                packed.extend_from_slice(&record.inputs);
+                packed.extend_from_slice(&record.outputs);
+                total_error += cost::accumulate_cost_sum(
+                    cost,
+                    &mut network,
+                    &packed,
+                    creature.input,
+                    num_outputs,
+                    false,
+                )?;
                 record_count += 1;
             }
 
@@ -407,6 +425,7 @@ fn score_from_json(
         gpu_kernel: None,
         gpu_inflight_chunks: None,
         gpu_dispatch_count: None,
+        cost_name: cost.as_str().to_string(),
     })
 }
 
@@ -436,7 +455,7 @@ mod tests {
     use super::*;
     fn run_single(cli: &Cli) -> Result<ScoreResult, String> {
         match run(cli)? {
-            RunOutput::Single(result) => Ok(result),
+            RunOutput::Single(result) => Ok(*result),
             RunOutput::Multi(_) => Err("Expected single-creature output".to_string()),
         }
     }
@@ -679,6 +698,7 @@ mod tests {
             gpu_kernel: None,
             gpu_inflight_chunks: None,
             gpu_dispatch_count: None,
+            cost_name: "MSE".to_string(),
         };
         let json = serde_json::to_string_pretty(&result).unwrap();
         // Verify camelCase keys in output
@@ -701,6 +721,13 @@ mod tests {
         assert!(json.contains("\"parallelActivationBatches\""));
         assert!(json.contains("\"maxActivationBatchRecords\""));
         assert!(json.contains("\"compileTimeSecs\""));
+        // Issue #121: costName must be serialised so the TS bridge can
+        // confirm the resolved cost.
+        assert!(
+            json.contains("\"costName\""),
+            "expected costName in JSON, got: {json}"
+        );
+        assert!(json.contains("\"MSE\""), "expected costName value 'MSE'");
     }
 
     /// Stdin mode must yield the same `ScoreResult` as the default file mode.

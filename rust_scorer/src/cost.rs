@@ -1,17 +1,19 @@
-//! Cost-function selector for `rust_scorer` (Issue #120).
+//! Cost-function selector for `rust_scorer` (Issues #120, #121).
 //!
 //! Adds a `--cost <NAME>` CLI flag that accepts the seven NEAT-AI built-in
 //! cost names exactly as they appear in the TypeScript `BUILT_IN_COST_NAMES`
 //! tuple (see `NEAT-AI/src/Costs.ts`). The flag defaults to `MSE`, which
-//! preserves the current scoring behaviour — actual dispatch onto the new
-//! cost kinds lands in the follow-up issue (#119-3); this change is the
-//! foundational plumbing only.
+//! preserves the current scoring behaviour. Issue #121 wires the selector
+//! through to the per-chunk dispatch helper [`accumulate_cost_sum`] so the
+//! fused/streaming CPU paths in `stream_score.rs` and `multi_score.rs`
+//! actually compute the requested loss.
 //!
 //! KISS: there is **no** environment-variable override. Unknown values are
 //! rejected at the clap layer with a non-zero exit and a stderr message
 //! listing the supported set.
 
 use clap::ValueEnum;
+use neat_core::network::CompiledNetwork;
 
 /// Built-in NEAT-AI cost function selector.
 ///
@@ -46,11 +48,8 @@ pub enum CostKind {
 
 impl CostKind {
     /// Stable serialised label as a `&'static str`. Matches the TypeScript
-    /// `BUILT_IN_COST_NAMES` strings exactly.
-    // Consumed by tests, benches, and the follow-up dispatch wiring in
-    // #119-3. Suppressed for the `bin "rust_scorer"` compile where the
-    // CLI binary itself only reads the variant, not its rendered label.
-    #[allow(dead_code)]
+    /// `BUILT_IN_COST_NAMES` strings exactly. Used both by tests/benches and
+    /// by Issue #121's `costName` JSON field on `ScoreResult`.
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Mse => "MSE",
@@ -87,6 +86,69 @@ impl CostKind {
             supported_list(),
         ))
     }
+}
+
+impl CostKind {
+    /// Issue #121: which costs the GPU `forward_mse_batched` kernel can
+    /// service. Only [`CostKind::Mse`] today — every other cost forces a
+    /// CPU fallback (or a hard error under `--gpu on`).
+    pub const fn gpu_supported(self) -> bool {
+        matches!(self, Self::Mse)
+    }
+}
+
+/// Issue #121 — per-chunk cost dispatch.
+///
+/// Routes a packed `[inputs..., targets...]` chunk to the matching
+/// `*_sum_batch_packed` helper in `neat_core::loss`. The fused streaming
+/// path and the multi-creature directory path both call into this single
+/// dispatch site so adding a future cost is a one-line change here.
+///
+/// Returns `Ok(sum)` — the un-normalised loss sum over every record in
+/// `chunk` — or `Err(message)` when the requested cost is not yet wired
+/// (currently [`CostKind::CategoricalError`], which depends on
+/// `stSoftwareAU/NEAT-AI-core#88` to land first).
+pub fn accumulate_cost_sum(
+    kind: CostKind,
+    network: &mut CompiledNetwork,
+    chunk: &[f32],
+    input_size: usize,
+    num_outputs: usize,
+    forward_only: bool,
+) -> Result<f64, String> {
+    use neat_core::loss;
+    Ok(match kind {
+        CostKind::Mse => {
+            loss::mse_sum_batch_packed(network, chunk, input_size, num_outputs, forward_only)
+        }
+        CostKind::Mae => {
+            loss::mae_sum_batch_packed(network, chunk, input_size, num_outputs, forward_only)
+        }
+        CostKind::Mape => {
+            loss::mape_sum_batch_packed(network, chunk, input_size, num_outputs, forward_only)
+        }
+        CostKind::Msle => {
+            loss::msle_sum_batch_packed(network, chunk, input_size, num_outputs, forward_only)
+        }
+        CostKind::Hinge => {
+            loss::hinge_sum_batch_packed(network, chunk, input_size, num_outputs, forward_only)
+        }
+        CostKind::CrossEntropy => loss::cross_entropy_sum_batch_packed(
+            network,
+            chunk,
+            input_size,
+            num_outputs,
+            forward_only,
+        ),
+        CostKind::CategoricalError => {
+            return Err(
+                "CATEGORICAL_ERROR dispatch is blocked on stSoftwareAU/NEAT-AI-core#88 \
+                 (categorical_error_sum_batch_packed) — rerun with a different --cost \
+                 until that helper lands in neat-core"
+                    .to_string(),
+            );
+        }
+    })
 }
 
 /// Comma-separated list of supported cost names in TypeScript order
@@ -185,6 +247,116 @@ mod tests {
                 .unwrap_or_else(|e| panic!("clap could not parse '{name}': {e}"));
             assert_eq!(parsed, *variant);
         }
+    }
+
+    /// Issue #121: only MSE is GPU-supported today; every other cost must
+    /// run on CPU. Locks the predicate so a future kernel that supports
+    /// more costs has an obvious one-line update + test failure.
+    #[test]
+    fn gpu_supported_only_for_mse() {
+        assert!(CostKind::Mse.gpu_supported());
+        for v in [
+            CostKind::Mae,
+            CostKind::Mape,
+            CostKind::Msle,
+            CostKind::Hinge,
+            CostKind::CrossEntropy,
+            CostKind::CategoricalError,
+        ] {
+            assert!(
+                !v.gpu_supported(),
+                "{} must not be GPU-supported until a new kernel ships",
+                v.as_str()
+            );
+        }
+    }
+
+    /// Issue #121: `CATEGORICAL_ERROR` is currently blocked on the missing
+    /// `categorical_error_sum_batch_packed` upstream in NEAT-AI-core#88.
+    /// Dispatching it must return a clear, actionable error string — not
+    /// panic, not silently compute MSE. Locks that behaviour so once #88
+    /// lands the helper can be swapped in without touching call sites.
+    #[test]
+    fn accumulate_cost_sum_categorical_error_is_blocked() {
+        use neat_core::creature::{compile_creature, parse_creature_json};
+        // Minimal forwardOnly identity creature.
+        let json = r#"{"input":1,"output":1,"forwardOnly":true,"neurons":[
+            {"type":"output","uuid":"output-0","bias":0.0,"squash":"IDENTITY"}
+        ],"synapses":[
+            {"fromUUID":"input-0","toUUID":"output-0","weight":1.0}
+        ]}"#;
+        let creature = parse_creature_json(json).unwrap();
+        let mut net = compile_creature(&creature).unwrap();
+        let chunk = vec![0.5_f32, 0.5_f32];
+        let err = accumulate_cost_sum(CostKind::CategoricalError, &mut net, &chunk, 1, 1, true)
+            .expect_err("categorical error must be blocked");
+        assert!(
+            err.contains("CATEGORICAL_ERROR") && err.contains("#88"),
+            "error should mention CATEGORICAL_ERROR and #88, got: {err}"
+        );
+    }
+
+    /// Issue #121: dispatching `MSE` via `accumulate_cost_sum` must match
+    /// what `mse_sum_batch_packed` would have produced from the previous
+    /// hard-coded call site, so the existing MSE-only behaviour is
+    /// numerically preserved.
+    #[test]
+    fn accumulate_cost_sum_mse_matches_direct_helper() {
+        use neat_core::creature::{compile_creature, parse_creature_json};
+        use neat_core::loss::mse_sum_batch_packed;
+        let json = r#"{"input":1,"output":1,"forwardOnly":true,"neurons":[
+            {"type":"output","uuid":"output-0","bias":0.0,"squash":"IDENTITY"}
+        ],"synapses":[
+            {"fromUUID":"input-0","toUUID":"output-0","weight":1.0}
+        ]}"#;
+        let creature = parse_creature_json(json).unwrap();
+        // Two records, [inputs, targets] packed: predict input == target after
+        // identity activation, so MSE here is 0.
+        let chunk = vec![0.5_f32, 0.5_f32, -0.25_f32, -0.25_f32];
+
+        let mut net_a = compile_creature(&creature).unwrap();
+        let direct = mse_sum_batch_packed(&mut net_a, &chunk, 1, 1, true);
+        let mut net_b = compile_creature(&creature).unwrap();
+        let via_dispatch =
+            accumulate_cost_sum(CostKind::Mse, &mut net_b, &chunk, 1, 1, true).unwrap();
+        assert!(
+            (direct - via_dispatch).abs() < 1e-12,
+            "dispatch must match direct mse_sum_batch_packed (direct={direct}, dispatch={via_dispatch})"
+        );
+    }
+
+    /// Issue #121: dispatching `MAE` must call the matching helper. The
+    /// identity creature plus a deliberately mismatched target produces a
+    /// finite, positive sum that MSE alone cannot reproduce — so this also
+    /// asserts that MSE and MAE do not collapse to the same code path.
+    #[test]
+    fn accumulate_cost_sum_mae_diverges_from_mse() {
+        use neat_core::creature::{compile_creature, parse_creature_json};
+        let json = r#"{"input":1,"output":1,"forwardOnly":true,"neurons":[
+            {"type":"output","uuid":"output-0","bias":0.0,"squash":"IDENTITY"}
+        ],"synapses":[
+            {"fromUUID":"input-0","toUUID":"output-0","weight":1.0}
+        ]}"#;
+        let creature = parse_creature_json(json).unwrap();
+        // Inputs of 2.0 (predicted 2.0 after identity), target 0.5 → |diff|=1.5,
+        // diff^2=2.25 — MAE and MSE must differ.
+        let chunk = vec![2.0_f32, 0.5_f32];
+
+        let mut net_mse = compile_creature(&creature).unwrap();
+        let mse = accumulate_cost_sum(CostKind::Mse, &mut net_mse, &chunk, 1, 1, true).unwrap();
+        let mut net_mae = compile_creature(&creature).unwrap();
+        let mae = accumulate_cost_sum(CostKind::Mae, &mut net_mae, &chunk, 1, 1, true).unwrap();
+        assert!(
+            mse > 0.0 && mae > 0.0,
+            "both should be positive: mse={mse}, mae={mae}"
+        );
+        assert!(
+            (mse - mae).abs() > 1e-6,
+            "MSE and MAE must take different code paths (mse={mse}, mae={mae})"
+        );
+        // MAE(0.5)=1.5, MSE(0.5)=2.25 — confirm shape rather than exact equality
+        // (the helpers may normalise by num_outputs internally).
+        assert!(mse > mae, "for |diff|=1.5 > 1, MSE > MAE");
     }
 
     /// Issue #120 explicitly forbids an environment-variable override.
