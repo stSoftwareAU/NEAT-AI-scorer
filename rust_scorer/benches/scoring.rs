@@ -45,6 +45,7 @@ use neat_core::training_data::{TrainingDataConfig, find_bin_files};
 
 use std::sync::Arc;
 
+use rust_scorer::cost::CostKind;
 use rust_scorer::gpu::{GpuBackendLabel, GpuMode, resolve_backend, select_adapter};
 use rust_scorer::multi_score::{score_from_creature_dir, score_from_creature_dir_gpu};
 use rust_scorer::stream_score::accumulate_mse_sum_forward_only_fused;
@@ -251,9 +252,13 @@ fn bench_score_from_creature_dir(c: &mut Criterion) {
 
         group.bench_with_input(BenchmarkId::new("creatures", n), &sub_dir, |b, dir| {
             b.iter(|| {
-                let result =
-                    score_from_creature_dir(dir, &fix.data_dir, GpuBackendLabel::CpuFallback)
-                        .expect("multi-creature score");
+                let result = score_from_creature_dir(
+                    dir,
+                    &fix.data_dir,
+                    GpuBackendLabel::CpuFallback,
+                    CostKind::default(),
+                )
+                .expect("multi-creature score");
                 black_box(result);
             });
         });
@@ -376,9 +381,15 @@ fn bench_gpu_score_from_creature_dir(c: &mut Criterion) {
         group.bench_with_input(BenchmarkId::new("creatures", n), &sub_dir, |b, dir| {
             let ctx = ctx.clone();
             b.iter(|| {
-                let result =
-                    score_from_creature_dir_gpu(dir, &fix.data_dir, backend, ctx.clone(), 2)
-                        .expect("gpu multi-creature score");
+                let result = score_from_creature_dir_gpu(
+                    dir,
+                    &fix.data_dir,
+                    backend,
+                    ctx.clone(),
+                    2,
+                    CostKind::default(),
+                )
+                .expect("gpu multi-creature score");
                 black_box(result);
             });
         });
@@ -440,6 +451,7 @@ fn bench_gpu_pipelining_toggle(c: &mut Criterion) {
                         backend,
                         ctx.clone(),
                         inflight,
+                        CostKind::default(),
                     )
                     .expect("gpu multi-creature score");
                     black_box(result);
