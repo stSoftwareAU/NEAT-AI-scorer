@@ -4,6 +4,12 @@ version = "0.5.28"
 edition = "2024"
 license = "Apache-2.0"
 description = "Native CLI binary for scoring NEAT-AI creatures against training data."
+# Rust API Guidelines C-METADATA (Issue #117): downstream tooling
+# (cargo publish, SBOMs, cargo doc, IDE tooltips) needs the canonical
+# source URL. The workspace README lives at the repository root rather
+# than the crate root, so `readme` points there.
+repository = "https://github.com/stSoftwareAU/NEAT-AI-scorer"
+readme = "../README.md"
 
 [lints]
 workspace = true
