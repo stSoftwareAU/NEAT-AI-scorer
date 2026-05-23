@@ -30,13 +30,12 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use neat_core::creature::{CreatureExport, compile_creature, parse_creature_json};
-use neat_core::loss::mse_sum_batch_packed;
 use neat_core::network::CompiledNetwork;
 use neat_core::training_bin_stream::for_each_read_chunk;
 use neat_core::training_data::{TrainingDataConfig, find_bin_files};
 use rayon::prelude::*;
 
-use crate::cost::CostKind;
+use crate::cost::{CostKind, accumulate_cost_sum};
 use crate::gpu::forward_mse_batched::BatchedRunner;
 use crate::gpu::{GpuBackendLabel, GpuContext};
 use crate::read_tuning::{training_read_backend_label, training_read_target_bytes_from_env};
@@ -247,10 +246,9 @@ pub fn score_from_creature_dir(
     creatures_dir: &Path,
     data_path: &Path,
     gpu_backend: GpuBackendLabel,
-    // Issue #120 — resolved cost selector; dispatch lands in #119-3. Held
-    // here so the CPU directory entry point has the same signature as the
-    // single-creature and GPU paths.
-    _cost: CostKind,
+    // Issue #121 — resolved cost selector; dispatched through
+    // [`accumulate_cost_sum`] inside the per-chunk hot loop.
+    cost: CostKind,
 ) -> Result<BTreeMap<String, ScoreResult>, String> {
     let started = Instant::now();
     let loaded = load_creatures_from_dir(creatures_dir)?;
@@ -337,6 +335,22 @@ pub fn score_from_creature_dir(
     }
     let compile_time_secs = compile_started.elapsed().as_secs_f64();
 
+    // Issue #121: validate that the requested cost is dispatchable before
+    // entering the I/O loop. The probe uses an empty chunk — all supported
+    // costs short-circuit to 0.0 on zero records, while blocked variants
+    // (CATEGORICAL_ERROR pending NEAT-AI-core#88) surface their error here
+    // before any bytes are read.
+    if !flat_networks.is_empty() {
+        accumulate_cost_sum(
+            cost,
+            &mut flat_networks[0],
+            &[],
+            num_inputs,
+            num_outputs,
+            true,
+        )?;
+    }
+
     let mut pending: Vec<u8> = Vec::new();
     let mut head: usize = 0;
     let mut unpack_floats: Vec<f32> = Vec::new();
@@ -374,19 +388,24 @@ pub fn score_from_creature_dir(
 
         // Single flat par_iter over the worker pool — this is the only
         // Rayon parallel layer in the per-chunk hot path (Issue #41).
+        // Issue #121: dispatch on the resolved cost; cost was validated
+        // up-front (see the empty-chunk probe before the I/O loop) so the
+        // inner `.expect` cannot fire for supported variants.
         flat_networks
             .par_iter_mut()
             .zip(worker_sums.par_iter_mut())
             .enumerate()
             .for_each(|(worker_idx, (net, sum))| {
                 if let Some(range) = &work_ranges[worker_idx] {
-                    *sum = mse_sum_batch_packed(
+                    *sum = accumulate_cost_sum(
+                        cost,
                         net,
                         &floats[range.clone()],
                         num_inputs,
                         num_outputs,
                         true,
-                    );
+                    )
+                    .expect("cost validated before per-chunk dispatch");
                 } else {
                     *sum = 0.0;
                 }
@@ -508,6 +527,7 @@ pub fn score_from_creature_dir(
                 gpu_kernel: None,
                 gpu_inflight_chunks: None,
                 gpu_dispatch_count: None,
+                cost_name: cost.as_str().to_string(),
             },
         );
     }
@@ -541,10 +561,19 @@ pub fn score_from_creature_dir_gpu(
     gpu_backend: GpuBackendLabel,
     ctx: Arc<GpuContext>,
     inflight_chunks: usize,
-    // Issue #120 — resolved cost selector; dispatch lands in #119-3. The
-    // GPU `forward_mse_batched` kernel keeps computing MSE for now.
-    _cost: CostKind,
+    // Issue #121 — the GPU `forward_mse_batched` kernel only computes MSE.
+    // Any other cost is a hard error here; callers under `--gpu auto` are
+    // expected to detect this via [`crate::gpu::auto_should_use_gpu`] and
+    // route to the CPU path instead.
+    cost: CostKind,
 ) -> Result<BTreeMap<String, ScoreResult>, String> {
+    if !cost.gpu_supported() {
+        return Err(format!(
+            "GPU kernel not implemented for cost {}: forward_mse_batched only handles MSE \
+             (use --gpu auto for silent CPU fallback, or --gpu off to skip GPU entirely)",
+            cost.as_str()
+        ));
+    }
     let started = Instant::now();
     let loaded = load_creatures_from_dir(creatures_dir)?;
 
@@ -777,6 +806,7 @@ pub fn score_from_creature_dir_gpu(
                 gpu_kernel: Some("forward_mse_batched".to_string()),
                 gpu_inflight_chunks: Some(inflight_chunks),
                 gpu_dispatch_count: Some(dispatch_count),
+                cost_name: cost.as_str().to_string(),
             },
         );
     }

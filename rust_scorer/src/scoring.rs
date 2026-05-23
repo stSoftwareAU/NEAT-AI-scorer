@@ -236,6 +236,12 @@ pub struct ScoreResult {
     /// Issue #42: useful for diagnosing how much of `timeTaken` is fixed startup vs scoring.
     #[serde(rename = "compileTimeSecs", skip_serializing_if = "Option::is_none")]
     pub compile_time_secs: Option<f64>,
+    /// Issue #121: the resolved cost-function name that scoring actually
+    /// applied (one of `BUILT_IN_COST_NAMES`). Lets the TS bridge confirm
+    /// `--cost` was honoured by the scorer rather than silently downgraded
+    /// to MSE.
+    #[serde(rename = "costName")]
+    pub cost_name: String,
     /// Issue #82: name of the GPU compute kernel used for this run (e.g.
     /// `"forward_mse_batched"`). Absent when the run executed on CPU.
     #[serde(rename = "gpuKernel", skip_serializing_if = "Option::is_none")]

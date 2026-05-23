@@ -608,12 +608,16 @@ fn scorer_binary_cost_mse_matches_default() {
     );
 }
 
-/// Issue #120: `--cost MAE` must parse cleanly and still compute MSE for now
-/// (dispatch lands in #119-3). Asserts the binary exits 0 and emits the
-/// same numeric result as MSE — proves the plumbing accepts the flag and
-/// has not changed the calculation yet.
+/// Issue #121 update: `--cost MAE` now dispatches the real MAE helper
+/// (previously this asserted MAE silently computed MSE while dispatch was
+/// pending). The fixture is an identity creature whose predictions exactly
+/// match the targets, so both MSE and MAE produce 0.0 error — that gives
+/// us a stable numerical equality without needing different fixtures per
+/// cost, while still proving the binary accepts and runs `--cost MAE` end
+/// to end. The `costName` JSON field must echo `"MAE"` so downstream
+/// callers can confirm dispatch.
 #[test]
-fn scorer_binary_cost_mae_parses_and_runs_as_mse() {
+fn scorer_binary_cost_mae_runs_through_dispatch() {
     let bin = env!("CARGO_BIN_EXE_rust_scorer");
     let creature = fixture("identity_creature.json");
     let data_dir = fixture_data_dir("identity_data.bin");
@@ -628,6 +632,11 @@ fn scorer_binary_cost_mae_parses_and_runs_as_mse() {
     assert!(baseline.status.success());
     let baseline_json: serde_json::Value =
         serde_json::from_slice(&baseline.stdout).expect("baseline stdout is JSON");
+    assert_eq!(
+        baseline_json.get("costName").and_then(|v| v.as_str()),
+        Some("MSE"),
+        "MSE run must report costName=MSE"
+    );
 
     let with_mae = Command::new(bin)
         .arg("--cost")
@@ -645,29 +654,34 @@ fn scorer_binary_cost_mae_parses_and_runs_as_mse() {
     let mae_json: serde_json::Value =
         serde_json::from_slice(&with_mae.stdout).expect("--cost MAE stdout is JSON");
 
-    // Identical numeric result: dispatch lands in #119-3, this PR only
-    // wires the CLI surface.
+    // Identity fixture: every prediction equals its target so both costs
+    // evaluate to exactly 0.0, regardless of which dispatch path ran.
     assert_eq!(baseline_json.get("error"), mae_json.get("error"));
     assert_eq!(baseline_json.get("score"), mae_json.get("score"));
+    assert_eq!(
+        mae_json.get("costName").and_then(|v| v.as_str()),
+        Some("MAE"),
+        "MAE run must report costName=MAE"
+    );
 }
 
-/// Issue #120: every built-in cost name must parse and run cleanly
-/// (still computing MSE until #119-3 lands).
+/// Issue #121 update: every regression-friendly cost (MSE, MAE, MAPE,
+/// MSLE, HINGE) must now run end-to-end through real dispatch and report
+/// its name in `costName`. `CROSS_ENTROPY` is excluded here because the
+/// shared identity fixture contains negative targets, which is not a
+/// valid probability — neat-core happily computes a (negative) CE there
+/// but the scorer's `error >= 0` invariant in `calculate_score` then
+/// fails. A dedicated `[0, 1]`-target fixture exercises CE separately
+/// below. `CATEGORICAL_ERROR` is blocked at runtime pending
+/// `stSoftwareAU/NEAT-AI-core#88` and is exercised by yet another
+/// dedicated test.
 #[test]
-fn scorer_binary_accepts_every_built_in_cost_name() {
+fn scorer_binary_accepts_every_dispatchable_built_in_cost_name() {
     let bin = env!("CARGO_BIN_EXE_rust_scorer");
     let creature = fixture("identity_creature.json");
     let data_dir = fixture_data_dir("identity_data.bin");
 
-    for name in [
-        "MSE",
-        "MAE",
-        "MAPE",
-        "MSLE",
-        "HINGE",
-        "CROSS_ENTROPY",
-        "CATEGORICAL_ERROR",
-    ] {
+    for name in ["MSE", "MAE", "MAPE", "MSLE", "HINGE"] {
         let out = Command::new(bin)
             .arg("--cost")
             .arg(name)
@@ -681,7 +695,188 @@ fn scorer_binary_accepts_every_built_in_cost_name() {
             out.status.code(),
             String::from_utf8_lossy(&out.stderr),
         );
+        let json: serde_json::Value =
+            serde_json::from_slice(&out.stdout).expect("stdout must be JSON");
+        assert_eq!(
+            json.get("costName").and_then(|v| v.as_str()),
+            Some(name),
+            "--cost {name} must echo costName={name}"
+        );
     }
+}
+
+/// Issue #121: `--cost CROSS_ENTROPY` must run end-to-end against a
+/// `[0, 1]`-probability fixture (where the loss is well-defined) and
+/// report `costName=CROSS_ENTROPY`. This is the dedicated CE counterpart
+/// to the regression-friendly dispatchable-costs test above, exercising
+/// the LOGISTIC squash so outputs stay in `(0, 1)`.
+#[test]
+fn scorer_binary_cost_cross_entropy_runs_on_probabilistic_fixture() {
+    use std::io::Write;
+    use tempfile::TempDir;
+
+    let bin = env!("CARGO_BIN_EXE_rust_scorer");
+    let tmp = TempDir::new().expect("create tempdir");
+
+    // Logistic-output creature so predictions stay in (0, 1).
+    let creature_json = r#"{
+        "input": 1,
+        "output": 1,
+        "forwardOnly": true,
+        "semanticVersion": "4.0.0",
+        "neurons": [
+            {"type": "output", "uuid": "output-0", "bias": 0.0, "squash": "LOGISTIC"}
+        ],
+        "synapses": [
+            {"fromUUID": "input-0", "toUUID": "output-0", "weight": 1.0}
+        ]
+    }"#;
+    let creature_path = tmp.path().join("creature.json");
+    std::fs::write(&creature_path, creature_json).expect("write creature.json");
+
+    let data_dir = tmp.path().join("data");
+    std::fs::create_dir(&data_dir).expect("create data dir");
+    let mut bin_file = std::fs::File::create(data_dir.join("0.bin")).expect("create 0.bin");
+    // [inputs..., targets...] packed records, targets ∈ [0, 1].
+    let records: &[(f32, f32)] = &[(0.5, 0.6), (1.0, 0.9), (-1.0, 0.1), (2.0, 0.8)];
+    for (input, target) in records {
+        bin_file.write_all(&input.to_le_bytes()).unwrap();
+        bin_file.write_all(&target.to_le_bytes()).unwrap();
+    }
+    drop(bin_file);
+
+    let out = Command::new(bin)
+        .arg("--cost")
+        .arg("CROSS_ENTROPY")
+        .arg(&creature_path)
+        .arg(&data_dir)
+        .output()
+        .expect("failed to spawn rust_scorer (--cost CROSS_ENTROPY)");
+    assert!(
+        out.status.success(),
+        "--cost CROSS_ENTROPY must succeed on a [0,1] fixture, got status {:?}\nstderr:\n{}",
+        out.status.code(),
+        String::from_utf8_lossy(&out.stderr),
+    );
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).expect("stdout must be JSON");
+    assert_eq!(
+        json.get("costName").and_then(|v| v.as_str()),
+        Some("CROSS_ENTROPY"),
+        "CE run must echo costName=CROSS_ENTROPY"
+    );
+    let error = json
+        .get("error")
+        .and_then(|v| v.as_f64())
+        .expect("error must be a number");
+    assert!(
+        error.is_finite() && error >= 0.0,
+        "CE error must be non-negative and finite, got {error}"
+    );
+}
+
+/// Issue #121: `--cost CATEGORICAL_ERROR` must surface a clear runtime
+/// error referencing the upstream dependency (`NEAT-AI-core#88`) rather
+/// than silently falling back to MSE. Once `categorical_error_sum_batch_packed`
+/// lands, this test will fail and can be updated to assert the success
+/// path alongside the others.
+#[test]
+fn scorer_binary_categorical_error_is_blocked_with_helpful_message() {
+    let bin = env!("CARGO_BIN_EXE_rust_scorer");
+    let creature = fixture("identity_creature.json");
+    let data_dir = fixture_data_dir("identity_data.bin");
+
+    let out = Command::new(bin)
+        .arg("--cost")
+        .arg("CATEGORICAL_ERROR")
+        .arg(&creature)
+        .arg(data_dir.path())
+        .output()
+        .expect("failed to spawn rust_scorer (--cost CATEGORICAL_ERROR)");
+    assert!(
+        !out.status.success(),
+        "--cost CATEGORICAL_ERROR must exit non-zero while NEAT-AI-core#88 is pending"
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("CATEGORICAL_ERROR"),
+        "stderr must mention CATEGORICAL_ERROR, got: {stderr}"
+    );
+    assert!(
+        stderr.contains("#88"),
+        "stderr must reference the blocking upstream issue #88, got: {stderr}"
+    );
+}
+
+/// Issue #121: `--gpu on --cost MAE` must hard-error because the
+/// `forward_mse_batched` kernel has no MAE implementation. The error
+/// message must name the cost so the user can recover by switching mode
+/// or cost.
+#[test]
+fn scorer_binary_gpu_on_with_non_mse_cost_errors() {
+    let bin = env!("CARGO_BIN_EXE_rust_scorer");
+    let creature = fixture("identity_creature.json");
+    let data_dir = fixture_data_dir("identity_data.bin");
+
+    let out = Command::new(bin)
+        .arg("--gpu")
+        .arg("on")
+        .arg("--cost")
+        .arg("MAE")
+        .arg(&creature)
+        .arg(data_dir.path())
+        .output()
+        .expect("failed to spawn rust_scorer (--gpu on --cost MAE)");
+    assert!(
+        !out.status.success(),
+        "--gpu on --cost MAE must exit non-zero"
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("MAE") && stderr.contains("GPU"),
+        "stderr must mention MAE and GPU, got: {stderr}"
+    );
+}
+
+/// Issue #121: `--gpu auto --cost MAE` must complete successfully on
+/// CPU. Whether or not a GPU is available, an unsupported cost forces
+/// the silent fallback path — `gpuBackend` should report `cpu-fallback`
+/// because no GPU kernel ran.
+#[test]
+fn scorer_binary_gpu_auto_with_non_mse_cost_runs_on_cpu() {
+    let bin = env!("CARGO_BIN_EXE_rust_scorer");
+    let creature = fixture("identity_creature.json");
+    let data_dir = fixture_data_dir("identity_data.bin");
+
+    let out = Command::new(bin)
+        .arg("--gpu")
+        .arg("auto")
+        .arg("--cost")
+        .arg("MAE")
+        .arg(&creature)
+        .arg(data_dir.path())
+        .output()
+        .expect("failed to spawn rust_scorer (--gpu auto --cost MAE)");
+    assert!(
+        out.status.success(),
+        "--gpu auto --cost MAE must succeed via CPU fallback, got status {:?}\nstderr:\n{}",
+        out.status.code(),
+        String::from_utf8_lossy(&out.stderr),
+    );
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).expect("stdout must be JSON");
+    assert_eq!(
+        json.get("costName").and_then(|v| v.as_str()),
+        Some("MAE"),
+        "auto/MAE run must echo costName=MAE"
+    );
+    // The single-creature path always reports `cpu-fallback` in `gpuBackend`
+    // because Issue #81 closed without a single-creature GPU kernel — that
+    // is independent of `--cost`, but lock it in here as part of the
+    // contract anyway.
+    assert_eq!(
+        json.get("gpuBackend").and_then(|v| v.as_str()),
+        Some("cpu-fallback"),
+        "non-MSE cost must run on CPU; gpuBackend should be cpu-fallback"
+    );
 }
 
 /// Issue #120: an unknown `--cost` value must produce a non-zero exit
