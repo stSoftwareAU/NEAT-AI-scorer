@@ -101,7 +101,7 @@ Silicon Metal, well clearing the 3 % bar from
 single-creature path stayed slower on GPU than CPU+PGO in #81 and is held
 on CPU. `auto_should_use_gpu` in `rust_scorer/src/gpu/mod.rs` is the single
 source of truth for the per-path decision; updating either result only
-requires editing that function plus the matching row in the docs table.
+requires editing that function plus the matching row in the docs table
 
 | Path                               | GPU vs CPU+PGO @ 200 MB | `Auto` default | Source       |
 |------------------------------------|-------------------------|----------------|--------------|
