@@ -161,6 +161,21 @@ fn run(cli: &Cli) -> Result<RunOutput, String> {
     // default since Issue #83) and `on` it triggers adapter selection now
     // so the same label is passed into every scoring path.
     let mode = gpu::resolve_mode(cli.gpu, std::env::var("NEAT_SCORER_GPU").ok().as_deref())?;
+
+    // Issue #121: `--gpu on --cost X != MSE` is a hard error — the GPU kernel
+    // only knows how to compute MSE today, so silently downgrading would
+    // produce a wrong scoring result. Check this before adapter selection so
+    // the error always mentions the unsupported cost, even on machines without
+    // a GPU. `--gpu auto` (the default) falls back to CPU instead; `--gpu off`
+    // never touches the GPU and is fine.
+    if matches!(mode, GpuMode::On) && !cli.cost.gpu_supported() {
+        return Err(format!(
+            "GPU kernel not implemented for cost {}: forward_mse_batched only handles MSE \
+             (use --gpu auto to silently fall back to CPU, or --gpu off to skip GPU detection)",
+            cli.cost.as_str()
+        ));
+    }
+
     let (gpu_backend, gpu_ctx) = match mode {
         GpuMode::Off => (GpuBackendLabel::CpuFallback, None),
         GpuMode::Auto => match gpu::select_adapter() {
@@ -182,18 +197,6 @@ fn run(cli: &Cli) -> Result<RunOutput, String> {
             Err(e) => return Err(e.to_string()),
         },
     };
-
-    // Issue #121: `--gpu on --cost X != MSE` is a hard error — the GPU kernel
-    // only knows how to compute MSE today, so silently downgrading would
-    // produce a wrong scoring result. `--gpu auto` (the default) falls back
-    // to CPU instead; `--gpu off` never touches the GPU and is fine.
-    if matches!(mode, GpuMode::On) && !cli.cost.gpu_supported() {
-        return Err(format!(
-            "GPU kernel not implemented for cost {}: forward_mse_batched only handles MSE \
-             (use --gpu auto to silently fall back to CPU, or --gpu off to skip GPU detection)",
-            cli.cost.as_str()
-        ));
-    }
 
     // Issue #83 — codified ship/skip decision. `auto_should_use_gpu` is the
     // single source of truth for which paths default to GPU under Auto mode;
