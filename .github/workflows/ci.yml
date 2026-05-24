@@ -210,6 +210,22 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd  # v5
 
+      # NEAT-AI-core checkout path strategy — see note in the `quality` job.
+      # Summary: in-workspace clone + sibling symlink so `cargo metadata`
+      # (invoked by cargo_metadata.bats) resolves the path dependency.
+      - name: Checkout NEAT-AI-core (path dependency for neat-core)
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd  # v5
+        with:
+          repository: stSoftwareAU/NEAT-AI-core
+          ref: Develop
+          path: NEAT-AI-core
+
+      - name: Link NEAT-AI-core sibling path expected by Cargo
+        run: |
+          if [ ! -e "$GITHUB_WORKSPACE/../NEAT-AI-core" ]; then
+            ln -s "$GITHUB_WORKSPACE/NEAT-AI-core" "$GITHUB_WORKSPACE/../NEAT-AI-core"
+          fi
+
       - name: Check bash script syntax
         run: |
           EXIT_CODE=0
