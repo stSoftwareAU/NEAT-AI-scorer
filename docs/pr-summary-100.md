@@ -22,7 +22,7 @@ Closes #100.
 CLI / config change — no UI screenshot. The validator output below covers
 the entire repo's workflow set after the fix:
 
-```
+```text
 $ ./scripts/check-workflow-action-versions.sh
 OK   .github/workflows/auto-format.yml:37: actions/checkout@93cb6efe... (v5) (>= v5, SHA-pinned)
 OK   .github/workflows/auto-format.yml:61: dtolnay/rust-toolchain@29eef336... (stable, frozen 2026-05-18) (no Node runtime — SHA-pinned)

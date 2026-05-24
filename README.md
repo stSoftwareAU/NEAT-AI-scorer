@@ -42,7 +42,7 @@ Configuration (ignore list, skip paths, check-filenames / check-hidden flags) is
 - `renderD` — DRM device node name (e.g. `renderD128`).
 - `mape` / `MAPE` — Mean Absolute Percentage Error (a `neat-core` loss function).
 
-Binaries: `rust_scorer`, `float_scan_bench` (see `rust_scorer/Cargo.toml`).
+Binaries: `rust_scorer`, `float_scan_bench`, `cost_scan_bench` (see `rust_scorer/Cargo.toml`). `cost_scan_bench` (Issue #124) sweeps every supported [`CostKind`](rust_scorer/src/cost.rs) through the forward-only fused path against a single creature and a `.bin` corpus, emitting a JSON summary for per-cost CPU baseline comparison.
 
 ## CLI
 
@@ -356,9 +356,9 @@ hidden `--check-published` testing helper are documented under
 The `--cargo-upgrade` flag (Issue #101) switches the driver from
 `cargo update` (lockfile-only) to `cargo upgrade` (cargo-edit), so a
 worker preparing a PR can bump the `Cargo.toml` manifests through the
-same quarantine gate. Dependency bumps now happen per-PR only (Issue
-#105) — the previous weekly `upgrade-dependencies.yml` schedule has
-been removed.
+same quarantine gate. Dependency bumps now happen per-PR only
+(Issue #105) — the previous weekly `upgrade-dependencies.yml` schedule
+has been removed.
 
 ```mermaid
 flowchart LR
@@ -398,7 +398,7 @@ message live in `scripts/auto-format.sh` and are covered by
 A standalone Cargo Security Audit workflow (`.github/workflows/cargo-audit.yml`,
 Issue #64) mirrors the `cargo audit` step in the reusable `security.yml` but
 adds a weekly cron schedule (`0 6 * * 1`) plus `workflow_dispatch`. The
-schedule catches advisories published *after* the last PR — the lockfile
+schedule catches advisories published _after_ the last PR — the lockfile
 does not change but the RustSec advisory database does. The workflow is
 validated by `scripts/check-cargo-audit-workflow.sh` (invoked from
 `quality.sh`) and covered end-to-end by
@@ -435,6 +435,36 @@ and stacked PRs the same gate without spinning up CI. The workflow is
 validated by `scripts/check-dependency-review-workflow.sh` (invoked from
 `quality.sh`) and covered end-to-end by
 `tests/scripts/dependency_review_workflow.bats`.
+
+A standalone Gitleaks Secrets Detection workflow
+(`.github/workflows/gitleaks.yml`, Issue #21) runs the pinned
+`gitleaks` binary on every pull request against any branch. The scan is
+scoped to the PR commit range (`origin/<base>..HEAD`) so reviewers see
+only findings introduced by the proposed change. The Gitleaks binary is
+pinned by version **and** SHA256 checksum (bumped together in the same
+PR), so a compromised release asset cannot silently replace the
+scanner. The workflow is validated by `scripts/check-gitleaks-workflow.sh`
+(invoked from `quality.sh`) and covered end-to-end by
+`tests/scripts/gitleaks_workflow.bats`.
+
+A standalone Semgrep SAST workflow (`.github/workflows/semgrep.yml`,
+Issue #47) runs the official `semgrep/semgrep` container — pinned by
+`sha256:` digest (Issue #102) — on every pull request against any branch.
+The container path is the functional equivalent of the
+`semgrep/semgrep-action` GitHub Action; both consume
+`SEMGREP_APP_TOKEN` from repo secrets and execute
+`semgrep ci --config p/default`. The workflow is validated by
+`scripts/check-semgrep-workflow.sh` (invoked from `quality.sh`) and
+covered end-to-end by `tests/scripts/semgrep_workflow.bats`.
+
+A standalone Markdown Lint workflow
+(`.github/workflows/markdown-lint.yml`, Issue #63) runs
+`markdownlint-cli2` against the existing `.markdownlint-cli2.yaml`
+config on every pull request and on pushes to `main`/`master`. The
+workflow keeps README/docs style regressions out of merged commits
+without depending on the full CI graph. It is validated by
+`scripts/check-markdown-lint-workflow.sh` (invoked from `quality.sh`)
+and covered end-to-end by `tests/scripts/markdown_lint_workflow.bats`.
 
 ### GitHub Actions pinning policy (SHA pinning + Node 24 compat)
 

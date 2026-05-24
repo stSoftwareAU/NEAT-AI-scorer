@@ -47,7 +47,7 @@ This is a CPU/test change with no UI surface. Evidence is the
 `cargo test --test cost_parity` output (7 tests, all passing, total
 runtime <10ms):
 
-```
+```text
 running 7 tests
 test parity_categorical_error_matches_ts_reference ... ok
 test parity_cross_entropy_matches_ts_reference     ... ok
