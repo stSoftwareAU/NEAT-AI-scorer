@@ -1,7 +1,7 @@
 ## Summary
 
 Harden the workflow-action policy so `actions/setup-node` cannot regress
-to a Node 20 release. Fixes #137.
+to a Node 20 release. Fixes #137
 
 The immediate `setup-node@v4` (Node 20) usage that triggered the
 deprecation warning in Issue #137 was already removed in PR #135 (the
