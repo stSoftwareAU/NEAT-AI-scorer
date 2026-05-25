@@ -105,9 +105,10 @@ impl CostKind {
 /// dispatch site so adding a future cost is a one-line change here.
 ///
 /// Returns `Ok(sum)` — the un-normalised loss sum over every record in
-/// `chunk` — or `Err(message)` when the requested cost is not yet wired
-/// (currently [`CostKind::CategoricalError`], which depends on
-/// `stSoftwareAU/NEAT-AI-core#88` to land first).
+/// `chunk`. As of Issue #134 every built-in cost name dispatches; the
+/// `Result` return type is retained so future costs that need to surface
+/// a setup error (e.g. a kernel-only cost on the CPU path) can do so
+/// without churning every call site.
 pub fn accumulate_cost_sum(
     kind: CostKind,
     network: &mut CompiledNetwork,
@@ -140,14 +141,13 @@ pub fn accumulate_cost_sum(
             num_outputs,
             forward_only,
         ),
-        CostKind::CategoricalError => {
-            return Err(
-                "CATEGORICAL_ERROR dispatch is blocked on stSoftwareAU/NEAT-AI-core#88 \
-                 (categorical_error_sum_batch_packed) — rerun with a different --cost \
-                 until that helper lands in neat-core"
-                    .to_string(),
-            );
-        }
+        CostKind::CategoricalError => loss::categorical_error_sum_batch_packed(
+            network,
+            chunk,
+            input_size,
+            num_outputs,
+            forward_only,
+        ),
     })
 }
 
@@ -271,28 +271,53 @@ mod tests {
         }
     }
 
-    /// Issue #121: `CATEGORICAL_ERROR` is currently blocked on the missing
-    /// `categorical_error_sum_batch_packed` upstream in NEAT-AI-core#88.
-    /// Dispatching it must return a clear, actionable error string — not
-    /// panic, not silently compute MSE. Locks that behaviour so once #88
-    /// lands the helper can be swapped in without touching call sites.
+    /// Issue #134: now that `categorical_error_sum_batch_packed` has
+    /// landed in `neat-core` (NEAT-AI-core#88), `CATEGORICAL_ERROR`
+    /// dispatches through `accumulate_cost_sum` and must return the
+    /// same value as the direct helper call. Locks the dispatch wiring
+    /// so a future regression to the old "blocked" branch fails loudly.
     #[test]
-    fn accumulate_cost_sum_categorical_error_is_blocked() {
+    fn accumulate_cost_sum_categorical_error_matches_direct_helper() {
         use neat_core::creature::{compile_creature, parse_creature_json};
-        // Minimal forwardOnly identity creature.
-        let json = r#"{"input":1,"output":1,"forwardOnly":true,"neurons":[
-            {"type":"output","uuid":"output-0","bias":0.0,"squash":"IDENTITY"}
+        use neat_core::loss::categorical_error_sum_batch_packed;
+        // 1-input, 2-output IDENTITY creature so argmax over the outputs
+        // is the index of the larger input — exercises a real
+        // misclassification path (single-output argmax is degenerate).
+        let json = r#"{"input":2,"output":2,"forwardOnly":true,"neurons":[
+            {"type":"output","uuid":"output-0","bias":0.0,"squash":"IDENTITY"},
+            {"type":"output","uuid":"output-1","bias":0.0,"squash":"IDENTITY"}
         ],"synapses":[
-            {"fromUUID":"input-0","toUUID":"output-0","weight":1.0}
+            {"fromUUID":"input-0","toUUID":"output-0","weight":1.0},
+            {"fromUUID":"input-1","toUUID":"output-1","weight":1.0}
         ]}"#;
         let creature = parse_creature_json(json).unwrap();
-        let mut net = compile_creature(&creature).unwrap();
-        let chunk = vec![0.5_f32, 0.5_f32];
-        let err = accumulate_cost_sum(CostKind::CategoricalError, &mut net, &chunk, 1, 1, true)
-            .expect_err("categorical error must be blocked");
-        assert!(
-            err.contains("CATEGORICAL_ERROR") && err.contains("#88"),
-            "error should mention CATEGORICAL_ERROR and #88, got: {err}"
+        // [in0, in1, t0, t1] per record. 2 wrong, 1 correct.
+        let chunk = vec![
+            0.8_f32, 0.2, 1.0, 0.0, // pred=0, true=0 → 0
+            0.6, 0.4, 0.0, 1.0, // pred=0, true=1 → 1
+            0.4, 0.6, 1.0, 0.0, // pred=1, true=0 → 1
+        ];
+
+        let mut net_direct = compile_creature(&creature).unwrap();
+        let direct = categorical_error_sum_batch_packed(&mut net_direct, &chunk, 2, 2, true);
+        let mut net_dispatch = compile_creature(&creature).unwrap();
+        let via_dispatch = accumulate_cost_sum(
+            CostKind::CategoricalError,
+            &mut net_dispatch,
+            &chunk,
+            2,
+            2,
+            true,
+        )
+        .expect("categorical_error must dispatch after NEAT-AI-core#88");
+        // CATEGORICAL_ERROR is integer-valued — exact equality.
+        assert_eq!(
+            direct, via_dispatch,
+            "dispatch must match direct categorical_error_sum_batch_packed (direct={direct}, dispatch={via_dispatch})"
+        );
+        assert_eq!(
+            via_dispatch, 2.0,
+            "expected 2 misclassifications, got {via_dispatch}"
         );
     }
 

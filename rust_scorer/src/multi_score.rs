@@ -337,9 +337,10 @@ pub fn score_from_creature_dir(
 
     // Issue #121: validate that the requested cost is dispatchable before
     // entering the I/O loop. The probe uses an empty chunk — all supported
-    // costs short-circuit to 0.0 on zero records, while blocked variants
-    // (CATEGORICAL_ERROR pending NEAT-AI-core#88) surface their error here
-    // before any bytes are read.
+    // costs short-circuit to 0.0 on zero records. Every built-in cost
+    // dispatches today (Issue #134 wired the last one, `CATEGORICAL_ERROR`);
+    // the probe stays so a future kernel-only cost that surfaces an error
+    // here is caught before any bytes are read.
     if !flat_networks.is_empty() {
         accumulate_cost_sum(
             cost,

@@ -144,7 +144,7 @@ so callers can pass `NeatOptions.costName` through unchanged.
 | `MSLE`              | Mean Squared Logarithmic Error       | `msle_sum_batch_packed`              | No (CPU)       |
 | `HINGE`             | Hinge loss                           | `hinge_sum_batch_packed`             | No (CPU)       |
 | `CROSS_ENTROPY`     | Cross-entropy                        | `cross_entropy_sum_batch_packed`     | No (CPU)       |
-| `CATEGORICAL_ERROR` | Categorical (top-1 mismatch) error   | _blocked on [`NEAT-AI-core#88`](https://github.com/stSoftwareAU/NEAT-AI-core/issues/88)_ | No (CPU)       |
+| `CATEGORICAL_ERROR` | Categorical (top-1 mismatch) error   | `categorical_error_sum_batch_packed` | No (CPU)       |
 
 Unknown values are rejected by `clap` with a non-zero exit and a stderr
 message listing the supported set. There is **no** `NEAT_SCORER_COST`
@@ -161,7 +161,7 @@ rust_scorer --cost MAPE              <creature.json> <training_data_dir>  # perc
 rust_scorer --cost MSLE              <creature.json> <training_data_dir>  # log-scale regression
 rust_scorer --cost HINGE             <creature.json> <training_data_dir>  # margin classifier
 rust_scorer --cost CROSS_ENTROPY     <creature.json> <training_data_dir>  # probabilistic classifier
-rust_scorer --cost CATEGORICAL_ERROR <creature.json> <training_data_dir>  # blocked on NEAT-AI-core#88 — hard-errors at runtime
+rust_scorer --cost CATEGORICAL_ERROR <creature.json> <training_data_dir>  # multi-class top-1 mismatch count
 rust_scorer --cost FOO               <creature.json> <training_data_dir>  # exits non-zero — unknown cost
 ```
 
@@ -280,10 +280,10 @@ forward-only path and the per-record recurrent path:
   `TrainingDataIterator` to feed `[inputs..., targets...]` packed records into
   the same `accumulate_cost_sum` helper one record at a time, so every
   supported cost works here too.
-- **`CATEGORICAL_ERROR` is blocked** on
-  [`NEAT-AI-core#88`](https://github.com/stSoftwareAU/NEAT-AI-core/issues/88) —
-  no `categorical_error_sum_batch_packed` helper exists upstream yet, so the
-  dispatch returns a clear runtime error rather than silently computing MSE.
+- **`CATEGORICAL_ERROR` dispatches** through `categorical_error_sum_batch_packed`
+  (landed via [`NEAT-AI-core#88`](https://github.com/stSoftwareAU/NEAT-AI-core/issues/88);
+  unblocked here in #134) — the dispatch returns the integer count of
+  argmax misclassifications across the corpus.
 - **GPU kernel is MSE-only.** `forward_mse_batched` does not yet have
   per-cost variants; non-MSE costs route to the CPU pipeline (silent
   fallback under `--gpu auto`, hard error under `--gpu on`).

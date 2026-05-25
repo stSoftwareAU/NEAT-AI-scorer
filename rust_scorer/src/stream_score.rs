@@ -173,9 +173,10 @@ pub fn accumulate_cost_sum_forward_only_fused(
     }
 
     // Issue #121: validate the cost is dispatchable up-front so the inner
-    // par_iter can safely use `accumulate_cost_sum(...).unwrap()` — if the
-    // cost is blocked (e.g. CATEGORICAL_ERROR pending NEAT-AI-core#88) we
-    // surface the error before reading a single byte.
+    // par_iter can safely use `accumulate_cost_sum(...).unwrap()`. Every
+    // built-in cost dispatches today (Issue #134 wired the last one,
+    // `CATEGORICAL_ERROR`); the probe stays so a future kernel-only cost
+    // that surfaces an error here is caught before any bytes are read.
     accumulate_cost_sum(
         cost,
         network,

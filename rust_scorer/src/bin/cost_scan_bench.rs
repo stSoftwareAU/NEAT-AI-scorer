@@ -8,10 +8,12 @@
 //! baseline so each non-MSE cost gets the bench-and-decide step the parent
 //! issue (#119) defers GPU kernel work behind.
 //!
-//! `CATEGORICAL_ERROR` is blocked on `stSoftwareAU/NEAT-AI-core#88`
-//! (no `categorical_error_sum_batch_packed` helper exists upstream yet), so
-//! it is reported under `skipped` with the issue number rather than crashing
-//! the run.
+//! Issue #134 unblocked `CATEGORICAL_ERROR` after
+//! `categorical_error_sum_batch_packed` landed via `NEAT-AI-core#88`; the
+//! bench now measures all seven built-in costs in a single sweep. The
+//! `skipped` array remains in the JSON contract for forwards-compatibility
+//! (future kernel-only costs may legitimately surface a dispatch error
+//! here) but is empty under normal operation.
 //!
 //! Output is a single JSON object on stdout, suitable for piping into
 //! `jq`/notebooks and for pasting straight into the issue thread. Build:
@@ -195,8 +197,11 @@ fn main() {
         .map(|p| std::fs::metadata(p).map(|m| m.len()).unwrap_or(0))
         .sum();
 
-    // Costs we measure. CATEGORICAL_ERROR is reported in `skipped` with the
-    // dispatch error string so the JSON stays a single artefact.
+    // Costs we measure. Since Issue #134 every built-in cost dispatches
+    // through `accumulate_cost_sum`; the `skipped` array stays in the
+    // JSON contract for forwards-compatibility (a future kernel-only
+    // cost could legitimately surface a dispatch error here) but is
+    // empty under normal operation.
     let candidates = [
         CostKind::Mse,
         CostKind::Mae,

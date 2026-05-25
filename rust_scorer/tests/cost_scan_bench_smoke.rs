@@ -1,12 +1,13 @@
-//! Smoke test for the `cost_scan_bench` binary (Issue #124).
+//! Smoke test for the `cost_scan_bench` binary (Issues #124, #134).
 //!
 //! Drives the binary end-to-end against a synthetic creature + corpus and
-//! asserts the JSON output carries one row per supported `CostKind` (every
-//! built-in cost except `CATEGORICAL_ERROR`, which is blocked on
-//! `stSoftwareAU/NEAT-AI-core#88`). The bench bin itself produces the
-//! per-cost numbers that Issue #124 records on the issue thread; this test
-//! guards the CLI contract so the script that consumes the JSON keeps
-//! working.
+//! asserts the JSON output carries one row per supported `CostKind`.
+//! Issue #134 unblocked `CATEGORICAL_ERROR` (dispatch landed via
+//! `NEAT-AI-core#88`), so the sweep now covers all seven built-in costs
+//! and the `skipped` array is expected to be empty. The bench bin itself
+//! produces the per-cost numbers that Issue #124 records on the issue
+//! thread; this test guards the CLI contract so the script that consumes
+//! the JSON keeps working.
 
 use std::fs;
 use std::path::PathBuf;
@@ -79,10 +80,16 @@ fn cost_scan_bench_emits_one_row_per_supported_cost() {
 
     let rows = json["rows"].as_array().expect("rows must be a JSON array");
 
-    // Every supported (non-blocked) cost should produce a row.
-    // CATEGORICAL_ERROR is blocked on NEAT-AI-core#88 and is reported in a
-    // separate `skipped` array — see the bench impl.
-    let want = ["MSE", "MAE", "MAPE", "MSLE", "HINGE", "CROSS_ENTROPY"];
+    // Issue #134: every built-in cost should now produce a measured row.
+    let want = [
+        "MSE",
+        "MAE",
+        "MAPE",
+        "MSLE",
+        "HINGE",
+        "CROSS_ENTROPY",
+        "CATEGORICAL_ERROR",
+    ];
     assert_eq!(
         rows.len(),
         want.len(),
@@ -113,18 +120,15 @@ fn cost_scan_bench_emits_one_row_per_supported_cost() {
         );
     }
 
-    // CATEGORICAL_ERROR must appear in `skipped` with a reason mentioning #88.
+    // The `skipped` array remains in the JSON contract for
+    // forwards-compatibility but must be empty now that every built-in
+    // cost dispatches.
     let skipped = json["skipped"]
         .as_array()
         .expect("skipped must be an array");
-    let cat = skipped
-        .iter()
-        .find(|r| r["cost"].as_str() == Some("CATEGORICAL_ERROR"))
-        .unwrap_or_else(|| panic!("CATEGORICAL_ERROR must be skipped: {stdout}"));
-    let reason = cat["reason"].as_str().unwrap_or("");
     assert!(
-        reason.contains("#88"),
-        "skip reason must mention #88, got: {reason}"
+        skipped.is_empty(),
+        "no costs should be skipped after #134, got: {skipped:?}"
     );
 }
 
