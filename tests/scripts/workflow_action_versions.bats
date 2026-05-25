@@ -27,6 +27,7 @@ SHA_SHELLCHECK="4444444444444444444444444444444444444444"
 SHA_PR="5555555555555555555555555555555555555555"
 SHA_DEPREV="6666666666666666666666666666666666666666"
 SHA_AUDIT="7777777777777777777777777777777777777777"
+SHA_SETUP_NODE="8888888888888888888888888888888888888888"
 
 # A minimal compliant workflow — every action SHA-pinned with the version
 # label in the trailing comment. Individual failure tests rewrite a single
@@ -42,6 +43,7 @@ jobs:
     steps:
       - uses: actions/checkout@${SHA_CHECKOUT}  # v5
       - uses: actions/cache@${SHA_CACHE}  # v5
+      - uses: actions/setup-node@${SHA_SETUP_NODE}  # v6
       - uses: dtolnay/rust-toolchain@${SHA_TOOLCHAIN}  # stable, frozen 2026-05-18
       - uses: ludeeus/action-shellcheck@${SHA_SHELLCHECK}  # v2.0.0
       - uses: peter-evans/create-pull-request@${SHA_PR}  # v8
@@ -120,6 +122,25 @@ EOF
   run "$SCRIPT_UNDER_TEST" --workflows "$TMP_WF"
   [ "$status" -ne 0 ]
   [[ "$output" == *"requires v5 or newer"* ]]
+}
+
+@test "fails when actions/setup-node version comment is older than v6 (Node 20 — Issue #137)" {
+  write_compliant_workflow "$TMP_WF/example.yml"
+  # setup-node v4 and v5 still ship a Node 20 runtime; v6 is the first
+  # Node 24 release. Regressing to v4 or v5 re-introduces the Node.js 20
+  # deprecation warning that triggered Issue #137.
+  sed -i.bak "s|actions/setup-node@${SHA_SETUP_NODE}  # v6|actions/setup-node@${SHA_SETUP_NODE}  # v4|" "$TMP_WF/example.yml"
+  run "$SCRIPT_UNDER_TEST" --workflows "$TMP_WF"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"requires v6 or newer"* ]]
+}
+
+@test "fails when actions/setup-node is pinned to v5 (still Node 20 — Issue #137)" {
+  write_compliant_workflow "$TMP_WF/example.yml"
+  sed -i.bak "s|actions/setup-node@${SHA_SETUP_NODE}  # v6|actions/setup-node@${SHA_SETUP_NODE}  # v5|" "$TMP_WF/example.yml"
+  run "$SCRIPT_UNDER_TEST" --workflows "$TMP_WF"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"requires v6 or newer"* ]]
 }
 
 @test "fails when peter-evans/create-pull-request comment is older than v8" {
