@@ -95,12 +95,16 @@ else
   fail "no 'permissions: contents: read' block — least-privilege required"
 fi
 
-# 4. actions/checkout pinned to a numeric major (vN). Branch refs disallowed.
+# 4. actions/checkout pinned to a numeric major (vN) or a 40-char SHA.
+# Branch refs (e.g. `@main`) disallowed. Issue #136 widened the regex from
+# `v?[0-9]+` so SHAs starting with hex letters a–f are accepted too —
+# rustsec/audit-check has been bumped to commit `858dc40…` and that lesson
+# applies preemptively to actions/checkout here.
 checkout_line="$(grep -nE 'uses:[[:space:]]*actions/checkout@' "$WORKFLOW" || true)"
 if [[ -z "$checkout_line" ]]; then
   fail "actions/checkout step missing — workflow cannot fetch the repo"
-elif echo "$checkout_line" | grep -qE 'actions/checkout@v?[0-9]+'; then
-  ok "actions/checkout pinned to a numeric major"
+elif echo "$checkout_line" | grep -qE 'actions/checkout@(v[0-9]+|[0-9a-f]{40})\b'; then
+  ok "actions/checkout pinned to a numeric major or 40-char SHA"
 else
   fail "actions/checkout is not pinned — branch refs disallowed"
 fi

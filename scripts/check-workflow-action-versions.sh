@@ -105,13 +105,17 @@ lookup_policy() {
     actions/setup-node)               echo "required:6" ;;
     peter-evans/create-pull-request)  echo "required:8" ;;
     ludeeus/action-shellcheck)        echo "required:2" ;;
-    # actions/dependency-review-action: action.yml declares `using: node20`
-    # at v4.9.x (2026-04). No v5 release exists yet. Revisit when upstream
-    # ships a Node 24 runtime.
-    actions/dependency-review-action) echo "node20:4" ;;
-    # rustsec/audit-check: v2.0.0 (2025) still uses Node 20. No v3 exists.
-    # Revisit when upstream publishes a Node 24 release.
-    rustsec/audit-check)              echo "node20:2" ;;
+    # actions/dependency-review-action: v5.0.0 (2026-05-08) ships on Node 24.
+    # The previous v4.9.x line was a tracked Node 20 exception — Issue #136
+    # cleared it once upstream published the Node 24 release.
+    actions/dependency-review-action) echo "required:5" ;;
+    # rustsec/audit-check: the v2.0.0 tag (2024-09-23) still declares
+    # `using: node20`, but master HEAD post upstream #48 (commit
+    # 858dc40, 2026-03-20) is `using: node24`. No v2.1 / v3 tag exists yet,
+    # so we SHA-pin to the master commit and label it `# v2 (master HEAD,
+    # Node 24, post upstream #48)`. Issue #136 cleared the Node 20 exception
+    # when we adopted that SHA.
+    rustsec/audit-check)              echo "required:2" ;;
     # dtolnay/rust-toolchain is a composite/shell action. No Node runtime,
     # so the Node 24 deprecation does not apply.
     dtolnay/rust-toolchain)           echo "no-node" ;;

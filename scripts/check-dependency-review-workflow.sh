@@ -90,22 +90,26 @@ else
   fail "no 'permissions: contents: read' block — least-privilege required"
 fi
 
-# 3. actions/checkout pinned to a numeric major (vN). Branch refs disallowed.
+# 3. actions/checkout pinned to a numeric major (vN) or a 40-char SHA.
+# Branch refs (e.g. `@main`) disallowed.
 checkout_line="$(grep -nE 'uses:[[:space:]]*actions/checkout@' "$WORKFLOW" || true)"
 if [[ -z "$checkout_line" ]]; then
   fail "actions/checkout step missing — workflow cannot fetch the repo"
-elif echo "$checkout_line" | grep -qE 'actions/checkout@v?[0-9]+'; then
-  ok "actions/checkout pinned to a numeric major"
+elif echo "$checkout_line" | grep -qE 'actions/checkout@(v[0-9]+|[0-9a-f]{40})\b'; then
+  ok "actions/checkout pinned to a numeric major or 40-char SHA"
 else
   fail "actions/checkout is not pinned — branch refs disallowed"
 fi
 
-# 4. actions/dependency-review-action present and pinned to a numeric major.
+# 4. actions/dependency-review-action present and pinned to a numeric major
+# or a 40-char SHA. Issue #136 widened this from `v?[0-9]+` to also accept
+# SHAs whose leading char is a hex letter (a–f) — the v5.0.0 commit SHA
+# `a1d282b…` would otherwise be rejected as "not pinned".
 dr_line="$(grep -nE 'uses:[[:space:]]*actions/dependency-review-action@' "$WORKFLOW" || true)"
 if [[ -z "$dr_line" ]]; then
   fail "actions/dependency-review-action missing — workflow performs no review"
-elif echo "$dr_line" | grep -qE 'actions/dependency-review-action@v?[0-9]+'; then
-  ok "actions/dependency-review-action present and pinned to a numeric major"
+elif echo "$dr_line" | grep -qE 'actions/dependency-review-action@(v[0-9]+|[0-9a-f]{40})\b'; then
+  ok "actions/dependency-review-action present and pinned to a numeric major or 40-char SHA"
 else
   fail "actions/dependency-review-action is not pinned — branch refs disallowed"
 fi
