@@ -47,8 +47,8 @@ jobs:
       - uses: dtolnay/rust-toolchain@${SHA_TOOLCHAIN}  # stable, frozen 2026-05-18
       - uses: ludeeus/action-shellcheck@${SHA_SHELLCHECK}  # v2.0.0
       - uses: peter-evans/create-pull-request@${SHA_PR}  # v8
-      - uses: actions/dependency-review-action@${SHA_DEPREV}  # v4.9.0
-      - uses: rustsec/audit-check@${SHA_AUDIT}  # v2.0.0
+      - uses: actions/dependency-review-action@${SHA_DEPREV}  # v5.0.0
+      - uses: rustsec/audit-check@${SHA_AUDIT}  # v2 (master HEAD, Node 24, post upstream #48)
 EOF
 }
 
@@ -58,7 +58,12 @@ EOF
   [ "$status" -eq 0 ]
   [[ "$output" == *"actions/checkout@${SHA_CHECKOUT}"* ]]
   [[ "$output" == *"SHA-pinned"* ]]
-  [[ "$output" == *"Node 20 exception, tracked"* ]]
+  # Issue #136: dependency-review-action and audit-check both now ship on
+  # Node 24 (>= v5 and master post #48 respectively) — no Node 20 exceptions
+  # remain in the policy. Assert the >= v<N> form replaces the old tracked
+  # exception banner.
+  [[ "$output" == *">= v5, SHA-pinned"* ]]
+  [[ "$output" != *"Node 20 exception, tracked"* ]]
 }
 
 @test "fails when an action is pinned to a version tag instead of a SHA" {
@@ -151,14 +156,24 @@ EOF
   [[ "$output" == *"requires v8 or newer"* ]]
 }
 
-@test "fails when a Node 20 exception is bumped to an unknown major" {
+@test "fails when actions/dependency-review-action comment is older than v5" {
+  # Issue #136 regression: bumping back to v4 (Node 20) must fail because the
+  # policy now requires v5 or newer (Node 24).
   write_compliant_workflow "$TMP_WF/example.yml"
-  # rustsec/audit-check has no v3 yet — enforcing "stay on v2" surfaces the
-  # accidental bump so someone can verify the new major before we adopt it.
-  sed -i.bak "s|rustsec/audit-check@${SHA_AUDIT}  # v2.0.0|rustsec/audit-check@${SHA_AUDIT}  # v3.0.0|" "$TMP_WF/example.yml"
+  sed -i.bak "s|actions/dependency-review-action@${SHA_DEPREV}  # v5.0.0|actions/dependency-review-action@${SHA_DEPREV}  # v4.9.0|" "$TMP_WF/example.yml"
   run "$SCRIPT_UNDER_TEST" --workflows "$TMP_WF"
   [ "$status" -ne 0 ]
-  [[ "$output" == *"tracked Node 20 exception"* ]]
+  [[ "$output" == *"requires v5 or newer"* ]]
+}
+
+@test "fails when rustsec/audit-check comment is older than v2" {
+  # Issue #136 regression: the master HEAD pin must still carry a v2 (or
+  # newer) label so an accidental downgrade to v1 surfaces immediately.
+  write_compliant_workflow "$TMP_WF/example.yml"
+  sed -i.bak "s|rustsec/audit-check@${SHA_AUDIT}  # v2 (master HEAD, Node 24, post upstream #48)|rustsec/audit-check@${SHA_AUDIT}  # v1.4.1|" "$TMP_WF/example.yml"
+  run "$SCRIPT_UNDER_TEST" --workflows "$TMP_WF"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"requires v2 or newer"* ]]
 }
 
 @test "warns but does not fail on an unknown SHA-pinned action" {
