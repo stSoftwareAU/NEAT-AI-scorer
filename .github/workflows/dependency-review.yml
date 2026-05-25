@@ -21,7 +21,7 @@ name: Dependency Review
 # `actions/checkout@v5` (Node 24 policy) and
 # `actions/dependency-review-action@v5` (Node 24; the prior v4.9 line was a
 # tracked Node 20 exception cleared by Issue #136 once upstream v5.0.0
-# landed on 2026-05-08).
+# landed on 2026-05-08)
 
 on:
   pull_request:
