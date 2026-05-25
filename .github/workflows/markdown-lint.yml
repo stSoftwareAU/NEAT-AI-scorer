@@ -15,7 +15,7 @@ name: Markdown Lint
 # comment so a re-tagged or compromised upstream cannot silently re-execute
 # under this workflow's privileges.
 #   * actions/checkout — SHA-pinned to v5 (Node 24).
-#   * actions/setup-node — SHA-pinned to v4 (Node 24).
+#   * actions/setup-node — SHA-pinned to v6 (Node 24).
 
 on:
   pull_request:
@@ -40,7 +40,7 @@ jobs:
         uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd  # v5
 
       - name: Setup Node.js
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e  # v6
         with:
           node-version: "lts/*"
 

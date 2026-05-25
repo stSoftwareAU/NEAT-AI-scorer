@@ -32,8 +32,7 @@ Key changes:
   and the `cost_parity.rs` module doc no longer claim CATEGORICAL_ERROR
   is blocked.
 
-CI already checks out NEAT-AI-core's `Develop` branch (which includes
-#88), so no workflow changes were needed
+CI already checks out NEAT-AI-core's `Develop` branch (which includes [#88](https://github.com/stSoftwareAU/NEAT-AI-core/issues/88)), so no workflow changes were needed
 
 ## Evidence
 
