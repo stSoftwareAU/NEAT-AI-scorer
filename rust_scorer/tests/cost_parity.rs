@@ -75,8 +75,9 @@ fn identity_1_in_1_out() -> CompiledNetwork {
 }
 
 /// 2-input, 2-output `IDENTITY` creature: `output_j = input_j`. Required for
-/// `CATEGORICAL_ERROR` — argmax over a single output is always index 0, so a
-/// multi-output topology is needed to exercise the misclassification path.
+/// `CATEGORICAL_ERROR` (Issue #134 — dispatch now lands; argmax over a single
+/// output is always index 0, so a multi-output topology is needed to exercise
+/// the misclassification path).
 fn identity_2_in_2_out() -> CompiledNetwork {
     let json = r#"{
         "input": 2,
@@ -366,20 +367,15 @@ fn parity_cross_entropy_matches_ts_reference() {
 /// (ties resolve to the lowest index — matches the `>` comparison in the TS
 /// source).
 ///
-/// Dispatch through `accumulate_cost_sum` is currently **blocked** on
-/// `stSoftwareAU/NEAT-AI-core#88` (the `categorical_error_sum_batch_packed`
-/// helper has not yet landed upstream). Until it does this parity test:
-///   1. Asserts the dispatch surface still rejects the call with a clear
-///      error referencing the upstream blocker (so the contract documented
-///      in `cost.rs` cannot silently drift to "returns MSE").
-///   2. Hand-computes the TS argmax-misclassification sum from the same
-///      activations the upstream helper will see (`network.activate_into`)
-///      and asserts **exact equality** with the analytically-known expected
-///      count — argmax is integer-valued.
-///
-/// When NEAT-AI-core#88 ships, the dispatch branch can be flipped to call
-/// `accumulate_cost_sum` and assert the resulting sum equals
-/// `expected_misclassifications`.
+/// Issue #134: `categorical_error_sum_batch_packed` landed in `neat-core`
+/// (NEAT-AI-core#88) so dispatch through `accumulate_cost_sum` now
+/// succeeds. This parity test:
+///   1. Hand-computes the TS argmax-misclassification sum from the same
+///      activations the upstream helper sees (`network.activate_into`)
+///      and asserts **exact equality** with the analytically-known
+///      expected count — argmax is integer-valued.
+///   2. Calls `accumulate_cost_sum` with `CostKind::CategoricalError` and
+///      asserts the dispatch sum equals the hand-rolled sum exactly.
 #[test]
 fn parity_categorical_error_matches_ts_reference() {
     let mut net = identity_2_in_2_out();
@@ -400,10 +396,10 @@ fn parity_categorical_error_matches_ts_reference() {
     // Expected misclassifications: 4 incorrect rows above.
     let expected_misclassifications: f64 = 4.0;
 
-    // Hand-compute via the same `activate_into` path the future upstream
-    // helper will use. Asserts the analytical expectation matches what the
-    // network actually produces — so the test catches an activation change
-    // that would silently shift the parity result.
+    // Hand-compute via the same `activate_into` path the upstream helper
+    // uses. Asserts the analytical expectation matches what the network
+    // actually produces — so the test catches an activation change that
+    // would silently shift the parity result.
     let mut hand_rolled: f64 = 0.0;
     let mut output_buf: [f32; 2] = [0.0; 2];
     for rec in records_2d {
@@ -422,11 +418,11 @@ fn parity_categorical_error_matches_ts_reference() {
         "Hand-rolled TS argmax sum mismatch: actual={hand_rolled}, expected={expected_misclassifications}",
     );
 
-    // Pack the records and confirm dispatch still hard-errors with a clear
-    // upstream reference until NEAT-AI-core#88 lands.
+    // Pack the records and confirm dispatch returns exactly the same
+    // integer count as the hand-rolled TS reference.
     let packed: Vec<f32> = records_2d.iter().flatten().copied().collect();
     let mut net_dispatch = identity_2_in_2_out();
-    let err = accumulate_cost_sum(
+    let actual = accumulate_cost_sum(
         CostKind::CategoricalError,
         &mut net_dispatch,
         &packed,
@@ -434,9 +430,9 @@ fn parity_categorical_error_matches_ts_reference() {
         2,
         true,
     )
-    .expect_err("CATEGORICAL_ERROR dispatch must remain blocked while NEAT-AI-core#88 is pending");
-    assert!(
-        err.contains("CATEGORICAL_ERROR") && err.contains("#88"),
-        "CATEGORICAL_ERROR dispatch error must reference the upstream blocker, got: {err}"
+    .expect("CATEGORICAL_ERROR dispatch must succeed after NEAT-AI-core#88");
+    assert_eq!(
+        actual, expected_misclassifications,
+        "CATEGORICAL_ERROR dispatch must match TS reference: actual={actual}, expected={expected_misclassifications}",
     );
 }

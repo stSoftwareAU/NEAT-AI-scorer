@@ -84,11 +84,13 @@ struct Cli {
     /// override (KISS); unknown values are rejected by clap with a
     /// non-zero exit and a stderr message listing the supported set.
     ///
-    /// Dispatch is wired (#121): the fused forward-only path and the
-    /// per-record recurrent path both call `accumulate_cost_sum`, so
-    /// `MSE`, `MAE`, `MAPE`, `MSLE`, `HINGE` and `CROSS_ENTROPY` all
-    /// compute the requested loss. `CATEGORICAL_ERROR` is blocked on
-    /// `stSoftwareAU/NEAT-AI-core#88` and hard-errors at runtime.
+    /// Dispatch is wired (#121, #134): the fused forward-only path and
+    /// the per-record recurrent path both call `accumulate_cost_sum`,
+    /// so every one of `MSE`, `MAE`, `MAPE`, `MSLE`, `HINGE`,
+    /// `CROSS_ENTROPY` and `CATEGORICAL_ERROR` computes the requested
+    /// loss — the last one unblocked in #134 after the upstream
+    /// `categorical_error_sum_batch_packed` helper landed via
+    /// `NEAT-AI-core#88`.
     ///
     /// GPU constraint: the `forward_mse_batched` kernel is **MSE-only**.
     /// Non-MSE costs under `--gpu auto` silently fall back to the CPU

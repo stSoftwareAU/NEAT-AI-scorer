@@ -406,7 +406,7 @@ Host A — Apple Silicon (release build, no PGO; PGO typically shaves
 | `MSLE` | 87.05 | 4 818 302 | none (would need new WGSL) | **no candidate kernel — skip** |
 | `HINGE` | 40.50 | 10 355 273 | none (would need new WGSL) | **no candidate kernel — skip** (CPU is already > 10 M records/s — GPU dispatch overhead unlikely to pay back) |
 | `CROSS_ENTROPY` | 92.27 | 4 545 531 | none (would need new WGSL) | **no candidate kernel — skip** |
-| `CATEGORICAL_ERROR` | — | — | n/a | **blocked** on `stSoftwareAU/NEAT-AI-core#88` (`categorical_error_sum_batch_packed` not in `neat-core` yet) |
+| `CATEGORICAL_ERROR` | — | — | n/a | **unblocked** (#134) — `categorical_error_sum_batch_packed` landed via `stSoftwareAU/NEAT-AI-core#88`; CPU-only (integer argmax — no GPU candidate considered) |
 
 **Decision: no follow-up GPU kernel issues raised.** The only existing
 GPU shader is `forward_mse_batched.wgsl`, which inlines `d * d` for the

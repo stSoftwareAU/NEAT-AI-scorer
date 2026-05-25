@@ -672,9 +672,10 @@ fn scorer_binary_cost_mae_runs_through_dispatch() {
 /// valid probability — neat-core happily computes a (negative) CE there
 /// but the scorer's `error >= 0` invariant in `calculate_score` then
 /// fails. A dedicated `[0, 1]`-target fixture exercises CE separately
-/// below. `CATEGORICAL_ERROR` is blocked at runtime pending
-/// `stSoftwareAU/NEAT-AI-core#88` and is exercised by yet another
-/// dedicated test.
+/// below. Issue #134: `CATEGORICAL_ERROR` is also exercised in its own
+/// dedicated test (the shared 1-output fixture is degenerate for
+/// argmax, so a focused test reads better than wedging it into the
+/// shared sweep).
 #[test]
 fn scorer_binary_accepts_every_dispatchable_built_in_cost_name() {
     let bin = env!("CARGO_BIN_EXE_rust_scorer");
@@ -774,13 +775,14 @@ fn scorer_binary_cost_cross_entropy_runs_on_probabilistic_fixture() {
     );
 }
 
-/// Issue #121: `--cost CATEGORICAL_ERROR` must surface a clear runtime
-/// error referencing the upstream dependency (`NEAT-AI-core#88`) rather
-/// than silently falling back to MSE. Once `categorical_error_sum_batch_packed`
-/// lands, this test will fail and can be updated to assert the success
-/// path alongside the others.
+/// Issue #134: `--cost CATEGORICAL_ERROR` must run end-to-end now that
+/// `categorical_error_sum_batch_packed` has landed upstream
+/// (`NEAT-AI-core#88`). The shared identity fixture has matching
+/// `input == target` so argmax(input) == argmax(target) on every record
+/// and the misclassification count is exactly 0 — a clean success path
+/// for both the binary's exit status and the JSON contract.
 #[test]
-fn scorer_binary_categorical_error_is_blocked_with_helpful_message() {
+fn scorer_binary_categorical_error_runs_after_upstream_helper_landed() {
     let bin = env!("CARGO_BIN_EXE_rust_scorer");
     let creature = fixture("identity_creature.json");
     let data_dir = fixture_data_dir("identity_data.bin");
@@ -793,17 +795,24 @@ fn scorer_binary_categorical_error_is_blocked_with_helpful_message() {
         .output()
         .expect("failed to spawn rust_scorer (--cost CATEGORICAL_ERROR)");
     assert!(
-        !out.status.success(),
-        "--cost CATEGORICAL_ERROR must exit non-zero while NEAT-AI-core#88 is pending"
+        out.status.success(),
+        "--cost CATEGORICAL_ERROR must succeed after NEAT-AI-core#88, got status {:?}\nstderr:\n{}",
+        out.status.code(),
+        String::from_utf8_lossy(&out.stderr),
     );
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(
-        stderr.contains("CATEGORICAL_ERROR"),
-        "stderr must mention CATEGORICAL_ERROR, got: {stderr}"
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).expect("stdout must be JSON");
+    assert_eq!(
+        json.get("costName").and_then(|v| v.as_str()),
+        Some("CATEGORICAL_ERROR"),
+        "CATEGORICAL_ERROR run must echo costName=CATEGORICAL_ERROR"
     );
+    let error = json
+        .get("error")
+        .and_then(|v| v.as_f64())
+        .expect("error must be a number");
     assert!(
-        stderr.contains("#88"),
-        "stderr must reference the blocking upstream issue #88, got: {stderr}"
+        error.is_finite() && error >= 0.0,
+        "categorical error must be non-negative and finite, got {error}"
     );
 }
 
