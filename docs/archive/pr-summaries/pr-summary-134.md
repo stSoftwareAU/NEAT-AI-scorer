@@ -33,7 +33,7 @@ Key changes:
   is blocked.
 
 CI already checks out NEAT-AI-core's `Develop` branch (which includes
-#88), so no workflow changes were needed.
+#88), so no workflow changes were needed
 
 ## Evidence
 
