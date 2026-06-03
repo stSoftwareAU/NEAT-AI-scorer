@@ -303,14 +303,14 @@ fn score_from_json(
     cost: CostKind,
 ) -> Result<ScoreResult, String> {
     let started = Instant::now();
-    let creature = parse_creature_json(creature_json)?;
+    let creature = parse_creature_json(creature_json).map_err(|e| e.to_string())?;
 
     if creature.input == 0 || creature.output == 0 {
         return Err("Creature JSON must set positive input and output counts".to_string());
     }
 
     let compile_started = Instant::now();
-    let mut network = compile_creature(&creature)?;
+    let mut network = compile_creature(&creature).map_err(|e| e.to_string())?;
     let mut compile_time_secs = compile_started.elapsed().as_secs_f64();
     let num_outputs = creature.output;
 
