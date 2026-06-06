@@ -47,8 +47,8 @@ echo "🦀 Validating Cargo Security Audit workflow (Issue #64)..."
 echo "🧹 Validating Cargo Quality (fmt + clippy) workflow (Issue #66)..."
 ./scripts/check-cargo-quality-workflow.sh
 
-echo "🐚 Validating standalone ShellCheck Lint workflow (Issue #67)..."
-./scripts/check-shellcheck-workflow.sh
+echo "🐚 Guarding against duplicated ShellCheck across workflows (Issue #157)..."
+./scripts/check-shellcheck-dedup.sh
 
 echo "📝 Validating Markdown Lint workflow (Issue #63)..."
 ./scripts/check-markdown-lint-workflow.sh

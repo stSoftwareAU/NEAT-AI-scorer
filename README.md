@@ -413,15 +413,16 @@ full CI graph. The workflow is validated by
 `scripts/check-cargo-quality-workflow.sh` (invoked from `quality.sh`) and
 covered end-to-end by `tests/scripts/cargo_quality_workflow.bats`.
 
-A standalone ShellCheck Lint workflow (`.github/workflows/shellcheck.yml`,
-Issue #67) runs `ludeeus/action-shellcheck@2.0.0` on every pull request
-against any branch (`branches: ["*"]`). `ci.yml`'s `shell-checks` job runs
-the same action inside the full CI graph; this dedicated workflow lets
-workflow-sync tooling discover a dedicated `shellcheck.yml` by filename
-without disturbing the existing branch-protection aggregator. The workflow
-is validated by `scripts/check-shellcheck-workflow.sh` (invoked from
+ShellCheck runs in exactly one place: `ci.yml`'s `shell-checks` job invokes
+`ludeeus/action-shellcheck@2.0.0` alongside the `bash -n` syntax check and
+the bats helper-test suite, and feeds the `ci-required` aggregator that
+branch protection gates on. A standalone `shellcheck.yml` previously ran the
+identical invocation, doubling the maintenance surface (Issue #157); it was
+removed so the ShellCheck configuration lives in a single home. The dedup
+invariant is enforced by `scripts/check-shellcheck-dedup.sh` (invoked from
 `quality.sh`) and covered end-to-end by
-`tests/scripts/shellcheck_workflow.bats`.
+`tests/scripts/shellcheck_dedup.bats`, which fail if a second workflow
+re-introduces the duplicate ShellCheck step.
 
 A standalone Dependency Review workflow
 (`.github/workflows/dependency-review.yml`, Issue #62) runs
