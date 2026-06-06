@@ -242,6 +242,14 @@ fn workers_per_creature(n_creatures: usize, activation_threads: usize) -> Vec<us
         .collect()
 }
 
+/// Score every creature in `creatures_dir` against the `.bin` training records
+/// under `data_path`, returning per-creature [`ScoreResult`]s keyed by creature
+/// id.
+///
+/// `gpu_backend` selects the scoring pipeline (CPU fallback vs. `wgpu`), and
+/// `cost` is the resolved loss function dispatched through
+/// [`accumulate_cost_sum`] inside the per-chunk hot loop. Returns `Err` with a
+/// human-readable message on I/O, shape, or cost-resolution failure.
 pub fn score_from_creature_dir(
     creatures_dir: &Path,
     data_path: &Path,
