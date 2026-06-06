@@ -65,6 +65,9 @@ echo "🧭 Validating CI job dependency graph (Issue #23)..."
 echo "🔢 Validating workflow action versions for Node 24 compat (Issue #24)..."
 ./scripts/check-workflow-action-versions.sh
 
+echo "🔑 Validating CI least-privilege token scope (Issue #155)..."
+./scripts/check-ci-permissions.sh
+
 echo "📝 Running codespell preflight (mirrors CI spell-check job)..."
 if ! ./scripts/spell-check.sh; then
   echo "spell-check: FAILED — fix the typos above or update .codespellrc (see README)."

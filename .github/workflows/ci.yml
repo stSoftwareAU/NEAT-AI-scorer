@@ -37,6 +37,15 @@ on:
       - Develop
   workflow_dispatch:
 
+# Least-privilege default token scope (Issue #155). Without this block every
+# job would inherit the broad repository/organisation default GITHUB_TOKEN.
+# The `quality`, `validation`, `shell-checks` and `spell-check` jobs only read
+# the checked-out code, so a read-only default is sufficient. The `security`
+# job opts into the wider scopes its reusable workflow needs at the job level
+# (see below) — narrowing here, granting there, keeps the blast radius small.
+permissions:
+  contents: read
+
 env:
   CARGO_TERM_COLOR: always
   CARGO_BUILD_JOBS: "2"
@@ -144,6 +153,16 @@ jobs:
     # Fan-in after `validation` keeps security audits aligned with the rest
     # of the graph — no advisory scan runs against a broken repo layout.
     needs: [validation]
+    # The reusable security.yml writes check-run annotations and PR/issue
+    # comments, so the calling job must grant those scopes explicitly: a
+    # called workflow's token can only be narrowed, never elevated, along the
+    # caller chain. With the read-only workflow default above, omitting this
+    # block would clamp security.yml's own `checks: write` / `issues: write`
+    # away. Mirrors the permissions declared in security.yml.
+    permissions:
+      contents: read
+      checks: write
+      issues: write
     uses: ./.github/workflows/security.yml
     if: github.event_name == 'pull_request'
     with:

@@ -323,6 +323,41 @@ graph LR
 The graph is validated by `scripts/check-ci-job-graph.sh` (wired into
 `quality.sh`) and covered end-to-end by `tests/scripts/workflow_job_graph.bats`.
 
+### Least-privilege token scope (Issue #155)
+
+`.github/workflows/ci.yml` declares an explicit workflow-level
+`permissions:` block so every job runs with a least-privilege
+`GITHUB_TOKEN` instead of the broad repository/organisation default:
+
+```yaml
+permissions:
+  contents: read
+```
+
+The `quality`, `validation`, `shell-checks` and `spell-check` jobs only read
+the checked-out code, so the read-only default covers them. The `security`
+job calls the reusable `security.yml`, which writes check-run annotations and
+PR/issue comments, so it opts into the wider scopes **at the job level**:
+
+```yaml
+  security:
+    permissions:
+      contents: read
+      checks: write
+      issues: write
+    uses: ./.github/workflows/security.yml
+```
+
+The job-level grant is required because a called workflow's token can only be
+narrowed, never elevated, along the caller chain — without it the read-only
+workflow default would clamp away `security.yml`'s own `checks: write` /
+`issues: write` and its annotations would silently fail. The rule "narrow at
+the workflow level, grant only where needed at the job level" keeps the blast
+radius small if any step (or a dependency it installs) is compromised.
+
+The scope is validated by `scripts/check-ci-permissions.sh` (wired into
+`quality.sh`) and covered end-to-end by `tests/scripts/ci_permissions.bats`.
+
 ### Pre-quality dependency bump (`bump-deps.sh`)
 
 `bump-deps.sh` lives at the repo root and is invoked by the Vibe Coder
