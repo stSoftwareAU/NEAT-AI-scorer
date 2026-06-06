@@ -65,6 +65,7 @@ struct HeaderGpu {
     _pad1: u32,
 }
 
+/// GPU-side mirror of a compiled neuron (`#[repr(C)]`, uploaded as an SSBO element).
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable, Debug, Default)]
 pub struct NeuronGpu {
@@ -74,6 +75,7 @@ pub struct NeuronGpu {
     num_synapses: u32,
 }
 
+/// GPU-side mirror of a compiled synapse (`#[repr(C)]`, uploaded as an SSBO element).
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable, Debug, Default)]
 pub struct SynapseGpu {
@@ -81,6 +83,7 @@ pub struct SynapseGpu {
     from_index: u32,
 }
 
+/// GPU-side mirror of a compiled creature's buffer layout (`#[repr(C)]`, uploaded as an SSBO element).
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable, Debug, Default)]
 pub struct CreatureMetaGpu {
