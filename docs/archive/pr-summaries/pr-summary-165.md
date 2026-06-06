@@ -16,7 +16,7 @@ Documented items:
   `SynapseGpu`, and `CreatureMetaGpu`, the `#[repr(C)]` GPU-upload
   structs. Each now carries a one-line summary noting it is a GPU-side
   mirror of the corresponding compiled-network type, uploaded as an SSBO
-  element.
+  element
 
 ### Scope note
 
