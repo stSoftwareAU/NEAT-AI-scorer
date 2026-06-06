@@ -19,7 +19,7 @@ Added unit tests exercise the `unsafe` pointer-arithmetic loop directly,
 demonstrating the SAFETY invariants hold for empty, single, and multi-element
 inputs:
 
-```
+```text
 running 3 tests
 test tests::sums_empty_slice_to_zero ... ok
 test tests::sums_single_value ... ok
