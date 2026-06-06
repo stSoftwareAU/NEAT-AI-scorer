@@ -46,7 +46,7 @@ flowchart LR
 
 `scripts/check-shellcheck-dedup.sh` against the real repository:
 
-```
+```text
 OK   ShellCheck invoked in exactly one workflow: .../.github/workflows/ci.yml
 ```
 
