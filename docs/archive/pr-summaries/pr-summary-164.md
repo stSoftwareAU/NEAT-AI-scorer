@@ -7,7 +7,7 @@ the comment documents the invariants that make it sound — `data.len()` is a
 multiple of 4 (asserted above) and `i < n == data.len() / 4` — mirroring the
 sibling SAFETY notes already present in `multi_score.rs` and `stream_score.rs`.
 This restores the crate-wide convention that every `unsafe` block carries a
-named-invariant comment. No behaviour changed. Closes #164.
+named-invariant comment. No behaviour changed. Closes #164
 
 ## Evidence
 
