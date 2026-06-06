@@ -41,6 +41,9 @@ fn sum_f32_le_bytes(data: &[u8]) -> f64 {
     {
         let p = data.as_ptr();
         for i in 0..n {
+            // SAFETY: `data.len()` is a multiple of 4 (asserted above) and
+            // `i < n == data.len() / 4`, so `p.add(i * 4)` plus a 4-byte
+            // unaligned read stays within `data`.
             let bits = unsafe { p.add(i * 4).cast::<u32>().read_unaligned() };
             acc += f32::from_bits(bits) as f64;
         }
@@ -173,4 +176,33 @@ fn main() {
             "checksum": checksum,
         })
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::sum_f32_le_bytes;
+
+    /// Encode `f32`s as little-endian bytes the way the bench files store them.
+    fn le_bytes(values: &[f32]) -> Vec<u8> {
+        values.iter().flat_map(|v| v.to_le_bytes()).collect()
+    }
+
+    #[test]
+    fn sums_empty_slice_to_zero() {
+        assert_eq!(sum_f32_le_bytes(&[]), 0.0);
+    }
+
+    #[test]
+    fn sums_single_value() {
+        assert_eq!(sum_f32_le_bytes(&le_bytes(&[1.5])), 1.5);
+    }
+
+    #[test]
+    fn sums_multiple_values_exercising_pointer_arithmetic() {
+        // Several elements force the `unsafe { p.add(i * 4) ... }` loop to
+        // advance the pointer across every in-bounds offset.
+        let values = [1.0_f32, 2.5, -3.25, 4.75, 0.0, 100.0];
+        let expected: f64 = values.iter().map(|v| f64::from(*v)).sum();
+        assert_eq!(sum_f32_le_bytes(&le_bytes(&values)), expected);
+    }
 }
