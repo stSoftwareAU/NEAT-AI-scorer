@@ -37,6 +37,7 @@ jobs:
   semgrep:
     name: Semgrep SAST Scanning
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     container:
       # Pinned Semgrep release. Equivalent to `uses: semgrep/semgrep-action@v1`.
       # Digest pin: semgrep/semgrep v1.86.0 multi-arch manifest, frozen

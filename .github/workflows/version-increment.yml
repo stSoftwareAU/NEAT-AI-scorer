@@ -30,6 +30,7 @@ jobs:
   guard:
     name: Version Bump Guard
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     # Never attempt to push onto a fork's branch — the GITHUB_TOKEN cannot
     # write there, and bump-on-fork is the PR author's responsibility.
     if: github.event.pull_request.head.repo.full_name == github.repository
@@ -77,6 +78,7 @@ jobs:
     needs: guard
     if: needs.guard.outputs.should_bump == 'true'
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - name: Checkout PR branch
         uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd  # v5

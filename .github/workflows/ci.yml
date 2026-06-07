@@ -56,6 +56,8 @@ jobs:
     # Foundational layout check must pass before we spend minutes compiling.
     needs: [validation]
     runs-on: ubuntu-latest
+    # Full cargo build + test + doc + release; the heaviest job in the graph.
+    timeout-minutes: 30
     env:
       RUSTFLAGS: "-D warnings"
 
@@ -171,6 +173,7 @@ jobs:
   validation:
     name: Project Validation
     runs-on: ubuntu-latest
+    timeout-minutes: 10
 
     steps:
       - name: Checkout code
@@ -222,6 +225,7 @@ jobs:
   shell-checks:
     name: Shell Script Quality
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     # Upstream ShellCheck project: https://github.com/koalaman/shellcheck
     # Action wrapper used below: ludeeus/action-shellcheck (runs koalaman/shellcheck).
 
@@ -281,6 +285,7 @@ jobs:
   spell-check:
     name: Spell Check
     runs-on: ubuntu-latest
+    timeout-minutes: 10
 
     steps:
       - name: Checkout code
@@ -321,6 +326,8 @@ jobs:
     needs: [validation, quality, security, shell-checks, spell-check]
     if: always()
     runs-on: ubuntu-latest
+    # Lightweight fan-in gate — only inspects upstream job results.
+    timeout-minutes: 5
     steps:
       - name: Verify all gating jobs succeeded
         env:

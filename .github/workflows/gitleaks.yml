@@ -25,6 +25,7 @@ jobs:
   gitleaks:
     name: Gitleaks Secrets Detection
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     # Pinned release. Bump both values together and record the upstream
     # release notes / rationale in the PR that lifts them.
     env:
