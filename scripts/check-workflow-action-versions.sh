@@ -99,6 +99,11 @@ lookup_policy() {
   case "$action" in
     actions/checkout)                 echo "required:5" ;;
     actions/cache)                    echo "required:5" ;;
+    # actions/upload-artifact: v4 and v5 still ship a Node 20 runtime; v6.0.0
+    # (2025) is the first Node 24 release, and v7.0.1 is the current line.
+    # Pinning the floor at v6 keeps the SBOM workflow (Issue #172) clear of
+    # the Node 20 deprecation.
+    actions/upload-artifact)          echo "required:6" ;;
     # actions/setup-node v4 and v5 still ship a Node 20 runtime; v6.0.0
     # (2025-10) is the first Node 24 release. Pinning the floor at v6
     # prevents the deprecation regression that triggered Issue #137.
