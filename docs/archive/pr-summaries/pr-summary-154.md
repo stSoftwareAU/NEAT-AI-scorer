@@ -45,7 +45,7 @@ script and BATS suite.
 
 `scripts/check-workflow-timeouts.sh` before the fix (all jobs flagged):
 
-```
+```text
 FAIL ci.yml: job 'quality' has no timeout-minutes — it inherits GitHub's 360-minute default
 FAIL ci.yml: job 'validation' has no timeout-minutes — it inherits GitHub's 360-minute default
 ... (every normal job across every workflow)
@@ -53,7 +53,7 @@ FAIL ci.yml: job 'validation' has no timeout-minutes — it inherits GitHub's 36
 
 After the fix:
 
-```
+```text
 OK   ci.yml: job 'quality' declares timeout-minutes: 30
 OK   ci.yml: job 'security' is a reusable-workflow call (timeout belongs in the called workflow)
 OK   security.yml: job 'security' declares timeout-minutes: 15
