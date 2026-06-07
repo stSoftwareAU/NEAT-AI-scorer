@@ -454,6 +454,29 @@ validated by `scripts/check-cargo-audit-workflow.sh` (invoked from
 `quality.sh`) and covered end-to-end by
 `tests/scripts/cargo_audit_workflow.bats`.
 
+A standalone SBOM workflow (`.github/workflows/sbom.yml`, Issue #172) exports
+the dependency inventory as a CycloneDX Software Bill of Materials and uploads
+it as a build artefact. `rust_scorer` ships a binary, so its dependency graph
+has a real binary surface; `Cargo.lock` already pins that graph, and this
+workflow turns it into a standard, scanner-consumable document. When a
+supply-chain advisory drops ("crate X version Y is compromised"), the SBOM is
+the lookup table that answers "are we affected, and where?" in seconds —
+without a Rust toolchain. The job installs `cargo-cyclonedx`, runs
+`cargo cyclonedx --format json --all`, and uploads the resulting `*.cdx.json`
+files via `actions/upload-artifact`. It runs on pull requests, pushes to
+`Develop`, and `workflow_dispatch`. This workflow only emits the inventory
+artefact (the supply-chain _posture_ gap); active advisories remain owned by
+`cargo-audit.yml` / `security.yml`. The workflow is validated by
+`scripts/check-sbom-workflow.sh` (invoked from `quality.sh`) and covered
+end-to-end by `tests/scripts/sbom_workflow.bats`.
+
+```mermaid
+flowchart LR
+    lock[Cargo.lock<br/>pinned graph] --> gen[cargo cyclonedx<br/>--format json]
+    gen --> cdx[*.cdx.json<br/>CycloneDX SBOM]
+    cdx --> art[upload-artifact<br/>name: sbom]
+```
+
 A standalone Cargo Quality workflow (`.github/workflows/cargo-quality.yml`,
 Issue #66) runs `cargo fmt --check` and `cargo clippy -- -D warnings` on
 pull requests against **any** branch (`branches: ["*"]`). `ci.yml` only
