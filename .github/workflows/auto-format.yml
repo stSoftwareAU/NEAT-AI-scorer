@@ -24,6 +24,12 @@ permissions:
   contents: write
   pull-requests: read
 
+# This workflow commits and pushes back to the PR head branch, so a single
+# in-flight run per branch avoids overlapping runs racing on the same ref.
+concurrency:
+  group: auto-format-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   auto-format:
     name: Auto-format Code

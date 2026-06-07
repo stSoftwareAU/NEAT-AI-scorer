@@ -74,6 +74,9 @@ echo "🔑 Validating CI least-privilege token scope (Issue #155)..."
 echo "⏱️  Validating per-job timeout-minutes across workflows (Issue #154)..."
 ./scripts/check-workflow-timeouts.sh
 
+echo "🔁 Validating concurrency groups on pile-up-prone workflows (Issue #156)..."
+./scripts/check-workflow-concurrency.sh
+
 echo "📝 Running codespell preflight (mirrors CI spell-check job)..."
 if ! ./scripts/spell-check.sh; then
   echo "spell-check: FAILED — fix the typos above or update .codespellrc (see README)."

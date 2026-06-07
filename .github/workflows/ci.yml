@@ -46,6 +46,12 @@ on:
 permissions:
   contents: read
 
+# CI is the heaviest workflow (full cargo build/test/doc), so overlapping runs
+# are the most expensive. Cancel superseded runs per-ref on rapid pushes.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
   CARGO_TERM_COLOR: always
   CARGO_BUILD_JOBS: "2"

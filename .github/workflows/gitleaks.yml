@@ -21,6 +21,11 @@ on:
 permissions:
   contents: read
 
+# Avoid stacking overlapping scans on rapid pushes; keep only the latest run.
+concurrency:
+  group: gitleaks-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   gitleaks:
     name: Gitleaks Secrets Detection
