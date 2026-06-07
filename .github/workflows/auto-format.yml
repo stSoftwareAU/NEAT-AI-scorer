@@ -28,6 +28,7 @@ jobs:
   auto-format:
     name: Auto-format Code
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     # Skip forks — GITHUB_TOKEN cannot push to a fork's branch. Formatting
     # on fork PRs is the author's responsibility.
     if: github.event.pull_request.head.repo.full_name == github.repository

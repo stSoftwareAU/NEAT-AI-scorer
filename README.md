@@ -1,6 +1,6 @@
 # NEAT-AI-scorer
 
-Native **MSE scorer** CLI for NEAT-AI creatures. Shared logic lives in **`neat-core`**, resolved from a **path dependency** on **[NEAT-AI-core](https://github.com/stSoftwareAU/NEAT-AI-core)** (see `rust_scorer/Cargo.toml`). GitHub Actions checks out `NEAT-AI-core` next to this repo so CI can resolve that path.
+Native **MSE scorer** CLI for NEAT-AI creatures. Shared logic lives in **`neat-core`**, resolved from a **path dependency** on **[NEAT-AI-core](https://github.com/stSoftwareAU/NEAT-AI-core)** (see `rust_scorer/Cargo.toml`). GitHub Actions checks out `NEAT-AI-core` next to this repo so CI can resolve that path
 
 ## Source
 
@@ -357,6 +357,21 @@ radius small if any step (or a dependency it installs) is compromised.
 
 The scope is validated by `scripts/check-ci-permissions.sh` (wired into
 `quality.sh`) and covered end-to-end by `tests/scripts/ci_permissions.bats`.
+
+### Per-job timeouts (Issue #154)
+
+Every job across `.github/workflows/` declares an explicit `timeout-minutes`
+so a hung compile, a wedged `cargo install`, a stuck network fetch, or a
+runaway test fails fast instead of occupying a shared runner for GitHub's
+360-minute (6-hour) default. Budgets are sized to the work each job performs:
+`ci.yml`'s `quality` job (full cargo build + test + doc + release) gets 30
+minutes, the security/audit jobs 15, and the lint/format/spell/version jobs
+5–10. A reusable-workflow-call job (`security` in `ci.yml`) cannot declare
+`timeout-minutes` — GitHub rejects that keyword on caller jobs — so its budget
+lives in the called workflow's own job (`security.yml`).
+
+The rule is validated by `scripts/check-workflow-timeouts.sh` (wired into
+`quality.sh`) and covered end-to-end by `tests/scripts/workflow_timeouts.bats`.
 
 ### Pre-quality dependency bump (`bump-deps.sh`)
 
