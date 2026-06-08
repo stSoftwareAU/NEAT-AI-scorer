@@ -213,6 +213,7 @@ jobs:
             "quality.sh"
             "deny.toml"
             "rust_scorer/src/main.rs"
+            ".github/CODEOWNERS"
           )
           missing_files=()
           for file in "${required_files[@]}"; do

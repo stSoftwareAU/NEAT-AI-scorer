@@ -59,6 +59,9 @@ echo "📝 Validating Markdown Lint workflow (Issue #63)..."
 echo "📦 Validating Dependency Review workflow (Issue #62)..."
 ./scripts/check-dependency-review-workflow.sh
 
+echo "👥 Validating CODEOWNERS coverage for .github/workflows/ (Issue #176)..."
+./scripts/check-codeowners.sh
+
 echo "🪄 Validating auto-format PR workflow (Issue #19)..."
 ./scripts/check-auto-format-workflow.sh
 
