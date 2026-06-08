@@ -12,7 +12,7 @@ the docs match the code:
 - `auto` is now marked **default since #83** and described as silently
   falling back to CPU when no GPU is found.
 - `off` is described by its actual behaviour (skip GPU detection
-  entirely) rather than as the default.
+  entirely) rather than as the default
 
 ### Audit of surrounding `#81` references
 
