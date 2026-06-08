@@ -28,3 +28,7 @@ section to the released version with its date.
 - CI now enforces the documentation floor: `CONTRIBUTING.md` and
   `CHANGELOG.md` are listed in the `validation` job's required-files check
   (`.github/workflows/ci.yml`), guarded by `tests/scripts/docs_floor.bats`.
+- `SECURITY.md` now documents an emergency dependency-bump procedure that
+  points a responder at `bump-deps.sh --quarantine-hours 0` for an out-of-band
+  supply-chain fix. `scripts/check-security-policy.sh` enforces the new section
+  as a sixth rule (Issue #171).

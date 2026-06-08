@@ -33,6 +33,10 @@ email security@example.com.
 
 We acknowledge reports within 3 business days.
 
+## Emergency dependency bump
+
+To push an out-of-band fix, run `./bump-deps.sh --quarantine-hours 0`.
+
 ## Supported versions
 
 | Version            | Supported          |
@@ -48,6 +52,7 @@ EOF
   [ "$status" -eq 0 ]
   [[ "$output" == *"private reporting route"* ]]
   [[ "$output" == *"supported-versions table"* ]]
+  [[ "$output" == *"emergency dependency-bump procedure"* ]]
   [[ "$output" != *"FAIL"* ]]
 }
 
@@ -57,6 +62,8 @@ EOF
 
 Email security@example.com to report a problem. We respond within 5 business days.
 
+For an emergency out-of-band fix, run `./bump-deps.sh --quarantine-hours 0`.
+
 ## Supported versions
 
 | Version | Supported |
@@ -65,6 +72,42 @@ Email security@example.com to report a problem. We respond within 5 business day
 EOF
   run "$SCRIPT_UNDER_TEST" --security-policy "$TMP_SEC/SECURITY.md"
   [ "$status" -eq 0 ]
+}
+
+@test "fails when there is no emergency dependency-bump procedure" {
+  cat >"$TMP_SEC/SECURITY.md" <<'EOF'
+# Security Policy
+
+Email security@example.com to report a problem. We respond within 3 business days.
+
+## Supported versions
+
+| Version | Supported |
+| ------- | --------- |
+| latest  | yes       |
+EOF
+  run "$SCRIPT_UNDER_TEST" --security-policy "$TMP_SEC/SECURITY.md"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"no emergency dependency-bump procedure"* ]]
+}
+
+@test "fails when the emergency procedure omits the bump tooling" {
+  cat >"$TMP_SEC/SECURITY.md" <<'EOF'
+# Security Policy
+
+Email security@example.com to report a problem. We respond within 3 business days.
+
+In an emergency, ship a fix as fast as you can.
+
+## Supported versions
+
+| Version | Supported |
+| ------- | --------- |
+| latest  | yes       |
+EOF
+  run "$SCRIPT_UNDER_TEST" --security-policy "$TMP_SEC/SECURITY.md"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"no emergency dependency-bump procedure"* ]]
 }
 
 @test "fails when there is no private reporting route" {
