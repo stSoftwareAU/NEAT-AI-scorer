@@ -210,6 +210,8 @@ jobs:
             "Cargo.toml"
             "README.md"
             "LICENSE"
+            "CONTRIBUTING.md"
+            "CHANGELOG.md"
             "quality.sh"
             "deny.toml"
             "rust_scorer/src/main.rs"
