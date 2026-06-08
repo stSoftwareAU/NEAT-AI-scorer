@@ -19,7 +19,7 @@ the floor cannot silently regress. Closes #178.
   *what* changed between versions.
 - **CI enforcement** — `CONTRIBUTING.md` and `CHANGELOG.md` are added to the
   `validation` job's required-files check in `.github/workflows/ci.yml`,
-  guarded by a new `tests/scripts/docs_floor.bats` suite.
+  guarded by a new `tests/scripts/docs_floor.bats` suite
 
 ## Evidence
 
