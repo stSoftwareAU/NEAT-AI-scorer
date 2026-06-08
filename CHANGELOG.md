@@ -27,7 +27,7 @@ section to the released version with its date.
   parity is verified up to 4010-neuron creatures.
 - `CONTRIBUTING.md` — contributor guide summarising the local gate
   (`./quality.sh`), prerequisites, coding standards, and the pull request
-  workflow.
+  workflow
 - `CHANGELOG.md` — this file, following Keep a Changelog, to record changes
   alongside the automated `rust_scorer` version bumps.
 
