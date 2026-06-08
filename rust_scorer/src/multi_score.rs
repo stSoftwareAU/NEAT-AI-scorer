@@ -544,23 +544,25 @@ pub fn score_from_creature_dir(
     Ok(results)
 }
 
-/// Issue #180 — CPU-only pre-flight that decides whether the
-/// `forward_mse_batched` GPU kernel can host every creature in `creatures_dir`
-/// **without creating a `wgpu` device**.
+/// Issue #180 — CPU-only pre-flight that decides whether a GPU kernel can host
+/// every creature in `creatures_dir` **without creating a `wgpu` device**.
 ///
-/// `main.rs` calls this under `--gpu auto` *before* selecting a GPU adapter:
-/// production creatures routinely exceed the 256-neuron shader cap (observed:
-/// 4139 neurons), and a created-then-abandoned Metal context could abort
-/// during process teardown — truncating the JSON the batch caller reads and
-/// surfacing as `exit 158` / `INVALID_JSON`. Gating adapter creation on this
-/// cheap CPU check means an unhostable set never spins up — and never tears
-/// down — a GPU context, so the CPU fallback returns valid JSON and exits
-/// cleanly.
+/// `main.rs` calls this under `--gpu auto` *before* selecting a GPU adapter: a
+/// created-then-abandoned Metal context could abort during process teardown —
+/// truncating the JSON the batch caller reads and surfacing as `exit 158` /
+/// `INVALID_JSON`. Gating adapter creation on this cheap CPU check means an
+/// unhostable set never spins up — and never tears down — a GPU context, so the
+/// CPU fallback returns valid JSON and exits cleanly.
+///
+/// Issue #182 lifted the 256-neuron cap: creatures of any realistic size
+/// (observed: 4139 neurons) are now GPU-hostable via the `forward_mse_scratch`
+/// kernel, so a large creature set no longer forces a CPU fallback here.
 ///
 /// Returns:
-/// * `Err(reason)` — the set is genuinely incompatible with the shader (a
-///   creature above [`crate::gpu::forward_mse_batched::MAX_NEURONS_PER_CREATURE`]
-///   or using an unsupported squash). `reason` is the human-readable cause.
+/// * `Err(reason)` — the set is genuinely incompatible with the GPU kernels (an
+///   unsupported squash, a shape mismatch, or an absurd neuron count beyond
+///   [`crate::gpu::forward_mse_batched::MAX_NEURONS_ABSOLUTE`]). `reason` is the
+///   human-readable cause.
 /// * `Ok(())` — either the set is GPU-hostable, or it could not even be
 ///   loaded/compiled. Load/compile failures are deliberately *not* treated as
 ///   GPU-incompatibility: they are left for the normal scoring path to surface
@@ -610,7 +612,8 @@ pub fn gpu_directory_compatible(creatures_dir: &Path) -> Result<(), String> {
 ///   accepted but capped to `2` so device memory stays bounded.
 ///
 /// Returns the same per-creature `BTreeMap<String, ScoreResult>` as the CPU
-/// path, with `gpuKernel: "forward_mse_batched"`, `gpuInflightChunks`, and
+/// path, with `gpuKernel` (`forward_mse_batched` for creatures within the 256
+/// cap, `forward_mse_scratch` above it — Issue #182), `gpuInflightChunks`, and
 /// `gpuDispatchCount` populated for every entry.
 pub fn score_from_creature_dir_gpu(
     creatures_dir: &Path,
@@ -820,6 +823,9 @@ pub fn score_from_creature_dir_gpu(
 
     let elapsed = started.elapsed().as_secs_f64();
     let dispatch_count = runner.dispatch_count;
+    // Report the kernel that actually ran — `forward_mse_batched` for small
+    // creatures, `forward_mse_scratch` for those above the 256 cap (Issue #182).
+    let gpu_kernel_label = runner.kernel_label();
     let mut results = BTreeMap::new();
     for (loaded_creature, mse_sum) in loaded.iter().zip(total_mse.iter()) {
         let avg_error = *mse_sum / total_records as f64;
@@ -860,7 +866,7 @@ pub fn score_from_creature_dir_gpu(
                 max_activation_batch_records: None,
                 time_taken_secs: elapsed,
                 compile_time_secs: Some(compile_time_secs),
-                gpu_kernel: Some("forward_mse_batched".to_string()),
+                gpu_kernel: Some(gpu_kernel_label.to_string()),
                 gpu_inflight_chunks: Some(inflight_chunks),
                 gpu_dispatch_count: Some(dispatch_count),
                 cost_name: cost.as_str().to_string(),

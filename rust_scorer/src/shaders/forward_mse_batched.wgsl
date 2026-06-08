@@ -76,10 +76,14 @@ const MAX_NEURONS_PER_CREATURE: u32 = 256u;
 fn squash(t: u32, x: f32) -> f32 {
     // 0 = IDENTITY, 1 = RELU, 6 = LOGISTIC, 7 = TANH (other types are filtered
     // out by the host before dispatch; treat unknown values as IDENTITY).
+    // Clamp before the transcendental so large pre-activations cannot overflow
+    // Metal's `tanh`/`exp` to inf → NaN (Issue #182). Both functions are fully
+    // saturated by |x| = 30 in f32, so this matches the CPU libm result.
+    let c = clamp(x, -30.0, 30.0);
     if (t == 7u) {
-        return tanh(x);
+        return tanh(c);
     } else if (t == 6u) {
-        return 1.0 / (1.0 + exp(-x));
+        return 1.0 / (1.0 + exp(-c));
     } else if (t == 1u) {
         if (x > 0.0) { return x; } else { return 0.0; }
     }

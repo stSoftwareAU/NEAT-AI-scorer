@@ -1,11 +1,13 @@
 //! Issue #180 — CPU-only GPU compatibility pre-flight for directory mode.
 //!
 //! `gpu_directory_compatible` decides — without creating a `wgpu` device —
-//! whether the `forward_mse_batched` kernel can host every creature in a
-//! directory. `main.rs` consults it under `--gpu auto` so a creature set above
-//! the 256-neuron shader cap routes straight to the CPU pipeline instead of
-//! spinning up (and tearing down) a GPU context, which previously surfaced to
-//! batch callers as `exit 158` / truncated JSON.
+//! whether a GPU kernel can host every creature in a directory. `main.rs`
+//! consults it under `--gpu auto`.
+//!
+//! Issue #182 lifted the 256-neuron cap: creatures above it now run on the
+//! `forward_mse_scratch` kernel (runtime-sized storage activations), so the
+//! pre-flight reports them as hostable. Only an unsupported squash function,
+//! a shape mismatch, or an absurd neuron count now forces a CPU fallback.
 
 use std::path::Path;
 
@@ -49,22 +51,30 @@ fn write_creature(dir: &Path, name: &str, num_inputs: usize, num_outputs: usize,
     std::fs::write(dir.join(name), json).expect("write creature JSON");
 }
 
+/// Issue #182 lifted the 256-neuron cap: large creatures now run on the
+/// `forward_mse_scratch` kernel, so the pre-flight must report them as
+/// GPU-hostable instead of forcing a CPU fallback. (Before #182 this same
+/// 302-neuron creature was rejected with a "256" shader-cap reason.)
 #[test]
-fn preflight_rejects_creature_above_shader_cap() {
+fn preflight_accepts_creature_above_private_cap() {
     let tmp = tempfile::tempdir().expect("create tempdir");
-    // 1 input + 300 hidden + 1 output = 302 neurons > 256-neuron shader cap.
+    // 1 input + 300 hidden + 1 output = 302 neurons > 256 private-array cap.
     write_creature(tmp.path(), "big.json", 1, 1, 300);
 
-    let err = gpu_directory_compatible(tmp.path())
-        .expect_err("a 302-neuron creature must be rejected by the GPU pre-flight");
-    assert!(
-        err.contains("256"),
-        "expected the shader-cap reason, got: {err}"
-    );
-    assert!(
-        err.contains("neurons"),
-        "expected the neuron-count reason, got: {err}"
-    );
+    gpu_directory_compatible(tmp.path())
+        .expect("a 302-neuron creature is now GPU-hostable via the scratch kernel");
+}
+
+/// A genuinely huge (4000+ hidden neuron) creature — the production scale the
+/// issue targets — is also GPU-hostable after #182.
+#[test]
+fn preflight_accepts_large_production_scale_creature() {
+    let tmp = tempfile::tempdir().expect("create tempdir");
+    // 8 inputs + 4000 hidden + 2 outputs = 4010 neurons.
+    write_creature(tmp.path(), "huge.json", 8, 2, 4000);
+
+    gpu_directory_compatible(tmp.path())
+        .expect("a 4010-neuron creature is GPU-hostable via the scratch kernel");
 }
 
 #[test]
