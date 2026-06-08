@@ -80,17 +80,26 @@ directory mode) and reports the backend that **actually ran** the scoring
 kernel (per Issue #83). Existing fields and their order are unchanged.
 
 ```mermaid
-flowchart LR
+flowchart TD
     CLI[--gpu / NEAT_SCORER_GPU] --> Mode{GpuMode}
     Mode -->|Off| CPU[CPU pipeline]
-    Mode -->|Auto/On| Adapter[wgpu adapter<br/>selection]
-    Adapter -->|found| Path{ScoringPath?}
+    Mode -->|Auto + single creature<br/>#81 negative| CPU
+    Mode -->|Auto + directory| Preflight{CPU pre-flight #180<br/>set hostable?<br/>≤256 neurons · MSE · shape}
+    Mode -->|On| Adapter[wgpu adapter<br/>selection]
+    Preflight -->|no — never makes a GPU device| CPU
+    Preflight -->|yes| Adapter
+    Adapter -->|found| GPUKernel[forward_mse_batched<br/>+ I/O pipeline]
     Adapter -->|none + Auto| CPU
     Adapter -->|none + On| Err[exit non-zero]
-    Path -->|SingleCreature<br/>#81 negative| CPU
-    Path -->|CreatureDirectory<br/>#82 wins ≥30 %| GPUKernel[forward_mse_batched<br/>+ I/O pipeline]
     GPUKernel -->|kernel rejects creature| CPU
 ```
+
+Under `--gpu auto` the directory path runs a **CPU-only pre-flight**
+(`multi_score::gpu_directory_compatible`, Issue #180) **before** any `wgpu`
+device is created. A creature set the shader cannot host (see the cap below)
+routes straight to the CPU pipeline without ever spinning up — or tearing
+down — a GPU context, so the fallback always returns valid JSON and exits
+cleanly.
 
 ### GPU acceleration (Issue #83)
 
@@ -127,6 +136,30 @@ Headline numbers (Apple Silicon M-series, 200 MB corpus, from
 The JSON output adds `gpuKernel: "forward_mse_batched"` plus
 `gpuInflightChunks` and `gpuDispatchCount` diagnostic counters when the
 GPU directory path runs.
+
+#### GPU shader cap — 256 neurons per creature (Issue #180)
+
+The `forward_mse_batched` shader holds each creature's activations in a
+fixed-size `private` array, so it can host at most
+**`MAX_NEURONS_PER_CREATURE` = 256 neurons** per creature (WGSL has no
+runtime-sized `private` arrays). Real evolved creatures routinely exceed
+this (production runs have hit 4139 neurons), so directory-mode `--gpu auto`
+must fall back to CPU for them.
+
+That fallback is now **first-class**: a CPU-only pre-flight
+(`multi_score::gpu_directory_compatible`) checks every creature against the
+cap (and the MSE-only / shared-shape constraints) **before** an adapter is
+selected. An unhostable set therefore never creates a GPU device, the CPU
+pipeline scores it, and the process emits valid JSON with
+`gpuBackend: "cpu-fallback"` and exits 0. (Previously the device was created
+up-front and abandoned, which on some drivers aborted during teardown —
+batch callers saw `exit 158` / truncated JSON and dropped to slow
+per-creature scoring.) `--gpu on` still hard-errors on an unhostable set, as
+the user explicitly demanded a GPU.
+
+Lifting the cap so large creatures run on the GPU is a separate kernel
+redesign (the `private` activation array must move to a workgroup/storage
+buffer) — tracked as follow-up work, not part of this fallback fix.
 
 ### Cost function selector (Issues #120, #121)
 

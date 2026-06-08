@@ -17,6 +17,90 @@ fn minimal_creature(input: usize, output: usize, forward_only: bool) -> String {
     )
 }
 
+/// Forward-only creature with `hidden` TANH hidden neurons (total neuron count
+/// = `input + hidden + output`). Used to build creatures above the 256-neuron
+/// GPU shader cap.
+fn large_creature(input: usize, output: usize, hidden: usize) -> String {
+    let mut neurons = Vec::new();
+    for h in 0..hidden {
+        neurons.push(format!(
+            r#"{{"type":"hidden","uuid":"hidden-{h}","bias":0.01,"squash":"TANH"}}"#
+        ));
+    }
+    for o in 0..output {
+        neurons.push(format!(
+            r#"{{"type":"output","uuid":"output-{o}","bias":0.0,"squash":"IDENTITY"}}"#
+        ));
+    }
+    let mut synapses = Vec::new();
+    for i in 0..input {
+        for h in 0..hidden {
+            synapses.push(format!(
+                r#"{{"fromUUID":"input-{i}","toUUID":"hidden-{h}","weight":0.02}}"#
+            ));
+        }
+    }
+    for h in 0..hidden {
+        for o in 0..output {
+            synapses.push(format!(
+                r#"{{"fromUUID":"hidden-{h}","toUUID":"output-{o}","weight":0.03}}"#
+            ));
+        }
+    }
+    format!(
+        r#"{{"input":{input},"output":{output},"forwardOnly":true,"neurons":[{}],"synapses":[{}]}}"#,
+        neurons.join(","),
+        synapses.join(","),
+    )
+}
+
+/// Issue #180: `--gpu auto` (the default) over a directory whose creature
+/// exceeds the 256-neuron GPU shader cap must fall back to the CPU pipeline
+/// *cleanly* — valid JSON on stdout, `gpuBackend: "cpu-fallback"`, exit 0.
+/// The production regression aborted instead (`exit 158` / `INVALID_JSON`),
+/// forcing the caller onto slow per-creature CPU scoring.
+#[test]
+fn gpu_auto_directory_above_shader_cap_falls_back_to_cpu_cleanly() {
+    let bin = env!("CARGO_BIN_EXE_rust_scorer");
+    let tmp = tempfile::tempdir().expect("create tempdir");
+    let creatures_dir = tmp.path().join("creatures");
+    let data_dir = tmp.path().join("data");
+    std::fs::create_dir(&creatures_dir).expect("create creatures dir");
+    std::fs::create_dir(&data_dir).expect("create data dir");
+
+    // 1 input + 300 hidden + 1 output = 302 neurons > 256-neuron shader cap.
+    std::fs::write(creatures_dir.join("big.json"), large_creature(1, 1, 300))
+        .expect("write big creature");
+    write_training_data(&data_dir, &[(vec![0.5], vec![0.5]), (vec![1.0], vec![1.0])]);
+
+    let output = Command::new(bin)
+        .arg("--gpu")
+        .arg("auto")
+        .arg(&creatures_dir)
+        .arg(&data_dir)
+        .output()
+        .expect("spawn scorer");
+    assert!(
+        output.status.success(),
+        "auto fallback must exit 0, got status {:?}\nstderr:\n{}",
+        output.status,
+        String::from_utf8_lossy(&output.stderr),
+    );
+
+    let parsed: serde_json::Value = serde_json::from_slice(&output.stdout)
+        .expect("auto fallback must emit valid JSON on stdout");
+    let entry = parsed.get("big").expect("missing key big");
+    assert_eq!(
+        entry.get("gpuBackend").and_then(|v| v.as_str()),
+        Some("cpu-fallback"),
+        "oversized creature must score on the CPU fallback",
+    );
+    assert_eq!(
+        entry.get("hiddenNeurons").and_then(|v| v.as_u64()),
+        Some(300),
+    );
+}
+
 #[test]
 fn directory_mode_uses_filename_stems_as_keys() {
     let bin = env!("CARGO_BIN_EXE_rust_scorer");
