@@ -788,7 +788,7 @@ impl BatchedRunner {
     }
 }
 
-/// Pure helper for [`BatchedRunner::scratch_workgroups_x`] so the bounding
+/// Pure helper for `BatchedRunner::scratch_workgroups_x` so the bounding
 /// logic is unit-testable without a GPU (Issue #182).
 pub fn scratch_workgroups_x_for(
     n_records: usize,
