@@ -540,6 +540,40 @@ without depending on the full CI graph. It is validated by
 `scripts/check-markdown-lint-workflow.sh` (invoked from `quality.sh`)
 and covered end-to-end by `tests/scripts/markdown_lint_workflow.bats`.
 
+### Review governance (CODEOWNERS) — Issue #176
+
+`.github/CODEOWNERS` designates the `@stSoftwareAU/developers` maintainers
+team as the owner of the repository, with explicit rules over `.github/` and
+`.github/workflows/`. The workflow directory is **privileged**: `semgrep.yml`
+runs with a non-`GITHUB_TOKEN` secret (`SEMGREP_APP_TOKEN`), so an unreviewed
+edit there could exfiltrate that secret or weaken a security gate. When a
+branch-protection rule on `Develop` requires owner review, GitHub auto-requests
+a maintainer's review on any change a CODEOWNERS rule matches — closing the
+self-approval path for workflow edits.
+
+The CODEOWNERS file is validated by `scripts/check-codeowners.sh` (invoked from
+`quality.sh`) and covered end-to-end by `tests/scripts/codeowners.bats`. The
+validator asserts the file exists at a GitHub-recognised path, that every rule
+names a valid owner (`@user`, `@org/team`, or an email), and that at least one
+rule covers `.github/workflows/`. `ci.yml`'s `validation` job also lists
+`.github/CODEOWNERS` among its required files, so the file cannot silently
+disappear.
+
+```mermaid
+flowchart LR
+    pr[PR edits<br/>.github/workflows/] --> co{CODEOWNERS<br/>rule matches?}
+    co -- yes --> rev[Owner review<br/>auto-requested]
+    rev --> bp[Branch protection<br/>blocks merge until approved]
+```
+
+**Branch-protection recommendations (repo-level, not committed).** CODEOWNERS
+only takes effect when the default branch (`Develop`) requires owner review.
+These settings live in repository configuration — a branch-protection rule or
+ruleset — and are not visible from committed files, so a maintainer with admin
+rights must enable them: at least one required PR approval before merge, blocked
+direct push and force-push, required linear history, and required signed
+commits.
+
 ### GitHub Actions pinning policy (SHA pinning + Node 24 compat)
 
 Every `uses:` reference across the workflow files is pinned to a
