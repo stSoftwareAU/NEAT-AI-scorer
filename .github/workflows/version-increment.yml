@@ -22,6 +22,12 @@ permissions:
   contents: write
   pull-requests: read
 
+# This workflow commits and pushes back to the PR head branch, so a single
+# in-flight run per branch avoids overlapping runs racing on the same ref.
+concurrency:
+  group: version-increment-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   # Gate: establish a canonical "should we attempt a bump?" signal that the
   # actual writer job depends on. Making this a separate job keeps the
