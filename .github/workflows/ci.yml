@@ -234,7 +234,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     # Upstream ShellCheck project: https://github.com/koalaman/shellcheck
-    # Action wrapper used below: ludeeus/action-shellcheck (runs koalaman/shellcheck).
+    # Invoked below via the `shellcheck` binary pre-installed on ubuntu-latest.
 
     steps:
       - name: Checkout code
