@@ -38,6 +38,26 @@ jobs:
 EOF
 }
 
+# Write a workflow that invokes the pre-installed shellcheck binary directly
+# in a run step (the form ci.yml uses after PR #184 dropped the action).
+write_shellcheck_run_workflow() {
+  local file="$1"
+  cat >"$file" <<'EOF'
+name: Example Run
+on:
+  pull_request:
+jobs:
+  shellcheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Run ShellCheck (pre-installed)
+        run: |
+          shellcheck --version
+          shellcheck --severity=warning script.sh
+EOF
+}
+
 # Write a workflow that does NOT invoke ShellCheck (only mentions it in prose).
 write_unrelated_workflow() {
   local file="$1"
@@ -61,6 +81,23 @@ EOF
   [ "$status" -eq 0 ]
   [[ "$output" == *"exactly one workflow"* ]]
   [[ "$output" == *"ci.yml"* ]]
+}
+
+@test "counts a direct shellcheck run step as an invocation" {
+  write_shellcheck_run_workflow "$TMP_WF/ci.yml"
+  write_unrelated_workflow "$TMP_WF/build.yml"
+  run "$SCRIPT_UNDER_TEST" --workflows "$TMP_WF"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"exactly one workflow"* ]]
+  [[ "$output" == *"ci.yml"* ]]
+}
+
+@test "fails when a run step duplicates the action invocation" {
+  write_shellcheck_workflow "$TMP_WF/ci.yml"
+  write_shellcheck_run_workflow "$TMP_WF/shellcheck.yml"
+  run "$SCRIPT_UNDER_TEST" --workflows "$TMP_WF"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"duplicated across 2 workflows"* ]]
 }
 
 @test "fails when ShellCheck is duplicated across two workflows" {
