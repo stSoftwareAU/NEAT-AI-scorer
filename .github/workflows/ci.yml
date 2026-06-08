@@ -210,6 +210,8 @@ jobs:
             "Cargo.toml"
             "README.md"
             "LICENSE"
+            "CONTRIBUTING.md"
+            "CHANGELOG.md"
             "quality.sh"
             "deny.toml"
             "rust_scorer/src/main.rs"
@@ -235,7 +237,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     # Upstream ShellCheck project: https://github.com/koalaman/shellcheck
-    # Action wrapper used below: ludeeus/action-shellcheck (runs koalaman/shellcheck).
+    # Invoked below via the `shellcheck` binary pre-installed on ubuntu-latest.
 
     steps:
       - name: Checkout code
@@ -270,16 +272,28 @@ jobs:
           done < <(find . -name "*.sh" -not -path "./target/*" -not -path "./.git/*")
           exit $EXIT_CODE
 
-      - name: Run ShellCheck (koalaman/shellcheck via ludeeus/action-shellcheck)
-        # Pinned to a tagged release (Issue #24) — `@master` is unpinned and
-        # a compromised upstream commit would silently alter CI behaviour.
-        uses: ludeeus/action-shellcheck@00cae500b08a931fb5698e11e79bfbd38e612a38  # v2.0.0
-        with:
-          scandir: "."
-          severity: warning
-          ignore_paths: "target .git"
+      - name: Run ShellCheck (koalaman/shellcheck, pre-installed on the runner)
+        # Invoke the ShellCheck binary pre-installed on ubuntu-latest rather
+        # than downloading a release asset at job time. The previous
+        # ludeeus/action-shellcheck wrapper fetched the binary with
+        # `curl -Lso` (no `-f`), so a transient release-asset download
+        # error saved an HTML error page and the tar/xz extraction failed
+        # with "does not look like a tar archive" (exit 2). Using the
+        # pre-installed binary removes that network dependency and also
+        # drops a third-party action from the supply chain.
         env:
           SHELLCHECK_OPTS: -s bash
+        run: |
+          shellcheck --version
+          scripts=()
+          while IFS= read -r script; do
+            scripts+=("$script")
+          done < <(find . -name "*.sh" -not -path "./target/*" -not -path "./.git/*")
+          if [ ${#scripts[@]} -eq 0 ]; then
+            echo "No shell scripts found — nothing to lint"
+            exit 0
+          fi
+          shellcheck --severity=warning "${scripts[@]}"
 
       - name: Install bats
         run: sudo apt-get update && sudo apt-get install -y bats

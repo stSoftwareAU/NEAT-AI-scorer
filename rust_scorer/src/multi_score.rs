@@ -36,7 +36,7 @@ use neat_core::training_data::{TrainingDataConfig, find_bin_files};
 use rayon::prelude::*;
 
 use crate::cost::{CostKind, accumulate_cost_sum};
-use crate::gpu::forward_mse_batched::BatchedRunner;
+use crate::gpu::forward_mse_batched::{BatchedRunner, build_batched_network_data};
 use crate::gpu::{GpuBackendLabel, GpuContext};
 use crate::read_tuning::{training_read_backend_label, training_read_target_bytes_from_env};
 use crate::scoring::{ScoreResult, calculate_score, compute_score_components, value_penalty};
@@ -542,6 +542,54 @@ pub fn score_from_creature_dir(
     }
 
     Ok(results)
+}
+
+/// Issue #180 — CPU-only pre-flight that decides whether the
+/// `forward_mse_batched` GPU kernel can host every creature in `creatures_dir`
+/// **without creating a `wgpu` device**.
+///
+/// `main.rs` calls this under `--gpu auto` *before* selecting a GPU adapter:
+/// production creatures routinely exceed the 256-neuron shader cap (observed:
+/// 4139 neurons), and a created-then-abandoned Metal context could abort
+/// during process teardown — truncating the JSON the batch caller reads and
+/// surfacing as `exit 158` / `INVALID_JSON`. Gating adapter creation on this
+/// cheap CPU check means an unhostable set never spins up — and never tears
+/// down — a GPU context, so the CPU fallback returns valid JSON and exits
+/// cleanly.
+///
+/// Returns:
+/// * `Err(reason)` — the set is genuinely incompatible with the shader (a
+///   creature above [`crate::gpu::forward_mse_batched::MAX_NEURONS_PER_CREATURE`]
+///   or using an unsupported squash). `reason` is the human-readable cause.
+/// * `Ok(())` — either the set is GPU-hostable, or it could not even be
+///   loaded/compiled. Load/compile failures are deliberately *not* treated as
+///   GPU-incompatibility: they are left for the normal scoring path to surface
+///   with its existing, precise error message (e.g. shape mismatch,
+///   `forwardOnly=false`).
+pub fn gpu_directory_compatible(creatures_dir: &Path) -> Result<(), String> {
+    // A load failure here (missing dir, shape mismatch, forwardOnly=false, …)
+    // is not a GPU-hostability question — return Ok so the real scoring path
+    // re-runs the load and reports the precise error itself.
+    let loaded = match load_creatures_from_dir(creatures_dir) {
+        Ok(loaded) if !loaded.is_empty() => loaded,
+        _ => return Ok(()),
+    };
+
+    let num_inputs = loaded[0].creature.input;
+    let num_outputs = loaded[0].creature.output;
+
+    let mut networks: Vec<CompiledNetwork> = Vec::with_capacity(loaded.len());
+    for c in &loaded {
+        match compile_creature(&c.creature) {
+            Ok(net) => networks.push(net),
+            // Compile failures are surfaced by the scoring path, not here.
+            Err(_) => return Ok(()),
+        }
+    }
+
+    build_batched_network_data(&networks, num_inputs, num_outputs)
+        .map(|_| ())
+        .map_err(|e| e.to_string())
 }
 
 /// Issue #82 — GPU-backed multi-creature scoring path.

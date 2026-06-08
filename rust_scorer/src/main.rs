@@ -68,7 +68,11 @@ struct Cli {
     /// * `auto` — **default**. Probe for a compatible GPU; silently fall
     ///   back to CPU when none is found, when the GPU kernel cannot host
     ///   the loaded creatures, or when the scoring path's bench evidence
-    ///   does not support GPU (see [`auto_should_use_gpu`]).
+    ///   does not support GPU (see [`auto_should_use_gpu`]). For the
+    ///   directory path a CPU-only pre-flight (Issue #180) checks the set
+    ///   against the 256-neuron shader cap *before* a GPU device is
+    ///   created, so an unhostable set falls back cleanly (valid JSON,
+    ///   exit 0) without ever building a `wgpu` context.
     /// * `on`   — require a compatible GPU; non-zero exit if none found.
     /// * `off`  — skip GPU detection entirely; run the CPU pipeline.
     ///
@@ -178,16 +182,16 @@ fn run(cli: &Cli) -> Result<RunOutput, String> {
         ));
     }
 
+    // Issue #180: under `--gpu auto` adapter selection is *deferred* to the
+    // directory path, where a CPU-only pre-flight first checks that the GPU
+    // kernel can host the creature set. Creating a `wgpu`/Metal device only to
+    // abandon it (the set exceeds the 256-neuron shader cap) risked an abnormal
+    // teardown that truncated stdout and surfaced to batch callers as
+    // `exit 158` / `INVALID_JSON`. `on` still resolves up-front — the user
+    // demanded a GPU, so a missing adapter must hard-error here as before.
     let (gpu_backend, gpu_ctx) = match mode {
         GpuMode::Off => (GpuBackendLabel::CpuFallback, None),
-        GpuMode::Auto => match gpu::select_adapter() {
-            Ok(Some(ctx)) => {
-                let backend = ctx.backend;
-                (backend, Some(Arc::new(ctx)))
-            }
-            // `auto` must never error out — fall back silently to CPU.
-            _ => (GpuBackendLabel::CpuFallback, None),
-        },
+        GpuMode::Auto => (GpuBackendLabel::CpuFallback, None),
         GpuMode::On => match gpu::select_adapter() {
             Ok(Some(ctx)) => {
                 let backend = ctx.backend;
@@ -240,26 +244,59 @@ fn run(cli: &Cli) -> Result<RunOutput, String> {
         // batched kernel when (a) an adapter is available and (b) the mode
         // wants GPU for this path (`Auto` ⇒ yes, `On` ⇒ yes, `Off` ⇒ no).
         // `inflight_chunks: 2` enables CPU↔GPU pipelining.
-        if want_gpu_for_path(ScoringPath::CreatureDirectory)
-            && let Some(ctx) = gpu_ctx.clone()
-        {
-            match score_from_creature_dir_gpu(
-                creature_path,
-                data_path,
-                gpu_backend,
-                ctx,
-                2,
-                cli.cost,
-            ) {
-                Ok(r) => return Ok(RunOutput::Multi(r)),
-                Err(e) => {
-                    // `--gpu on` is a hard requirement — surface the error.
-                    // `--gpu auto` should never abort scoring: silently fall
-                    // back to the CPU path so callers always get a result.
-                    if matches!(mode, GpuMode::On) {
-                        return Err(e);
+        if want_gpu_for_path(ScoringPath::CreatureDirectory) {
+            // Resolve the GPU context for this directory. Under `--gpu on` it
+            // was selected up-front. Under `--gpu auto` (Issue #180) selection
+            // is deferred behind a CPU-only pre-flight: a creature set above
+            // the 256-neuron shader cap routes straight to CPU *without* ever
+            // creating a `wgpu`/Metal device, so there is no GPU context to
+            // abort during teardown (the regression batch callers saw as
+            // `exit 158` / `INVALID_JSON`).
+            let resolved_ctx: Option<(GpuBackendLabel, Arc<gpu::GpuContext>)> = match mode {
+                GpuMode::On => gpu_ctx.clone().map(|ctx| (gpu_backend, ctx)),
+                GpuMode::Auto => match multi_score::gpu_directory_compatible(creature_path) {
+                    // GPU-hostable — create the adapter now and run the kernel.
+                    Ok(()) => match gpu::select_adapter() {
+                        Ok(Some(ctx)) => {
+                            let backend = ctx.backend;
+                            Some((backend, Arc::new(ctx)))
+                        }
+                        // No adapter (or selection error) — `auto` must never
+                        // abort scoring, so fall through to CPU silently.
+                        _ => None,
+                    },
+                    // The set exceeds the shader cap (or uses an unsupported
+                    // squash). Log the fallback and run on CPU — no device made.
+                    Err(reason) => {
+                        eprintln!(
+                            "[gpu] auto fallback to CPU directory mode: GPU runner cannot host this creature set ({reason}); rerun with --gpu off"
+                        );
+                        None
                     }
-                    eprintln!("[gpu] auto fallback to CPU directory mode: {e}");
+                },
+                // `want_gpu_for_path` is false under Off, so this is unreachable.
+                GpuMode::Off => None,
+            };
+
+            if let Some((backend, ctx)) = resolved_ctx {
+                match score_from_creature_dir_gpu(
+                    creature_path,
+                    data_path,
+                    backend,
+                    ctx,
+                    2,
+                    cli.cost,
+                ) {
+                    Ok(r) => return Ok(RunOutput::Multi(r)),
+                    Err(e) => {
+                        // `--gpu on` is a hard requirement — surface the error.
+                        // `--gpu auto` should never abort scoring: silently fall
+                        // back to the CPU path so callers always get a result.
+                        if matches!(mode, GpuMode::On) {
+                            return Err(e);
+                        }
+                        eprintln!("[gpu] auto fallback to CPU directory mode: {e}");
+                    }
                 }
             }
         }

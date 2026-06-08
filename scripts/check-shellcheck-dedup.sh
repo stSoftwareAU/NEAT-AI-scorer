@@ -10,8 +10,12 @@
 # aggregator that branch protection gates on.
 #
 # This guard asserts that invariant: exactly one workflow under
-# `.github/workflows` may invoke `ludeeus/action-shellcheck`. Re-introducing a
-# second invocation re-creates the duplicated maintenance surface and fails.
+# `.github/workflows` may invoke ShellCheck. ShellCheck can be invoked either
+# via the `ludeeus/action-shellcheck` action or by calling the pre-installed
+# `shellcheck` binary directly in a `run:` step (PR #184 switched `ci.yml` to
+# the latter to drop the flaky release-asset download). Re-introducing a second
+# invocation by either method re-creates the duplicated maintenance surface and
+# fails.
 #
 # The script takes an optional `--workflows DIR` argument so BATS tests can
 # exercise it against fixtures. With no argument it scans
@@ -27,9 +31,10 @@ Options:
                     .github/workflows relative to the repo root).
   -h, --help        Show this message.
 
-Exits 0 when exactly one workflow invokes ludeeus/action-shellcheck. Exits
-non-zero with a descriptive message when ShellCheck is missing entirely or
-duplicated across more than one workflow file.
+Exits 0 when exactly one workflow invokes ShellCheck (via
+ludeeus/action-shellcheck or a direct `shellcheck --severity` run step).
+Exits non-zero with a descriptive message when ShellCheck is missing entirely
+or duplicated across more than one workflow file.
 EOF
 }
 
@@ -62,13 +67,16 @@ if [[ ! -d "$WORKFLOWS_DIR" ]]; then
   exit 2
 fi
 
-# Collect every workflow file that *invokes* ShellCheck. We match `uses:` lines
-# only (ignoring leading `- `) and skip comment lines so that prose mentioning
-# the action does not count as an invocation.
+# Collect every workflow file that *invokes* ShellCheck. A workflow counts when
+# it either references the action on a `uses:` line (ignoring leading `- `) or
+# runs the `shellcheck --severity` binary in a `run:` step. Both patterns anchor
+# to the start of the line so prose mentioning ShellCheck in a comment does not
+# count as an invocation.
 matches=()
 while IFS= read -r workflow; do
   [[ -f "$workflow" ]] || continue
-  if grep -qE '^[[:space:]]*(-[[:space:]]*)?uses:[[:space:]]*ludeeus/action-shellcheck@' "$workflow"; then
+  if grep -qE '^[[:space:]]*(-[[:space:]]*)?uses:[[:space:]]*ludeeus/action-shellcheck@' "$workflow" \
+    || grep -qE '^[[:space:]]*shellcheck[[:space:]]+--severity' "$workflow"; then
     matches+=("$workflow")
   fi
 done < <(find "$WORKFLOWS_DIR" -maxdepth 1 \( -name "*.yml" -o -name "*.yaml" \) -type f | sort)
@@ -81,7 +89,7 @@ if [[ "$count" -eq 1 ]]; then
 fi
 
 if [[ "$count" -eq 0 ]]; then
-  echo "FAIL no workflow invokes ludeeus/action-shellcheck — ShellCheck coverage is missing." >&2
+  echo "FAIL no workflow invokes ShellCheck — ShellCheck coverage is missing." >&2
   exit 1
 fi
 
