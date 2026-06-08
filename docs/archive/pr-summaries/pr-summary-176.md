@@ -27,7 +27,7 @@ validator + bats convention so the coverage cannot silently regress:
   `validation` job's required-files list so the file cannot disappear.
 - **`README.md`** — new "Review governance (CODEOWNERS)" section documenting
   the rule, the validator, and the repo-level branch-protection
-  recommendations.
+  recommendations
 
 Closes #176.
 
