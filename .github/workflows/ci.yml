@@ -216,6 +216,7 @@ jobs:
             "deny.toml"
             "rust_scorer/src/main.rs"
             ".github/CODEOWNERS"
+            "SECURITY.md"
           )
           missing_files=()
           for file in "${required_files[@]}"; do
