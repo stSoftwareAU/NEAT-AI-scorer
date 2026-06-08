@@ -5,7 +5,7 @@
 The repository had no security policy at any of the three GitHub-recognised
 paths (`SECURITY.md`, `.github/SECURITY.md`, `docs/SECURITY.md`), so a reporter
 had no private channel and would default to opening a public issue —
-disclosing a vulnerability before a fix exists.
+disclosing a vulnerability before a fix exists
 
 This PR adds a root `SECURITY.md` declaring:
 
