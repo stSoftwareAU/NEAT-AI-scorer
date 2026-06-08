@@ -10,7 +10,7 @@ Apple M4 Pro / Metal 4) that abandoned context aborted during process
 teardown, truncating block-buffered stdout — batch callers saw
 `exit 158` / `INVALID_JSON` and dropped to dramatically slower per-creature
 CPU scoring. Real evolved creatures (4000+ neurons, observed 4139) hit this
-on essentially every batch call.
+on essentially every batch call
 
 **Fix:** under `--gpu auto` the directory path now runs a **CPU-only
 pre-flight** (`multi_score::gpu_directory_compatible`) that checks the
