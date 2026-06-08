@@ -15,6 +15,8 @@
 #      reporting and/or a contact email address.
 #   4. State an expected acknowledgement / response time.
 #   5. Include a supported-versions table.
+#   6. Document an emergency dependency-bump procedure that points a responder
+#      at the existing tooling (`bump-deps.sh`) for an out-of-band fix.
 #
 # The script takes a single optional `--security-policy PATH` argument so BATS
 # tests can exercise it against fixtures. With no argument it locates the
@@ -127,6 +129,20 @@ if [[ "$supported_versions" -eq 1 ]]; then
   ok "includes a supported-versions table"
 else
   fail "no supported-versions table — add a 'Supported versions' section with a Markdown table"
+fi
+
+# 6. Emergency dependency-bump procedure — points a responder at the existing
+#    tooling so an out-of-band supply-chain fix does not have to be
+#    reverse-engineered mid-incident.
+emergency_bump=0
+if grep -Eiq 'emergency|out-of-band|out of band|expedited' "$POLICY" \
+  && grep -Eq 'bump-deps\.sh' "$POLICY"; then
+  emergency_bump=1
+fi
+if [[ "$emergency_bump" -eq 1 ]]; then
+  ok "documents an emergency dependency-bump procedure"
+else
+  fail "no emergency dependency-bump procedure — point a responder at bump-deps.sh for an out-of-band fix"
 fi
 
 exit "$EXIT_CODE"

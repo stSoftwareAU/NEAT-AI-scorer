@@ -48,6 +48,29 @@ We will keep you informed of progress and coordinate the timing of any public
 disclosure with you. Please give us a reasonable opportunity to remediate
 before disclosing publicly.
 
+## Emergency dependency bump
+
+When a dependency advisory needs an urgent, out-of-band fix — a malicious crate
+version, a leaked maintainer token, or an actively-exploited CVE in a transitive
+dependency — you do **not** have to wait for the normal per-PR bump cadence or
+the 24-hour quarantine window. Use the existing tooling:
+
+1. **Bypass the quarantine window.** Run
+   `./bump-deps.sh --quarantine-hours 0` to pull the fixed crate version
+   immediately (the default 24-hour `--quarantine-hours` gate is what would
+   otherwise defer a just-published version). Add `--skip-external` if you only
+   need to refresh the internal `neat-core` pin, or `--skip-internal` to bump
+   crates.io alone.
+2. **Confirm the tree is clean.** `bump-deps.sh` runs `cargo audit` and a
+   release build as part of the bump; make sure both pass (it exits non-zero
+   if the bump produces a non-passing tree). Run `./quality.sh` for the full
+   local gate before opening the PR.
+3. **Open an expedited PR.** Reference the advisory and flag it for expedited
+   review so a maintainer can merge ahead of the normal queue.
+
+This path simply writes down the controls already in the repository so a
+responder does not have to reverse-engineer `bump-deps.sh` flags mid-incident.
+
 ## Supported versions
 
 NEAT-AI-scorer is developed as a single-consumer internal tool and is not
