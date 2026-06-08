@@ -62,6 +62,9 @@ echo "📦 Validating Dependency Review workflow (Issue #62)..."
 echo "👥 Validating CODEOWNERS coverage for .github/workflows/ (Issue #176)..."
 ./scripts/check-codeowners.sh
 
+echo "🔒 Validating SECURITY.md vulnerability disclosure policy (Issue #177)..."
+./scripts/check-security-policy.sh
+
 echo "🪄 Validating auto-format PR workflow (Issue #19)..."
 ./scripts/check-auto-format-workflow.sh
 
