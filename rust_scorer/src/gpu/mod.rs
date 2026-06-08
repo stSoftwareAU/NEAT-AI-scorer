@@ -269,8 +269,15 @@ pub fn select_adapter() -> Result<Option<GpuContext>, GpuInitError> {
         return Ok(None);
     }
 
+    // Issue #182 — request the adapter's full limits rather than wgpu's
+    // conservative defaults (128 MiB `max_storage_buffer_binding_size`). The
+    // large-creature `forward_mse_scratch` kernel sizes its activation scratch
+    // against this limit; on Apple Silicon the adapter supports buffers far
+    // larger than the default, so honouring it lets bigger creature sets run
+    // with more grid-stride parallelism.
     let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
         label: Some("rust_scorer GPU device"),
+        required_limits: adapter.limits(),
         ..wgpu::DeviceDescriptor::default()
     }))
     .map_err(|e| GpuInitError::DeviceRequest(e.to_string()))?;

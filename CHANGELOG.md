@@ -17,14 +17,28 @@ section to the released version with its date.
 
 ### Added
 
+- **Large creatures now run on the GPU (Issue #182).** New
+  `forward_mse_scratch` WGSL kernel holds each thread's activations in a
+  runtime-sized `storage` buffer instead of the 256-element `private` array of
+  `forward_mse_batched`, lifting the 256-neuron cap. The host routes creatures
+  above 256 neurons to the new kernel and bounds the activation scratch with a
+  memory budget (`NEAT_SCORER_GPU_SCRATCH_BYTES`, capped to the device's max
+  storage-buffer binding size) plus a grid-stride loop over records. CPU↔GPU
+  parity is verified up to 4010-neuron creatures.
 - `CONTRIBUTING.md` — contributor guide summarising the local gate
   (`./quality.sh`), prerequisites, coding standards, and the pull request
-  workflow.
+  workflow
 - `CHANGELOG.md` — this file, following Keep a Changelog, to record changes
   alongside the automated `rust_scorer` version bumps.
 
 ### Changed
 
+- The GPU pre-flight (`multi_score::gpu_directory_compatible`) and
+  `build_batched_network_data` no longer reject creatures above 256 neurons —
+  they route to `forward_mse_scratch`. Only an unsupported squash, a shape
+  mismatch, or an absurd neuron count (> `MAX_NEURONS_ABSOLUTE`) now forces a
+  CPU fallback (Issue #182). The shared WGSL `squash` clamps its input so large
+  pre-activations cannot overflow Metal's `tanh`/`exp` to `NaN`.
 - CI now enforces the documentation floor: `CONTRIBUTING.md` and
   `CHANGELOG.md` are listed in the `validation` job's required-files check
   (`.github/workflows/ci.yml`), guarded by `tests/scripts/docs_floor.bats`.

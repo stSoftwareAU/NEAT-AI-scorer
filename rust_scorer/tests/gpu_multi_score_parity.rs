@@ -12,7 +12,7 @@ use std::sync::Arc;
 use neat_core::creature::{compile_creature, parse_creature_json};
 use neat_core::loss::mse_sum_batch_packed;
 
-use rust_scorer::gpu::forward_mse_batched::BatchedRunner;
+use rust_scorer::gpu::forward_mse_batched::{BatchedRunner, KernelKind, MAX_NEURONS_PER_CREATURE};
 use rust_scorer::gpu::{GpuMode, resolve_backend, select_adapter};
 
 fn synthetic_creature_json(num_inputs: usize, num_outputs: usize, hidden: usize) -> String {
@@ -102,6 +102,21 @@ fn run_parity(
     // GPU: build the runner and dispatch a single chunk.
     let mut runner = BatchedRunner::new(ctx, &nets, num_inputs, num_outputs)
         .expect("supported squash types in synthetic fixture");
+
+    // The runner must route to the kernel matching the creature size: the fast
+    // private-array kernel at or below the 256 cap, the scratch kernel above it.
+    let total_neurons = (num_inputs + hidden + num_outputs) as u32;
+    let expected = if total_neurons > MAX_NEURONS_PER_CREATURE {
+        KernelKind::Scratch
+    } else {
+        KernelKind::Private
+    };
+    assert_eq!(
+        runner.kernel(),
+        expected,
+        "creature with {total_neurons} neurons routed to the wrong kernel",
+    );
+
     let gpu_sums = runner.score_chunk(&records, n_records);
 
     assert_eq!(cpu_sums.len(), gpu_sums.len());
@@ -133,4 +148,27 @@ fn cpu_vs_gpu_handles_partial_workgroup_remainder() {
     // Pick `n_records` that is not a multiple of WG_SIZE_X (64) so the shader's
     // bounds check on the trailing partial workgroup is exercised.
     run_parity(10, 8, 2, 8, 100);
+}
+
+// Issue #182 — large creatures (above the 256 private-array cap) must score on
+// the `forward_mse_scratch` kernel with results matching the CPU path.
+
+#[test]
+fn cpu_vs_gpu_large_creature_just_above_cap() {
+    // 8 + 300 + 2 = 310 neurons > 256 cap → scratch kernel.
+    run_parity(8, 8, 2, 300, 4096);
+}
+
+#[test]
+fn cpu_vs_gpu_production_scale_4000_neuron_creature() {
+    // 8 + 4000 + 2 = 4010 neurons — the production scale the issue targets.
+    // Smaller record count keeps the test within the unit-test time budget.
+    run_parity(4, 8, 2, 4000, 512);
+}
+
+#[test]
+fn cpu_vs_gpu_large_creature_grid_stride_remainder() {
+    // Records not a multiple of WG_SIZE_X exercise the grid-stride remainder on
+    // the scratch path as well.
+    run_parity(6, 8, 2, 300, 300);
 }

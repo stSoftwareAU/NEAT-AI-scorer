@@ -467,6 +467,86 @@ fn bench_gpu_pipelining_toggle(c: &mut Criterion) {
     group.finish();
 }
 
+/// Issue #182: large-creature CPU vs GPU comparison. Real evolved creatures
+/// routinely exceed the old 256-neuron shader cap (observed 4139); this group
+/// scores creatures well above it on both paths so the before (CPU+PGO) and
+/// after (`forward_mse_scratch` GPU kernel) numbers are directly comparable.
+///
+/// Sized via `BENCH_LARGE_HIDDEN` (default 4000 hidden neurons → ~4010 total),
+/// `BENCH_LARGE_CREATURES` (default 8), and `BENCH_LARGE_BYTES` (default 32 MiB)
+/// to keep the fixture build and runtime bounded. When no GPU adapter is
+/// present the GPU row is skipped so CPU-only CI runners still pass.
+fn bench_large_creature_cpu_vs_gpu(c: &mut Criterion) {
+    let hidden = env_usize("BENCH_LARGE_HIDDEN", 4000).max(257);
+    let n_creatures = env_usize("BENCH_LARGE_CREATURES", 8).max(1);
+    let total_bytes = env_usize("BENCH_LARGE_BYTES", 32 * 1024 * 1024);
+    let num_inputs = bench_num_inputs();
+    let num_outputs = bench_num_outputs();
+
+    let tmp = TempDir::new().expect("tempdir");
+    let creatures_dir = tmp.path().join("creatures");
+    fs::create_dir_all(&creatures_dir).unwrap();
+    let data_dir = tmp.path().join("data");
+    fs::create_dir_all(&data_dir).unwrap();
+
+    let json = synthetic_creature_json(num_inputs, num_outputs, hidden);
+    for n in 0..n_creatures {
+        fs::write(creatures_dir.join(format!("creature-{n:03}.json")), &json).unwrap();
+    }
+    write_synthetic_bin(&data_dir, num_inputs, num_outputs, total_bytes);
+
+    let mut group = c.benchmark_group("large_creature_cpu_vs_gpu");
+    group.sample_size(10);
+    group.measurement_time(Duration::from_secs(20));
+    group.throughput(Throughput::Bytes(total_bytes as u64));
+
+    // Before: CPU+PGO path.
+    group.bench_function(BenchmarkId::new("cpu", n_creatures), |b| {
+        b.iter(|| {
+            let result = score_from_creature_dir(
+                &creatures_dir,
+                &data_dir,
+                GpuBackendLabel::CpuFallback,
+                CostKind::default(),
+            )
+            .expect("cpu large-creature score");
+            black_box(result);
+        });
+    });
+
+    // After: GPU `forward_mse_scratch` path.
+    let backend = resolve_backend(GpuMode::Auto).unwrap_or(GpuBackendLabel::CpuFallback);
+    if backend == GpuBackendLabel::CpuFallback {
+        eprintln!("large_creature_cpu_vs_gpu: no GPU adapter — skipping GPU row");
+        group.finish();
+        return;
+    }
+    let ctx = match select_adapter() {
+        Ok(Some(c)) => Arc::new(c),
+        _ => {
+            eprintln!("large_creature_cpu_vs_gpu: select_adapter returned no context");
+            group.finish();
+            return;
+        }
+    };
+    group.bench_function(BenchmarkId::new("gpu", n_creatures), |b| {
+        let ctx = ctx.clone();
+        b.iter(|| {
+            let result = score_from_creature_dir_gpu(
+                &creatures_dir,
+                &data_dir,
+                backend,
+                ctx.clone(),
+                2,
+                CostKind::default(),
+            )
+            .expect("gpu large-creature score");
+            black_box(result);
+        });
+    });
+    group.finish();
+}
+
 criterion_group!(
     benches,
     bench_score_from_json_fused,
@@ -474,5 +554,6 @@ criterion_group!(
     bench_unpack_and_mse_inner,
     bench_gpu_score_from_creature_dir,
     bench_gpu_pipelining_toggle,
+    bench_large_creature_cpu_vs_gpu,
 );
 criterion_main!(benches);
