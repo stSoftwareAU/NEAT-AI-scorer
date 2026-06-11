@@ -17,6 +17,15 @@ section to the released version with its date.
 
 ### Added
 
+- **CI lint gate for GitHub Actions (Issue #195).** New
+  `.github/workflows/actionlint.yml` runs [actionlint](https://github.com/rhysd/actionlint)
+  on every pull request and on pushes to the default branches, so workflow
+  regressions (invalid `runs-on` labels, broken `${{ }}` expressions, unknown
+  `uses:` inputs, shellcheck findings in `run:` scripts) fail the build. The
+  actionlint binary is downloaded from a version-pinned upstream release — no
+  third-party wrapper action enters the supply chain. The workflow is validated
+  by `scripts/check-actionlint-workflow.sh` (invoked from `quality.sh`) and
+  covered end-to-end by `tests/scripts/actionlint_workflow.bats`.
 - **Large creatures now run on the GPU (Issue #182).** New
   `forward_mse_scratch` WGSL kernel holds each thread's activations in a
   runtime-sized `storage` buffer instead of the 256-element `private` array of
