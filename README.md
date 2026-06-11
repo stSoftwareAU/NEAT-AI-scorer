@@ -551,6 +551,19 @@ validated by `scripts/check-dependency-review-workflow.sh` (invoked from
 `quality.sh`) and covered end-to-end by
 `tests/scripts/dependency_review_workflow.bats`.
 
+A standalone Actionlint workflow (`.github/workflows/actionlint.yml`,
+Issue #195) runs [actionlint](https://github.com/rhysd/actionlint) — the
+standard GitHub Actions linter — on every pull request and on pushes to the
+default branches. actionlint catches workflow regressions that a plain YAML
+parse misses: invalid `runs-on` labels, broken `${{ }}` expressions, unknown
+`uses:` inputs, and shellcheck findings inside `run:` scripts. The binary is
+downloaded from a version-pinned upstream release by the official
+`download-actionlint.bash` installer and run directly — no third-party wrapper
+action enters the supply chain, mirroring how `ci.yml` invokes ShellCheck
+(PR #184). The workflow is validated by
+`scripts/check-actionlint-workflow.sh` (invoked from `quality.sh`) and covered
+end-to-end by `tests/scripts/actionlint_workflow.bats`.
+
 A standalone Gitleaks Secrets Detection workflow
 (`.github/workflows/gitleaks.yml`, Issue #21) runs the pinned
 `gitleaks` binary on every pull request against any branch. The scan is

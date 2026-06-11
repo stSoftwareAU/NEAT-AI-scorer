@@ -56,6 +56,9 @@ echo "🐚 Guarding against duplicated ShellCheck across workflows (Issue #157).
 echo "📝 Validating Markdown Lint workflow (Issue #63)..."
 ./scripts/check-markdown-lint-workflow.sh
 
+echo "🎬 Validating Actionlint workflow (Issue #195)..."
+./scripts/check-actionlint-workflow.sh
+
 echo "📦 Validating Dependency Review workflow (Issue #62)..."
 ./scripts/check-dependency-review-workflow.sh
 
