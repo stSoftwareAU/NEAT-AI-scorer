@@ -159,13 +159,34 @@ pub fn compute_score_components(creature: &CreatureExport) -> ScoreComponents {
     }
 }
 
+/// Canonical complexity-penalty formula shared across every result-assembly site.
+///
+/// Returns the growth-cost-weighted penalty that `calculate_score` subtracts and
+/// that callers report as the JSON `complexityPenalty` field. Keeping a single
+/// implementation guarantees the reported penalty can never silently disagree
+/// with the value baked into `score`.
+///
+/// `complexityPenalty = hiddenNeurons * growthCost + synapses * growthCost / 10
+///                      + (weightBiasPenalty + squashComplexityPenalty) * growthCost / 100`
+///
+/// The weight/bias term routes through `calculate_penalty` (which adds
+/// finiteness asserts), so every call site shares the same numerical behaviour.
+pub fn complexity_penalty(components: &ScoreComponents, growth_cost: f64) -> f64 {
+    let weight_bias_penalty =
+        calculate_penalty(components.max_weight_bias, components.avg_weight_bias);
+    let total_penalty = weight_bias_penalty + components.squash_complexity_penalty;
+
+    components.hidden_neuron_count as f64 * growth_cost
+        + components.synapse_count as f64 * growth_cost / 10.0
+        + total_penalty * growth_cost / 100.0
+}
+
 /// Calculates the final score for a creature.
 ///
 /// Formula: `score = 1 - error - complexityPenalty - versionPenalty`
 ///
 /// Where:
-/// - `complexityPenalty = hiddenNeurons * growthCost + synapses * growthCost / 10
-///                        + (weightBiasPenalty + squashComplexityPenalty) * growthCost / 100`
+/// - `complexityPenalty` is computed by [`complexity_penalty`].
 /// - `versionPenalty = 1e-6` if the creature's semantic version doesn't start with "4."
 pub fn calculate_score(
     error: f64,
@@ -177,13 +198,7 @@ pub fn calculate_score(
     assert!(error.is_finite(), "Error is not finite");
     assert!(error >= 0.0, "Error: {error} is negative");
 
-    let weight_bias_penalty =
-        calculate_penalty(components.max_weight_bias, components.avg_weight_bias);
-    let total_penalty = weight_bias_penalty + components.squash_complexity_penalty;
-
-    let complexity_penalty = components.hidden_neuron_count as f64 * growth_cost
-        + components.synapse_count as f64 * growth_cost / 10.0
-        + total_penalty * growth_cost / 100.0;
+    let complexity_penalty = complexity_penalty(components, growth_cost);
 
     let version_penalty = match semantic_version {
         Some(v) if v.starts_with(&format!("{SEMANTIC_MAJOR_VERSION}.")) => 0.0,
@@ -403,6 +418,48 @@ mod tests {
         //         = 0.01 + 0.005 + 0 = 0.015
         let score = calculate_score(0.0, &components, growth_cost, Some("4.0.0"));
         assert!((score - (1.0 - 0.015)).abs() < 1e-12);
+    }
+
+    #[test]
+    fn test_complexity_penalty_matches_calculate_score() {
+        // Issue #199: the standalone shared function must produce exactly the
+        // penalty baked into the score by calculate_score.
+        let components = ScoreComponents {
+            hidden_neuron_count: 10,
+            synapse_count: 50,
+            max_weight_bias: 2.0,
+            avg_weight_bias: 1.5,
+            squash_complexity_penalty: 3.0,
+        };
+        let growth_cost = 0.001;
+
+        let cp = complexity_penalty(&components, growth_cost);
+        assert!(cp > 0.0);
+
+        // v4 creature => zero version penalty, so score = 1 - error - cp.
+        let score = calculate_score(0.0, &components, growth_cost, Some("4.0.0"));
+        assert!((score - (1.0 - cp)).abs() < 1e-12);
+    }
+
+    #[test]
+    fn test_complexity_penalty_routes_through_calculate_penalty() {
+        // The weight/bias term must match calculate_penalty (not a raw
+        // value_penalty average) so every call site shares one behaviour.
+        let components = ScoreComponents {
+            hidden_neuron_count: 4,
+            synapse_count: 7,
+            max_weight_bias: 5.0,
+            avg_weight_bias: 2.0,
+            squash_complexity_penalty: 0.0,
+        };
+        let growth_cost = 0.01;
+
+        let weight_bias_penalty = calculate_penalty(5.0, 2.0);
+        let total_penalty = weight_bias_penalty + components.squash_complexity_penalty;
+        let expected =
+            4.0 * growth_cost + 7.0 * growth_cost / 10.0 + total_penalty * growth_cost / 100.0;
+
+        assert!((complexity_penalty(&components, growth_cost) - expected).abs() < 1e-12);
     }
 
     #[test]

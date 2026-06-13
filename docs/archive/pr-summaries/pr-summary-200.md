@@ -62,5 +62,16 @@ Added two regression tests in `rust_scorer/src/cost.rs`:
   `par_iter_mut().map(...).collect::<Result<_, _>>()` pattern with one malformed slice and
   asserts the error surfaces as a clean `Err` rather than panicking across a Rayon worker.
 
-All 63 `rust_scorer` library tests pass. `cargo fmt --all --check` and
-`cargo clippy --all-targets` are clean.
+All `rust_scorer` library tests pass (65 lib + 86 integration). `cargo fmt --all --check`,
+`cargo clippy --all-targets` and `RUSTDOCFLAGS="-D warnings" cargo doc` are clean.
+
+## Merge / base reconciliation
+
+This branch was rebased onto the latest `milestone/improvements` (which now includes #199 and
+the auto version bump). Conflict resolution:
+
+- `rust_scorer/Cargo.toml` — kept the auto-bumped `0.5.54`.
+- `rust_scorer/src/scoring.rs` — the merged-in #199 doc comment linked the public
+  `complexity_penalty` to the **private** `calculate_penalty`, which fails
+  `RUSTDOCFLAGS="-D warnings" cargo doc` (`rustdoc::private_intra_doc_links`). Converted the
+  intra-doc link to a plain code span so the rustdoc gate passes. No behaviour change.
