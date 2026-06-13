@@ -570,6 +570,16 @@ flowchart LR
     cdx --> art[upload-artifact<br/>name: sbom]
 ```
 
+CI installs its cargo CLI tools from **prebuilt binaries**, not from source
+(Issue #208). `cargo-audit` (`cargo-audit.yml`, `security.yml`),
+`cargo-cyclonedx` (`sbom.yml`), and `cargo-deny` (`ci.yml`) are fetched via
+`taiki-e/install-action` — a released binary downloads in seconds, where
+`cargo install <tool> --locked` recompiled the tool from source on every run
+with no behaviour change. The action is SHA-pinned like every other `uses:`
+(supply-chain policy, Issue #100). The invariant is enforced by
+`scripts/check-prebuilt-tool-install.sh` (invoked from `quality.sh`) and
+covered end-to-end by `tests/scripts/prebuilt_tool_install.bats`.
+
 A standalone Cargo Quality workflow (`.github/workflows/cargo-quality.yml`,
 Issue #66) runs `cargo fmt --check` and `cargo clippy -- -D warnings` on
 pull requests against **any** branch (`branches: ["*"]`). `ci.yml` only
