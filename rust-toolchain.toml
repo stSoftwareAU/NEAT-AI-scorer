@@ -1,0 +1,18 @@
+# Pinned Rust toolchain for reproducible local + CI builds (Issue #209).
+#
+# The project SHA-pins every GitHub Action and container digest, but the Rust
+# compiler version otherwise floats: `dtolnay/rust-toolchain` resolves `stable`
+# at run time. Because the gate is `-D warnings` plus specific clippy lints, a
+# fresh stable release can introduce a lint that breaks CI with no code change
+# — and contributors cannot reproduce it locally. Pinning a concrete channel
+# here makes `rustup` (used by both `./quality.sh` and CI) resolve the same
+# `rustc`/`clippy`/`rustfmt` everywhere. `edition = "2024"` already requires a
+# recent stable, reinforcing the need to pin.
+#
+# Bump cadence: review when a new stable lands (~every 6 weeks). To bump, change
+# `channel` to the new `X.Y.Z`, run `./quality.sh` locally to confirm the gate
+# still passes under the new compiler, and land the bump in its own PR. See the
+# "Pinned Rust toolchain" section in README.md.
+[toolchain]
+channel = "1.95.0"
+components = ["rustfmt", "clippy"]

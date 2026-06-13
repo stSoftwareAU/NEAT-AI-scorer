@@ -214,6 +214,7 @@ jobs:
             "CHANGELOG.md"
             "quality.sh"
             "deny.toml"
+            "rust-toolchain.toml"
             "rust_scorer/src/main.rs"
             ".github/CODEOWNERS"
             "SECURITY.md"
