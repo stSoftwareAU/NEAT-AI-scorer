@@ -11,6 +11,7 @@
 //! Issue #1967 - Build Rust CLI scorer application.
 
 mod cost;
+mod env_tuning;
 mod gpu;
 mod multi_score;
 mod read_tuning;
