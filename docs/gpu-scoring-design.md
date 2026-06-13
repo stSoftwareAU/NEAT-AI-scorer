@@ -1,20 +1,40 @@
 # GPU adoption design — `rust_scorer`
 
+> **Status: superseded — historical planning spike (2026-06-14).** GPU offload
+> has since **shipped** via Issues #80, #82, #83, #180 and #182. The
+> present-tense claims throughout this document — notably *"zero GPU work
+> today"*, *"no `wgpu` dependency"* and *"All scoring runs on CPU"* — described
+> `rust_scorer` **at the time of the Issue #79 spike (May 2026)** and are **no
+> longer accurate**. `rust_scorer` now depends on `wgpu`, defaults to
+> `--gpu auto`, and ships the `forward_mse_batched` (≤ 256 neurons) and
+> `forward_mse_scratch` (> 256 neurons) WGSL kernels. For the **current** GPU
+> behaviour read the **GPU mode** section of [`README.md`](../README.md) and
+> the **GPU plumbing** notes in [`AGENTS.md`](../AGENTS.md); the shipped design
+> is captured at the foot of this file under
+> [Multi-creature batched dispatch — Issue #82](#multi-creature-batched-dispatch--issue-82).
+> Treat everything above that section as a **frozen design artefact**, not as a
+> description of current behaviour. *(Banner added per
+> [Issue #211](https://github.com/stSoftwareAU/NEAT-AI-scorer/issues/211).)*
+
 Spike output for [Issue #79](https://github.com/stSoftwareAU/NEAT-AI-scorer/issues/79)
 ("profile current scoring and design GPU adoption strategy"). This document is
 a planning artefact — it produces the **design** and the **acceptance bar**
-for follow-up sub-issues. It does **not** add a GPU code path. Per the Vibe
+for follow-up sub-issues. At spike time it did **not** add a GPU code path
+(that work has since shipped — see the superseded banner above). Per the Vibe
 Coder Performance Task Workflow, every later sub-issue must show before/after
 Criterion evidence against the bar set out below.
 
 ## TL;DR
 
-* `rust_scorer` performs **zero GPU work today**. There is no `wgpu`
-  dependency in [`rust_scorer/Cargo.toml`](../rust_scorer/Cargo.toml) and no
-  compute-shader path in [`stream_score.rs`](../rust_scorer/src/stream_score.rs)
-  or [`multi_score.rs`](../rust_scorer/src/multi_score.rs). All scoring runs
-  on CPU through `neat_core::loss::mse_sum_batch_packed` and its 4-way / 8-way
-  SIMD-style helpers.
+* **(Superseded — true only at the May 2026 spike; GPU offload has since
+  shipped.)** At spike time `rust_scorer` performed **zero GPU work**: there
+  was no `wgpu` dependency in
+  [`rust_scorer/Cargo.toml`](../rust_scorer/Cargo.toml) and no compute-shader
+  path in [`stream_score.rs`](../rust_scorer/src/stream_score.rs) or
+  [`multi_score.rs`](../rust_scorer/src/multi_score.rs), so all scoring ran on
+  CPU through `neat_core::loss::mse_sum_batch_packed` and its 4-way / 8-way
+  SIMD-style helpers. Today `wgpu` is a dependency, `--gpu auto` is the
+  default, and the directory path can run on the GPU — see the banner above.
 * At the issue-target 200 MB corpus, the active-CPU cost split is essentially
   unchanged from the 2 GiB / 500 MB capture in
   [`docs/performance-baseline.md`](performance-baseline.md): `tanhf` plus the
@@ -39,7 +59,7 @@ Criterion evidence against the bar set out below.
   is unlikely to clear the ≥ 20 % median improvement bar set in
   [Acceptance benchmarks](#acceptance-benchmarks).
 
-## Today's CPU pipeline
+## CPU pipeline at spike time (May 2026)
 
 ```mermaid
 flowchart LR
@@ -301,7 +321,9 @@ BENCH_SCORING_BYTES=200000000 ./scripts/run-benches.sh
 PROFILE_SAMPLE_SECONDS=120 ./scripts/profile-flamegraph.sh \
   209715200 209715200 50
 
-# Confirm GPU-utilisation gap
+# Confirm GPU-utilisation gap (May 2026 spike — printed "no GPU code path"
+# then; today this grep matches the shipped wgpu code path, so the check is
+# historical only)
 grep -RE "wgpu|compute_pass|gpu" rust_scorer/src/ rust_scorer/Cargo.toml || \
   echo "no GPU code path"
 ```
