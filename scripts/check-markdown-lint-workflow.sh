@@ -118,4 +118,23 @@ else
   fail "markdownlint-cli2 is not invoked — no 'run: markdownlint-cli2' step found"
 fi
 
+# 6. push trigger targets the default branch (Develop). Issue #207 — the repo
+#    default is `Develop`, so a push trigger limited to main/master never fires.
+#    Capture the first `branches:` line inside the `push:` block and require it
+#    to list `Develop`.
+if grep -qE '^[[:space:]]+push:' "$WORKFLOW"; then
+  push_branches="$(awk '
+    /^[[:space:]]+push:[[:space:]]*$/ { in_push = 1; next }
+    in_push && /branches:/ { print; exit }
+    in_push && /^[^[:space:]#]/ { exit }
+  ' "$WORKFLOW")"
+  if [[ -z "$push_branches" ]]; then
+    fail "push trigger has no branches list — cannot confirm Develop is covered"
+  elif echo "$push_branches" | grep -q 'Develop'; then
+    ok "push trigger targets the default branch (Develop)"
+  else
+    fail "push trigger does not target Develop — pushes to the default branch are not linted"
+  fi
+fi
+
 exit "$EXIT_CODE"
