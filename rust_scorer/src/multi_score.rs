@@ -39,7 +39,7 @@ use crate::cost::{CostKind, accumulate_cost_sum};
 use crate::gpu::forward_mse_batched::{BatchedRunner, build_batched_network_data};
 use crate::gpu::{GpuBackendLabel, GpuContext};
 use crate::read_tuning::{training_read_backend_label, training_read_target_bytes_from_env};
-use crate::scoring::{ScoreResult, calculate_score, compute_score_components, value_penalty};
+use crate::scoring::{ScoreResult, calculate_score, complexity_penalty, compute_score_components};
 use crate::stream_score::{activation_worker_count_for_scorer, effective_fused_read_buf_len};
 
 /// Keep aligned with main scorer formula.
@@ -500,13 +500,7 @@ pub fn score_from_creature_dir(
         let hidden_neurons = components.hidden_neuron_count;
         let synapse_count = components.synapse_count;
 
-        let weight_bias_penalty = (value_penalty(components.max_weight_bias)
-            + value_penalty(components.avg_weight_bias))
-            / 2.0;
-        let total_penalty = weight_bias_penalty + components.squash_complexity_penalty;
-        let complexity_penalty = hidden_neurons as f64 * GROWTH_COST
-            + synapse_count as f64 * GROWTH_COST / 10.0
-            + total_penalty * GROWTH_COST / 100.0;
+        let complexity_penalty = complexity_penalty(&components, GROWTH_COST);
 
         let score = calculate_score(
             avg_error,
@@ -833,13 +827,7 @@ pub fn score_from_creature_dir_gpu(
         let hidden_neurons = components.hidden_neuron_count;
         let synapse_count = components.synapse_count;
 
-        let weight_bias_penalty = (value_penalty(components.max_weight_bias)
-            + value_penalty(components.avg_weight_bias))
-            / 2.0;
-        let total_penalty = weight_bias_penalty + components.squash_complexity_penalty;
-        let complexity_penalty = hidden_neurons as f64 * GROWTH_COST
-            + synapse_count as f64 * GROWTH_COST / 10.0
-            + total_penalty * GROWTH_COST / 100.0;
+        let complexity_penalty = complexity_penalty(&components, GROWTH_COST);
 
         let score = calculate_score(
             avg_error,

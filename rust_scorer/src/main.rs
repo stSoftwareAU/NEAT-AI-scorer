@@ -444,13 +444,7 @@ fn score_from_json(
     let hidden_neurons = components.hidden_neuron_count;
     let synapse_count = components.synapse_count;
 
-    let weight_bias_penalty = (scoring::value_penalty(components.max_weight_bias)
-        + scoring::value_penalty(components.avg_weight_bias))
-        / 2.0;
-    let total_penalty = weight_bias_penalty + components.squash_complexity_penalty;
-    let complexity_penalty = hidden_neurons as f64 * GROWTH_COST
-        + synapse_count as f64 * GROWTH_COST / 10.0
-        + total_penalty * GROWTH_COST / 100.0;
+    let complexity_penalty = scoring::complexity_penalty(&components, GROWTH_COST);
 
     let score = calculate_score(
         avg_error,
@@ -783,6 +777,44 @@ mod tests {
             "expected costName in JSON, got: {json}"
         );
         assert!(json.contains("\"MSE\""), "expected costName value 'MSE'");
+    }
+
+    /// Issue #199: the serialised JSON `complexityPenalty` field must equal the
+    /// penalty value baked into `score` by `calculate_score`. With a v4 creature
+    /// the version penalty is zero, so `score == 1 - error - complexityPenalty`
+    /// holds exactly when both use the one shared formula.
+    #[test]
+    fn test_complexity_penalty_json_matches_score() {
+        let tmp = TempDir::new().unwrap();
+        let creature_path = tmp.path().join("creature.json");
+        let data_dir = tmp.path().join("data");
+        fs::create_dir(&data_dir).unwrap();
+
+        // Hidden neuron + weights > 1 so the complexity penalty is non-zero.
+        let json = make_creature_json(
+            1,
+            1,
+            &[("hidden-0", "TANH", 0.5)],
+            &[("input-0", "hidden-0", 1.5), ("hidden-0", "output-0", 2.0)],
+            Some("4.0.0"),
+        );
+        fs::write(&creature_path, &json).unwrap();
+        write_training_data(&data_dir, &[(vec![0.5], vec![0.5])]);
+
+        let result = run_single(&cli_for(&creature_path, &data_dir)).unwrap();
+        let value: serde_json::Value =
+            serde_json::from_str(&serde_json::to_string(&result).unwrap()).unwrap();
+        let json_cp = value["complexityPenalty"]
+            .as_f64()
+            .expect("complexityPenalty must serialise as a number");
+
+        assert!(json_cp > 0.0, "expected a non-zero penalty, got {json_cp}");
+        assert!(
+            (result.score - (1.0 - result.error - json_cp)).abs() < 1e-12,
+            "JSON complexityPenalty {json_cp} disagrees with score {} (error {})",
+            result.score,
+            result.error
+        );
     }
 
     /// Stdin mode must yield the same `ScoreResult` as the default file mode.
