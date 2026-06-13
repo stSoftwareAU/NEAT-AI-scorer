@@ -92,6 +92,9 @@ echo "⏱️  Validating per-job timeout-minutes across workflows (Issue #154)..
 echo "🔁 Validating concurrency groups on pile-up-prone workflows (Issue #156)..."
 ./scripts/check-workflow-concurrency.sh
 
+echo "📖 Validating README 'matches CI' block aligns with the CI quality job (Issue #212)..."
+./scripts/check-readme-ci-alignment.sh
+
 echo "📝 Running codespell preflight (mirrors CI spell-check job)..."
 if ! ./scripts/spell-check.sh; then
   echo "spell-check: FAILED — fix the typos above or update .codespellrc (see README)."
