@@ -53,6 +53,14 @@ section to the released version with its date.
 
 ### Changed
 
+- **`./quality.sh`'s `cargo upgrade` step is now opt-in (Issue #210).** The
+  default gate is read-only against `Cargo.lock` / `Cargo.toml` — running
+  `./quality.sh` to validate an unrelated change no longer bumps dependency
+  versions in the working tree. The upgrade behaviour is preserved behind an
+  explicit opt-in: `./quality.sh --upgrade` or `QUALITY_UPGRADE=1 ./quality.sh`.
+  The step now lives in `scripts/cargo-upgrade.sh`, covered end-to-end by
+  `tests/scripts/cargo_upgrade.bats`. Routine, quarantine-gated bumps continue
+  to go through `./bump-deps.sh` (Issue #105).
 - **Input-reachable `assert!`/serialise `expect` panics are now structured
   errors (Issue #201).** `scoring::value_penalty`, `compute_score_components`,
   `complexity_penalty` and `calculate_score` return `Result<_, String>` and
