@@ -529,13 +529,38 @@ mod tests {
     use std::path::PathBuf;
     use tempfile::TempDir;
 
-    /// Helper: create a minimal creature JSON string.
+    /// Helper: create a minimal creature JSON string. Defaults to
+    /// `forwardOnly:true`, matching the feed-forward scoring path most tests
+    /// exercise.
     fn make_creature_json(
         num_inputs: usize,
         num_outputs: usize,
         hidden_neurons: &[(&str, &str, f64)], // (uuid, squash, bias)
         synapses: &[(&str, &str, f64)],       // (from, to, weight)
         version: Option<&str>,
+    ) -> String {
+        make_creature_json_with_forward_only(
+            num_inputs,
+            num_outputs,
+            hidden_neurons,
+            synapses,
+            version,
+            true,
+        )
+    }
+
+    /// Helper: create a minimal creature JSON string with an explicit
+    /// `forwardOnly` flag. Issue #206: setting `forward_only=false` drives the
+    /// recurrent single-creature branch of `score_from_json`, which uses the
+    /// per-record `TrainingDataIterator` and reports the `record_iterator`
+    /// read backend.
+    fn make_creature_json_with_forward_only(
+        num_inputs: usize,
+        num_outputs: usize,
+        hidden_neurons: &[(&str, &str, f64)], // (uuid, squash, bias)
+        synapses: &[(&str, &str, f64)],       // (from, to, weight)
+        version: Option<&str>,
+        forward_only: bool,
     ) -> String {
         let mut neurons = Vec::new();
 
@@ -564,7 +589,7 @@ mod tests {
         };
 
         format!(
-            r#"{{"input":{num_inputs},"output":{num_outputs},"forwardOnly":true,"neurons":[{}],"synapses":[{}]{version_str}}}"#,
+            r#"{{"input":{num_inputs},"output":{num_outputs},"forwardOnly":{forward_only},"neurons":[{}],"synapses":[{}]{version_str}}}"#,
             neurons.join(","),
             syn_strs.join(","),
         )
@@ -683,6 +708,117 @@ mod tests {
         let result = run_single(&cli).unwrap();
         assert_eq!(result.record_count, 3);
         assert!(result.error.abs() < 1e-6);
+    }
+
+    /// Issue #206: the recurrent (`forwardOnly:false`) single-creature branch
+    /// of `score_from_json` must score correctly and report the
+    /// `record_iterator` read backend. Every other test uses the default
+    /// `forwardOnly:true` helper, so without this the `else` branch (distinct
+    /// packed-buffer assembly + per-record state reset) had no coverage.
+    #[test]
+    fn test_recurrent_single_creature_uses_record_iterator_backend() {
+        let tmp = TempDir::new().unwrap();
+        let creature_path = tmp.path().join("creature.json");
+        let data_dir = tmp.path().join("data");
+        fs::create_dir(&data_dir).unwrap();
+
+        // Identity network scored in recurrent mode (forwardOnly:false).
+        let json = make_creature_json_with_forward_only(
+            1,
+            1,
+            &[],
+            &[("input-0", "output-0", 1.0)],
+            Some("4.0.0"),
+            false,
+        );
+        fs::write(&creature_path, &json).unwrap();
+        write_training_data(&data_dir, &[(vec![1.0], vec![1.0]), (vec![0.5], vec![0.5])]);
+
+        let result = run_single(&cli_for(&creature_path, &data_dir)).unwrap();
+
+        // Numeric result: identity network has zero error and score ~1.0.
+        assert!(
+            result.error.abs() < 1e-6,
+            "Expected near-zero error, got {}",
+            result.error
+        );
+        assert!(
+            (result.score - 1.0).abs() < 1e-6,
+            "Expected score near 1.0, got {}",
+            result.score
+        );
+        assert_eq!(result.record_count, 2);
+
+        // Backend label and flag must reflect the recurrent branch.
+        assert!(
+            !result.forward_only,
+            "recurrent creature must report forward_only=false"
+        );
+        assert_eq!(
+            result.training_read_backend, "record_iterator",
+            "recurrent branch must report the record_iterator backend, got {}",
+            result.training_read_backend
+        );
+        // The fused-stream-only fields stay unset on the recurrent path.
+        assert!(result.read_buf_len.is_none());
+        assert!(result.activation_threads.is_none());
+    }
+
+    /// Issue #206: for a purely feed-forward (no recurrent synapses) network,
+    /// the recurrent and forward-only paths reset state per record and so must
+    /// produce the same numeric score — a parity sanity check across the two
+    /// top-level single-creature scoring modes.
+    #[test]
+    fn test_recurrent_matches_forward_only_for_feed_forward_network() {
+        let tmp = TempDir::new().unwrap();
+        let data_dir = tmp.path().join("data");
+        fs::create_dir(&data_dir).unwrap();
+        write_training_data(
+            &data_dir,
+            &[(vec![0.25], vec![0.0]), (vec![0.75], vec![1.0])],
+        );
+
+        let hidden = [("hidden-0", "TANH", 0.1)];
+        let synapses = [("input-0", "hidden-0", 1.3), ("hidden-0", "output-0", 0.9)];
+
+        let forward_json =
+            make_creature_json_with_forward_only(1, 1, &hidden, &synapses, Some("4.0.0"), true);
+        let recurrent_json =
+            make_creature_json_with_forward_only(1, 1, &hidden, &synapses, Some("4.0.0"), false);
+
+        let forward = score_from_json(
+            &forward_json,
+            &data_dir,
+            GpuBackendLabel::CpuFallback,
+            CostKind::default(),
+        )
+        .unwrap();
+        let recurrent = score_from_json(
+            &recurrent_json,
+            &data_dir,
+            GpuBackendLabel::CpuFallback,
+            CostKind::default(),
+        )
+        .unwrap();
+
+        assert!(forward.forward_only);
+        assert!(!recurrent.forward_only);
+        assert_eq!(recurrent.training_read_backend, "record_iterator");
+
+        // Same error and score across both modes for a feed-forward network.
+        assert!(
+            (forward.error - recurrent.error).abs() < 1e-9,
+            "error mismatch: forward={} recurrent={}",
+            forward.error,
+            recurrent.error
+        );
+        assert!(
+            (forward.score - recurrent.score).abs() < 1e-9,
+            "score mismatch: forward={} recurrent={}",
+            forward.score,
+            recurrent.score
+        );
+        assert_eq!(forward.record_count, recurrent.record_count);
     }
 
     #[test]
