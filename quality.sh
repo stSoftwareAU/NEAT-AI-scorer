@@ -104,14 +104,10 @@ else
   echo "   Install with: brew install bats-core  (or your package manager)"
 fi
 
-echo "📦 Upgrading Rust library dependencies (optional)..."
-if command -v cargo-upgrade &>/dev/null; then
-  cargo upgrade --incompatible
-  cargo update
-else
-  echo "⚠️  cargo-edit not installed — skipping dependency upgrade"
-  echo "   Install with: cargo install cargo-edit"
-fi
+echo "📦 Dependency upgrade step (opt-in — read-only by default, Issue #210)..."
+# Default gate is read-only against Cargo.lock / Cargo.toml. Pass --upgrade
+# (or QUALITY_UPGRADE=1) to bump library dependencies via cargo-edit.
+./scripts/cargo-upgrade.sh "$@"
 
 echo "📜 Running licence and dependency audit (cargo-deny)..."
 if ! command -v cargo-deny &>/dev/null; then
