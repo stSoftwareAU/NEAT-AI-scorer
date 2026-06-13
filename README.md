@@ -31,6 +31,37 @@ Requires **shellcheck**, **cargo-deny** (`cargo install cargo-deny --locked`), *
 
 By default `./quality.sh` is **read-only** against `Cargo.lock` / `Cargo.toml` — it never bumps dependency versions in your working tree. To bump library dependencies during the gate, opt in with `./quality.sh --upgrade` (or `QUALITY_UPGRADE=1 ./quality.sh`); this requires **cargo-edit**. Routine, quarantine-gated dependency bumps go through [`./bump-deps.sh`](./bump-deps.sh) (Issue #105) instead.
 
+### Pinned Rust toolchain (Issue #209)
+
+The project SHA-pins every GitHub Action and container digest for reproducibility, but the Rust compiler version would otherwise float — `dtolnay/rust-toolchain` resolves `stable` at run time. Because the gate is `-D warnings` plus specific clippy lints, a fresh stable release can introduce a lint that breaks CI with **no code change**, and contributors cannot reproduce it locally.
+
+The root [`rust-toolchain.toml`](./rust-toolchain.toml) closes that gap by pinning a concrete channel and the `rustfmt`/`clippy` components:
+
+```toml
+[toolchain]
+channel = "1.95.0"
+components = ["rustfmt", "clippy"]
+```
+
+`rustup` reads this file automatically, so both local `./quality.sh` and every CI workflow (`dtolnay/rust-toolchain` honours the file when no explicit `toolchain:` input is given) resolve the **same** `rustc`/`clippy`/`rustfmt`. The pinned compiler auto-installs on the first `cargo` invocation. `edition = "2024"` already requires a recent stable, reinforcing the need to pin.
+
+```mermaid
+flowchart LR
+    TC["rust-toolchain.toml<br/>channel = 1.95.0"]
+    TC --> L["Local ./quality.sh<br/>(rustup)"]
+    TC --> C["CI workflows<br/>(dtolnay/rust-toolchain)"]
+    L --> R["Same rustc / clippy / rustfmt"]
+    C --> R
+```
+
+**Bump cadence.** Review when a new stable lands (~every 6 weeks):
+
+1. Edit `channel` in `rust-toolchain.toml` to the new `X.Y.Z`.
+2. Run `./quality.sh` locally to confirm the gate still passes under the new compiler (fix any newly-surfaced lints).
+3. Land the bump in its own PR so the compiler change is reviewed in isolation.
+
+The pin is validated by `scripts/check-rust-toolchain.sh` (invoked from `quality.sh`) and covered end-to-end by `tests/scripts/rust_toolchain.bats`. The validator rejects a floating channel (`stable`/`beta`/`nightly`) or a missing `rustfmt`/`clippy` component.
+
 ### Spell check
 
 CI runs `codespell` via `scripts/spell-check.sh`; the same script is invoked by `./quality.sh`, so the local gate and CI stay in lock-step. Reproduce the CI spell check at any time with:

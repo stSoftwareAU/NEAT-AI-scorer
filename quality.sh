@@ -32,6 +32,9 @@ if [[ "$SHELLCHECK_FAILED" -ne 0 ]]; then
 fi
 echo "shellcheck: all scripts passed"
 
+echo "🦀 Validating pinned rust-toolchain.toml (Issue #209)..."
+./scripts/check-rust-toolchain.sh
+
 echo "🔗 Validating NEAT-AI-core checkout path strategy in workflows..."
 ./scripts/check-workflow-paths.sh
 
