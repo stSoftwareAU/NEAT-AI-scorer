@@ -398,13 +398,16 @@ pub fn score_from_creature_dir(
         // Single flat par_iter over the worker pool — this is the only
         // Rayon parallel layer in the per-chunk hot path (Issue #41).
         // Issue #121: dispatch on the resolved cost; cost was validated
-        // up-front (see the empty-chunk probe before the I/O loop) so the
-        // inner `.expect` cannot fire for supported variants.
+        // up-front (see the empty-chunk probe before the I/O loop).
+        // Issue #200: propagate any per-chunk cost error out of the parallel
+        // closure via `try_for_each` instead of panicking with `.expect`, so
+        // a content-dependent failure mode returns a clean `Err(String)`
+        // rather than aborting the whole binary across a Rayon worker.
         flat_networks
             .par_iter_mut()
             .zip(worker_sums.par_iter_mut())
             .enumerate()
-            .for_each(|(worker_idx, (net, sum))| {
+            .try_for_each(|(worker_idx, (net, sum))| -> Result<(), String> {
                 if let Some(range) = &work_ranges[worker_idx] {
                     *sum = accumulate_cost_sum(
                         cost,
@@ -413,12 +416,12 @@ pub fn score_from_creature_dir(
                         num_inputs,
                         num_outputs,
                         true,
-                    )
-                    .expect("cost validated before per-chunk dispatch");
+                    )?;
                 } else {
                     *sum = 0.0;
                 }
-            });
+                Ok(())
+            })?;
 
         // Reduce per-worker sums into per-creature totals (sequential —
         // total_workers ≤ activation_threads, so this is cheap).
