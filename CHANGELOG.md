@@ -42,6 +42,14 @@ section to the released version with its date.
 
 ### Changed
 
+- **Input-reachable `assert!`/serialise `expect` panics are now structured
+  errors (Issue #201).** `scoring::value_penalty`, `compute_score_components`,
+  `complexity_penalty` and `calculate_score` return `Result<_, String>` and
+  emit a clear message for negative/non-finite weights, biases or average
+  errors instead of aborting the process via a release-build panic. The
+  `main` serialisation step routes `serde_json` failures through the standard
+  `eprintln!("Error: ...")` + `exit(1)` path rather than `expect`. Pure
+  internal-math invariants (penalty/score bounds) stay as `debug_assert!`.
 - The GPU pre-flight (`multi_score::gpu_directory_compatible`) and
   `build_batched_network_data` no longer reject creatures above 256 neurons —
   they route to `forward_mse_scratch`. Only an unsupported squash, a shape

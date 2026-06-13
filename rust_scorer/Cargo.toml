@@ -1,6 +1,6 @@
 [package]
 name = "rust_scorer"
-version = "0.5.54"
+version = "0.5.55"
 edition = "2024"
 license = "Apache-2.0"
 description = "Native CLI binary for scoring NEAT-AI creatures against training data."

@@ -499,18 +499,18 @@ pub fn score_from_creature_dir(
     let mut results = BTreeMap::new();
     for (loaded_creature, mse_sum) in loaded.iter().zip(total_mse.iter()) {
         let avg_error = *mse_sum / total_records as f64;
-        let components = compute_score_components(&loaded_creature.creature);
+        let components = compute_score_components(&loaded_creature.creature)?;
         let hidden_neurons = components.hidden_neuron_count;
         let synapse_count = components.synapse_count;
 
-        let complexity_penalty = complexity_penalty(&components, GROWTH_COST);
+        let complexity_penalty = complexity_penalty(&components, GROWTH_COST)?;
 
         let score = calculate_score(
             avg_error,
             &components,
             GROWTH_COST,
             loaded_creature.creature.semantic_version.as_deref(),
-        );
+        )?;
 
         results.insert(
             loaded_creature.key.clone(),
@@ -826,18 +826,18 @@ pub fn score_from_creature_dir_gpu(
     let mut results = BTreeMap::new();
     for (loaded_creature, mse_sum) in loaded.iter().zip(total_mse.iter()) {
         let avg_error = *mse_sum / total_records as f64;
-        let components = compute_score_components(&loaded_creature.creature);
+        let components = compute_score_components(&loaded_creature.creature)?;
         let hidden_neurons = components.hidden_neuron_count;
         let synapse_count = components.synapse_count;
 
-        let complexity_penalty = complexity_penalty(&components, GROWTH_COST);
+        let complexity_penalty = complexity_penalty(&components, GROWTH_COST)?;
 
         let score = calculate_score(
             avg_error,
             &components,
             GROWTH_COST,
             loaded_creature.creature.semantic_version.as_deref(),
-        );
+        )?;
 
         results.insert(
             loaded_creature.key.clone(),

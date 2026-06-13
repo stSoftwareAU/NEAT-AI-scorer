@@ -440,18 +440,18 @@ fn score_from_json(
 
     let avg_error = total_error / record_count as f64;
 
-    let components = compute_score_components(&creature);
+    let components = compute_score_components(&creature)?;
     let hidden_neurons = components.hidden_neuron_count;
     let synapse_count = components.synapse_count;
 
-    let complexity_penalty = scoring::complexity_penalty(&components, GROWTH_COST);
+    let complexity_penalty = scoring::complexity_penalty(&components, GROWTH_COST)?;
 
     let score = calculate_score(
         avg_error,
         &components,
         GROWTH_COST,
         creature.semantic_version.as_deref(),
-    );
+    )?;
 
     Ok(ScoreResult {
         score,
@@ -481,17 +481,19 @@ fn score_from_json(
 fn main() {
     let cli = Cli::parse();
 
-    match run(&cli) {
-        Ok(RunOutput::Single(result)) => {
-            let json =
-                serde_json::to_string_pretty(&result).expect("Failed to serialise result to JSON");
-            println!("{json}");
-        }
-        Ok(RunOutput::Multi(result_map)) => {
-            let json = serde_json::to_string_pretty(&result_map)
-                .expect("Failed to serialise multi-creature result to JSON");
-            println!("{json}");
-        }
+    // Issue #201: route serialisation failures through the same
+    // `eprintln!("Error: ...")` + `exit(1)` path as scoring errors, instead of
+    // panicking via `expect`. `serde_json` errors on non-finite floats, so a
+    // malformed result must exit cleanly rather than abort the process.
+    let output = run(&cli).and_then(|out| match out {
+        RunOutput::Single(result) => serde_json::to_string_pretty(&result)
+            .map_err(|e| format!("Failed to serialise result to JSON: {e}")),
+        RunOutput::Multi(result_map) => serde_json::to_string_pretty(&result_map)
+            .map_err(|e| format!("Failed to serialise multi-creature result to JSON: {e}")),
+    });
+
+    match output {
+        Ok(json) => println!("{json}"),
         Err(e) => {
             eprintln!("Error: {e}");
             process::exit(1);
