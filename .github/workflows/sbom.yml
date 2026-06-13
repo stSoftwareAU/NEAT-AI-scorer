@@ -66,8 +66,14 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8  # stable, frozen 2026-05-18
 
-      - name: Install cargo-cyclonedx
-        run: cargo install cargo-cyclonedx --locked
+      # Fetch a prebuilt cargo-cyclonedx binary instead of compiling from
+      # source on every run (Issue #208). taiki-e/install-action resolves a
+      # released binary in seconds, matching the prior unversioned
+      # `cargo install` behaviour.
+      - name: Install cargo-cyclonedx (prebuilt binary)
+        uses: taiki-e/install-action@7a79fe8c3a13344501c80d99cae481c1c9085912  # v2.81.10
+        with:
+          tool: cargo-cyclonedx
 
       - name: Generate CycloneDX SBOM
         # Reads Cargo.lock / resolved workspace metadata and emits a standard

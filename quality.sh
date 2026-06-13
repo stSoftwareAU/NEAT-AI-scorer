@@ -50,6 +50,9 @@ echo "🦀 Validating Cargo Security Audit workflow (Issue #64)..."
 echo "📋 Validating SBOM workflow (Issue #172)..."
 ./scripts/check-sbom-workflow.sh
 
+echo "⚡ Validating prebuilt cargo tool installs in CI (Issue #208)..."
+./scripts/check-prebuilt-tool-install.sh
+
 echo "🧹 Validating Cargo Quality (fmt + clippy) workflow (Issue #66)..."
 ./scripts/check-cargo-quality-workflow.sh
 
