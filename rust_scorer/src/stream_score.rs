@@ -165,7 +165,9 @@ pub fn accumulate_cost_sum_forward_only_fused(
     // loop (`run_io_loop`, Issue #203). Issue #121 dispatches every supported
     // cost through `accumulate_cost_sum`; Issue #200 propagates a per-slice cost
     // error via `?` rather than `.expect` across a Rayon worker.
-    let mut score_chunk = |floats: &[f32], n_records: usize| -> Result<(), String> {
+    let mut score_chunk = |floats: &mut Vec<f32>, n_records: usize| -> Result<(), String> {
+        // Read-only consumer: borrow the unpack buffer as a slice in place.
+        let floats: &[f32] = floats;
         if floats.len() != n_records * values_per_record {
             return Err("Internal float unpack length mismatch".to_string());
         }

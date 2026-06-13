@@ -42,7 +42,7 @@ Configuration (ignore list, skip paths, check-filenames / check-hidden flags) is
 - `renderD` — DRM device node name (e.g. `renderD128`).
 - `mape` / `MAPE` — Mean Absolute Percentage Error (a `neat-core` loss function).
 
-Binaries: `rust_scorer`, `float_scan_bench`, `cost_scan_bench` (see `rust_scorer/Cargo.toml`). `cost_scan_bench` (Issue #124) sweeps every supported [`CostKind`](rust_scorer/src/cost.rs) through the forward-only fused path against a single creature and a `.bin` corpus, emitting a JSON summary for per-cost CPU baseline comparison.
+Binaries: `rust_scorer`, `float_scan_bench`, `cost_scan_bench`, `gpu_pipeline_alloc_bench` (see `rust_scorer/Cargo.toml`). `cost_scan_bench` (Issue #124) sweeps every supported [`CostKind`](rust_scorer/src/cost.rs) through the forward-only fused path against a single creature and a `.bin` corpus, emitting a JSON summary for per-cost CPU baseline comparison. `gpu_pipeline_alloc_bench` (Issue #202) counts heap allocations during a multi-chunk pipelined (`inflight_chunks == 2`) GPU directory run; it skips cleanly on CPU-only hosts.
 
 ## CLI
 
