@@ -79,7 +79,45 @@ pub(crate) fn compact_pending_if_needed(pending: &mut Vec<u8>, head: &mut usize)
 
 /// Callback that scores one chunk of decoded packed records. The callee is
 /// expected to update its own running totals.
-pub(crate) type ScoreChunkFn<'a> = dyn FnMut(&[f32], usize) -> Result<(), String> + 'a;
+///
+/// The buffer is passed as `&mut Vec<f32>` (not `&[f32]`) so a consumer that
+/// hands the chunk off to another thread can take ownership via
+/// [`std::mem::replace`] and swap a recycled buffer back in, avoiding a
+/// per-chunk clone (Issue #202). Read-only consumers simply borrow it as a
+/// slice and leave it in place.
+pub(crate) type ScoreChunkFn<'a> = dyn FnMut(&mut Vec<f32>, usize) -> Result<(), String> + 'a;
+
+/// Small free-list of reusable `Vec<f32>` unpack buffers for the pipelined GPU
+/// path (Issue #202). The GPU worker hands consumed buffers back here so the
+/// I/O thread can swap a recycled buffer into the unpack slot instead of
+/// allocating + copying a fresh `Vec` for every streamed chunk.
+pub(crate) struct FloatBufPool {
+    free: Vec<Vec<f32>>,
+}
+
+impl FloatBufPool {
+    pub(crate) fn new() -> Self {
+        Self { free: Vec::new() }
+    }
+
+    /// Hand out a buffer for the next unpack. Reuses a recycled buffer (keeping
+    /// its heap allocation) when one is available, otherwise yields a fresh
+    /// empty `Vec`. The caller's `unpack_f32s_le` clears it before filling, so
+    /// returned buffers need not be empty.
+    pub(crate) fn take(&mut self) -> Vec<f32> {
+        self.free.pop().unwrap_or_default()
+    }
+
+    /// Return a consumed buffer for later reuse.
+    pub(crate) fn recycle(&mut self, buf: Vec<f32>) {
+        self.free.push(buf);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn free_len(&self) -> usize {
+        self.free.len()
+    }
+}
 
 /// Shared head-and-compact I/O loop reused by both the multi-creature and fused
 /// forward-only streaming paths. Calls `score_chunk(floats, n_records)` for each
@@ -143,7 +181,55 @@ pub(crate) fn run_io_loop(
 
 #[cfg(test)]
 mod tests {
-    use super::{compact_pending_if_needed, run_io_loop, unpack_f32s_le};
+    use super::{FloatBufPool, compact_pending_if_needed, run_io_loop, unpack_f32s_le};
+
+    #[test]
+    fn float_buf_pool_reuses_recycled_buffer_allocation() {
+        let mut pool = FloatBufPool::new();
+        assert_eq!(pool.free_len(), 0);
+
+        // Empty pool hands out a fresh buffer; fill it and note its allocation.
+        let mut buf = pool.take();
+        buf.extend_from_slice(&[1.0, 2.0, 3.0, 4.0]);
+        let cap = buf.capacity();
+        assert!(cap >= 4);
+
+        // Recycling returns it to the free list...
+        pool.recycle(buf);
+        assert_eq!(pool.free_len(), 1);
+
+        // ...and the next take reuses the same heap allocation (capacity kept),
+        // so no fresh allocation is needed for the next chunk.
+        let reused = pool.take();
+        assert_eq!(reused.capacity(), cap);
+        assert_eq!(pool.free_len(), 0);
+    }
+
+    #[test]
+    fn float_buf_pool_take_on_empty_yields_fresh_empty_buffer() {
+        let mut pool = FloatBufPool::new();
+        let a = pool.take();
+        assert!(a.is_empty());
+        // Nothing recycled yet, so the pool is still empty.
+        assert_eq!(pool.free_len(), 0);
+    }
+
+    #[test]
+    fn float_buf_pool_take_swaps_into_unpack_slot_without_cloning() {
+        // Mirrors the pipelined submit: swap the freshly-unpacked buffer out and
+        // a recycled buffer in via `mem::replace`, then recycle it next round.
+        let mut pool = FloatBufPool::new();
+        let mut unpack = vec![10.0_f32, 20.0, 30.0];
+
+        let outgoing = std::mem::replace(&mut unpack, pool.take());
+        // The data left with `outgoing`; the unpack slot now holds a fresh Vec.
+        assert_eq!(outgoing, vec![10.0_f32, 20.0, 30.0]);
+        assert!(unpack.is_empty());
+
+        // The consumer hands the buffer back once scored.
+        pool.recycle(outgoing);
+        assert_eq!(pool.free_len(), 1);
+    }
 
     #[test]
     fn unpack_f32s_le_decodes_exact_length_buffer() {
@@ -208,8 +294,8 @@ mod tests {
         let mut head = 0_usize;
         let mut floats = Vec::new();
         let mut scored: Vec<(Vec<f32>, usize)> = Vec::new();
-        let mut score_chunk = |f: &[f32], n: usize| -> Result<(), String> {
-            scored.push((f.to_vec(), n));
+        let mut score_chunk = |f: &mut Vec<f32>, n: usize| -> Result<(), String> {
+            scored.push((f.clone(), n));
             Ok(())
         };
 
@@ -245,8 +331,8 @@ mod tests {
         let chunk_b = 4.0_f32.to_le_bytes().to_vec();
 
         {
-            let mut score_chunk = |f: &[f32], n: usize| -> Result<(), String> {
-                scored.push((f.to_vec(), n));
+            let mut score_chunk = |f: &mut Vec<f32>, n: usize| -> Result<(), String> {
+                scored.push((f.clone(), n));
                 Ok(())
             };
             run_io_loop(
@@ -292,7 +378,7 @@ mod tests {
         let mut head = 0_usize;
         let mut floats = Vec::new();
         let mut score_chunk =
-            |_f: &[f32], _n: usize| -> Result<(), String> { Err("boom".to_string()) };
+            |_f: &mut Vec<f32>, _n: usize| -> Result<(), String> { Err("boom".to_string()) };
 
         let err = run_io_loop(
             &chunk,

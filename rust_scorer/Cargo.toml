@@ -34,6 +34,13 @@ path = "src/bin/float_scan_bench.rs"
 name = "cost_scan_bench"
 path = "src/bin/cost_scan_bench.rs"
 
+# Allocator-pressure bench for the pipelined GPU directory path (Issue #202).
+# Counts heap allocations during a multi-chunk `inflight_chunks == 2` run so the
+# per-chunk `to_vec()` removal can be measured before/after. Skips on CPU hosts.
+[[bin]]
+name = "gpu_pipeline_alloc_bench"
+path = "src/bin/gpu_pipeline_alloc_bench.rs"
+
 # Criterion bench harness — see `benches/scoring.rs` and
 # `docs/performance-baseline.md`. Not wired into `quality.sh` (Criterion runs
 # are slow and non-deterministic enough to be unsuitable as a merge gate);

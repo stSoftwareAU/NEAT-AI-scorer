@@ -40,7 +40,7 @@ use crate::gpu::forward_mse_batched::{BatchedRunner, build_batched_network_data}
 use crate::gpu::{GpuBackendLabel, GpuContext};
 use crate::read_tuning::{training_read_backend_label, training_read_target_bytes_from_env};
 use crate::scoring::{ScoreResult, calculate_score, complexity_penalty, compute_score_components};
-use crate::stream_io::run_io_loop;
+use crate::stream_io::{FloatBufPool, run_io_loop};
 use crate::stream_score::{activation_worker_count_for_scorer, effective_fused_read_buf_len};
 
 /// Keep aligned with main scorer formula.
@@ -308,7 +308,9 @@ pub fn score_from_creature_dir(
     let mut work_ranges: Vec<Option<Range<usize>>> = vec![None; total_workers];
     let mut worker_sums: Vec<f64> = vec![0.0; total_workers];
 
-    let mut score_chunk = |floats: &[f32], n_records: usize| -> Result<(), String> {
+    let mut score_chunk = |floats: &mut Vec<f32>, n_records: usize| -> Result<(), String> {
+        // Read-only consumer: borrow the unpack buffer as a slice in place.
+        let floats: &[f32] = floats;
         if floats.len() != n_records * values_per_record {
             return Err("Internal float unpack length mismatch".to_string());
         }
@@ -600,7 +602,9 @@ pub fn score_from_creature_dir_gpu(
 
     if inflight_chunks <= 1 {
         // Synchronous: one chunk in flight at a time.
-        let mut score_chunk = |floats: &[f32], n_records: usize| -> Result<(), String> {
+        let mut score_chunk = |floats: &mut Vec<f32>, n_records: usize| -> Result<(), String> {
+            // Synchronous path borrows the unpack buffer in place — no handoff.
+            let floats: &[f32] = floats;
             if floats.len() != n_records * values_per_record {
                 return Err("Internal float unpack length mismatch".to_string());
             }
@@ -630,9 +634,12 @@ pub fn score_from_creature_dir_gpu(
         use std::thread;
 
         // Move runner into worker thread; results come back through `result_rx`.
+        // Consumed unpack buffers return through `recycle_rx` so the I/O thread
+        // can reuse them instead of cloning each chunk (Issue #202).
         let n_creatures = loaded.len();
         let (work_tx, work_rx) = mpsc::sync_channel::<Option<(Vec<f32>, usize)>>(inflight_chunks);
         let (result_tx, result_rx) = mpsc::channel::<Result<(usize, Vec<f64>), String>>();
+        let (recycle_tx, recycle_rx) = mpsc::channel::<Vec<f32>>();
 
         let worker = thread::spawn(move || {
             while let Ok(Some((floats, n_records))) = work_rx.recv() {
@@ -645,6 +652,9 @@ pub fn score_from_creature_dir_gpu(
                 if result_tx.send(Ok((n_records, sums))).is_err() {
                     break;
                 }
+                // Hand the consumed buffer back for reuse. A send error just
+                // means the I/O thread has gone away, so drop the buffer.
+                let _ = recycle_tx.send(floats);
             }
             runner
         });
@@ -668,15 +678,24 @@ pub fn score_from_creature_dir_gpu(
             }
         };
 
-        let mut submit_chunk = |floats: &[f32], n_records: usize| -> Result<(), String> {
+        let mut pool = FloatBufPool::new();
+        let mut submit_chunk = |floats: &mut Vec<f32>, n_records: usize| -> Result<(), String> {
             // Cap in-flight so the channel never queues more than `inflight_chunks`
             // chunks. When already at the cap, drain one result first.
             while pending_results >= inflight_chunks {
                 drain_one(&mut total_records, &mut total_mse, &mut pending_results)?;
             }
-            // Send a copy — the worker thread takes ownership of the Vec.
+            // Reclaim any buffers the worker has finished with.
+            while let Ok(buf) = recycle_rx.try_recv() {
+                pool.recycle(buf);
+            }
+            // Transfer ownership of the freshly-unpacked buffer to the worker and
+            // swap a recycled (or fresh) buffer into the unpack slot. No per-chunk
+            // clone — the I/O thread keeps streaming into the new buffer while the
+            // worker scores the old one (Issue #202).
+            let outgoing = std::mem::replace(floats, pool.take());
             work_tx
-                .send(Some((floats.to_vec(), n_records)))
+                .send(Some((outgoing, n_records)))
                 .map_err(|_| "GPU worker hung up before chunk submission".to_string())?;
             pending_results += 1;
             Ok(())
