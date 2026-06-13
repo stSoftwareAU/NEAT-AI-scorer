@@ -314,6 +314,63 @@ fn directory_mode_emits_compile_time_secs() {
     }
 }
 
+/// Issue #205: under the default `--gpu auto`, a non-MSE `--cost` forces the
+/// directory path onto CPU (`auto_should_use_gpu` returns false). That
+/// fallback was otherwise silent — only the `gpuBackend: cpu-fallback` JSON
+/// field hinted at it. Assert the CPU run now prints one informational stderr
+/// note naming the cost as the reason, while MSE prints nothing extra.
+#[test]
+fn directory_mode_auto_non_mse_cost_notes_cpu_fallback() {
+    let bin = env!("CARGO_BIN_EXE_rust_scorer");
+    let tmp = tempfile::tempdir().expect("create tempdir");
+    let creatures_dir = tmp.path().join("creatures");
+    let data_dir = tmp.path().join("data");
+    std::fs::create_dir(&creatures_dir).expect("create creatures dir");
+    std::fs::create_dir(&data_dir).expect("create data dir");
+
+    std::fs::write(creatures_dir.join("a.json"), minimal_creature(1, 1, true)).expect("write a");
+    write_training_data(&data_dir, &[(vec![0.5], vec![0.5]), (vec![1.0], vec![1.0])]);
+
+    // Non-MSE cost under the default `--gpu auto` ⇒ CPU fallback + stderr note.
+    let non_mse = Command::new(bin)
+        .arg("--cost")
+        .arg("MAE")
+        .arg(&creatures_dir)
+        .arg(&data_dir)
+        .output()
+        .expect("spawn scorer (MAE)");
+    assert!(
+        non_mse.status.success(),
+        "auto MAE directory run should succeed, stderr:\n{}",
+        String::from_utf8_lossy(&non_mse.stderr),
+    );
+    let non_mse_stderr = String::from_utf8_lossy(&non_mse.stderr);
+    assert!(
+        non_mse_stderr.contains("[gpu] auto fallback to CPU directory mode")
+            && non_mse_stderr.contains("MAE"),
+        "non-MSE cost must print a CPU-fallback note naming the cost, got: {non_mse_stderr}",
+    );
+
+    // MSE (the GPU-supported cost) must not print the cost-fallback note.
+    let mse = Command::new(bin)
+        .arg("--cost")
+        .arg("MSE")
+        .arg(&creatures_dir)
+        .arg(&data_dir)
+        .output()
+        .expect("spawn scorer (MSE)");
+    assert!(
+        mse.status.success(),
+        "auto MSE directory run should succeed, stderr:\n{}",
+        String::from_utf8_lossy(&mse.stderr),
+    );
+    let mse_stderr = String::from_utf8_lossy(&mse.stderr);
+    assert!(
+        !mse_stderr.contains("cost MSE is not GPU-supported"),
+        "MSE must not print the cost CPU-fallback note, got: {mse_stderr}",
+    );
+}
+
 #[test]
 fn directory_mode_rejects_forward_only_false() {
     let bin = env!("CARGO_BIN_EXE_rust_scorer");

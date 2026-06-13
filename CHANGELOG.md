@@ -17,6 +17,17 @@ section to the released version with its date.
 
 ### Added
 
+- **stderr note when a non-MSE `--cost` forces CPU fallback in directory
+  mode (Issue #205).** Under the default `--gpu auto`, selecting a non-MSE
+  `--cost` makes `auto_should_use_gpu` return false, so the directory path
+  runs on CPU. The fallback was otherwise silent — only the
+  `gpuBackend: "cpu-fallback"` JSON field hinted at it. The scorer now prints
+  one informational `[gpu] auto fallback to CPU directory mode: cost <NAME>
+  is not GPU-supported ...` line to stderr, mirroring the existing
+  `--gpu on` / GPU-runner fallback messages and naming the cost as the reason.
+  MSE / GPU-supported costs and explicit `--gpu on|off` are unaffected
+  (no extra output). New `gpu::auto_cost_fallback_note` helper, unit-tested
+  in `gpu/mod.rs` and end-to-end in `tests/directory_mode_tdd.rs`.
 - **CI lint gate for GitHub Actions (Issue #195).** New
   `.github/workflows/actionlint.yml` runs [actionlint](https://github.com/rhysd/actionlint)
   on every pull request and on pushes to the default branches, so workflow

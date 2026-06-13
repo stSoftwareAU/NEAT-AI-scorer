@@ -212,9 +212,12 @@ The `forward_mse_batched` GPU kernel currently computes **MSE only**.
 Any non-MSE `--cost` selection forces the CPU pipeline:
 
 - Under `--gpu auto` (the default since Issue #83) a non-MSE cost
-  silently routes to the CPU directory/streaming path — the
-  `gpuBackend` field on the result reports `"cpu-fallback"` so the
-  caller can see what actually ran.
+  routes to the CPU directory/streaming path — the `gpuBackend` field
+  on the result reports `"cpu-fallback"` so the caller can see what
+  actually ran. On the **directory path** the scorer also prints one
+  informational `[gpu] auto fallback ...` line to stderr naming the
+  cost as the reason (Issue #205), so the CPU choice is not silent;
+  MSE / GPU-supported costs print nothing extra.
 - Under `--gpu on` a non-MSE cost is a hard error before any scoring
   runs (no silent downgrade — `--gpu on` is a strict requirement).
 - Under `--gpu off` GPU detection is skipped regardless of `--cost`.

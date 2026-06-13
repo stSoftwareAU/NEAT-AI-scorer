@@ -218,6 +218,44 @@ pub fn auto_should_use_gpu(path: ScoringPath, cost: crate::cost::CostKind) -> bo
     }
 }
 
+/// Issue #205: one informational stderr note for the otherwise-silent
+/// "non-MSE cost forced the CPU path under `--gpu auto`" fallback.
+///
+/// Under the default `--gpu auto`, selecting a non-MSE `--cost` makes
+/// [`auto_should_use_gpu`] return `false`, so the directory path runs on
+/// CPU. Unlike the explicit `--gpu on` hard-error and the GPU-runner
+/// failure case, that fallback prints nothing — the only signal is the
+/// `gpuBackend: cpu-fallback` JSON field, so users cannot tell their cost
+/// choice (rather than a missing GPU) caused the CPU path.
+///
+/// Returns `Some(note)` — mirroring the existing `[gpu] auto fallback ...`
+/// messages and naming the cost as the reason — only when **all** hold:
+/// * `mode` is [`GpuMode::Auto`] (explicit `on`/`off` are unaffected),
+/// * `path` is [`ScoringPath::CreatureDirectory`] (the only GPU-default
+///   path), and
+/// * `cost` is not GPU-supported ([`crate::cost::CostKind::gpu_supported`]).
+///
+/// Returns `None` otherwise (MSE / GPU-supported costs emit no extra output).
+pub fn auto_cost_fallback_note(
+    mode: GpuMode,
+    path: ScoringPath,
+    cost: crate::cost::CostKind,
+) -> Option<String> {
+    if !matches!(mode, GpuMode::Auto) || cost.gpu_supported() {
+        return None;
+    }
+    match path {
+        ScoringPath::CreatureDirectory => Some(format!(
+            "[gpu] auto fallback to CPU directory mode: cost {} is not GPU-supported \
+             (forward_mse_batched only handles MSE); rerun with --gpu off to skip GPU detection",
+            cost.as_str()
+        )),
+        // The single-creature path is always CPU regardless of cost, so there
+        // is no cost-driven fallback to explain.
+        ScoringPath::SingleCreature => None,
+    }
+}
+
 /// Resolve the final [`GpuMode`] from the CLI flag and the `NEAT_SCORER_GPU`
 /// environment variable. CLI wins; otherwise the env var; otherwise default.
 ///
@@ -398,6 +436,77 @@ mod tests {
                 cost.as_str()
             );
         }
+    }
+
+    /// Issue #205: a non-MSE cost under `--gpu auto` must surface one stderr
+    /// note on the directory path, naming the cost as the reason for the CPU
+    /// fallback.
+    #[test]
+    fn auto_cost_fallback_note_present_for_non_mse_directory() {
+        for cost in [
+            crate::cost::CostKind::Mae,
+            crate::cost::CostKind::Mape,
+            crate::cost::CostKind::Msle,
+            crate::cost::CostKind::Hinge,
+            crate::cost::CostKind::CrossEntropy,
+            crate::cost::CostKind::CategoricalError,
+        ] {
+            let note = auto_cost_fallback_note(GpuMode::Auto, ScoringPath::CreatureDirectory, cost)
+                .unwrap_or_else(|| panic!("expected a fallback note for cost {}", cost.as_str()));
+            assert!(
+                note.contains("[gpu] auto fallback"),
+                "note should mirror the existing fallback messages: {note}"
+            );
+            assert!(
+                note.contains(cost.as_str()),
+                "note should name the cost {} as the reason: {note}",
+                cost.as_str()
+            );
+        }
+    }
+
+    /// Issue #205: MSE (the GPU-supported cost) must not emit any note.
+    #[test]
+    fn auto_cost_fallback_note_absent_for_mse_directory() {
+        assert_eq!(
+            auto_cost_fallback_note(
+                GpuMode::Auto,
+                ScoringPath::CreatureDirectory,
+                crate::cost::CostKind::Mse
+            ),
+            None
+        );
+    }
+
+    /// Issue #205: explicit `--gpu on|off` are unaffected — no note even for a
+    /// non-MSE cost (`on` hard-errors elsewhere; `off` never touches the GPU).
+    #[test]
+    fn auto_cost_fallback_note_absent_for_explicit_modes() {
+        for mode in [GpuMode::On, GpuMode::Off] {
+            assert_eq!(
+                auto_cost_fallback_note(
+                    mode,
+                    ScoringPath::CreatureDirectory,
+                    crate::cost::CostKind::Mae
+                ),
+                None,
+                "explicit mode {mode:?} must not emit the auto fallback note"
+            );
+        }
+    }
+
+    /// Issue #205: the single-creature path is always CPU regardless of cost,
+    /// so there is no cost-driven fallback to explain.
+    #[test]
+    fn auto_cost_fallback_note_absent_for_single_creature() {
+        assert_eq!(
+            auto_cost_fallback_note(
+                GpuMode::Auto,
+                ScoringPath::SingleCreature,
+                crate::cost::CostKind::Mae
+            ),
+            None
+        );
     }
 
     #[test]

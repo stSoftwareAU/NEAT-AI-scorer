@@ -242,6 +242,18 @@ fn run(cli: &Cli) -> Result<RunOutput, String> {
     let creature_path = &cli.args[0];
     let data_path = &cli.args[1];
     if creature_path.is_dir() {
+        // Issue #205: under `--gpu auto`, a non-MSE cost makes
+        // `auto_should_use_gpu` return false, so the directory path runs on
+        // CPU. That fallback was otherwise silent (only the
+        // `gpuBackend: cpu-fallback` JSON field hinted at it). Emit one
+        // informational stderr note naming the cost as the reason, mirroring
+        // the other `[gpu] auto fallback ...` messages. No-op for MSE and for
+        // explicit `--gpu on|off`.
+        if let Some(note) =
+            gpu::auto_cost_fallback_note(mode, ScoringPath::CreatureDirectory, cli.cost)
+        {
+            eprintln!("{note}");
+        }
         // Directory mode: per Issue #82+#83 use the GPU multi-creature
         // batched kernel when (a) an adapter is available and (b) the mode
         // wants GPU for this path (`Auto` ⇒ yes, `On` ⇒ yes, `Off` ⇒ no).
