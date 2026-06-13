@@ -172,11 +172,12 @@ pub fn accumulate_cost_sum_forward_only_fused(
         return Err("Invalid record byte length (zero)".to_string());
     }
 
-    // Issue #121: validate the cost is dispatchable up-front so the inner
-    // par_iter can safely use `accumulate_cost_sum(...).unwrap()`. Every
-    // built-in cost dispatches today (Issue #134 wired the last one,
-    // `CATEGORICAL_ERROR`); the probe stays so a future kernel-only cost
-    // that surfaces an error here is caught before any bytes are read.
+    // Issue #121: validate the cost is dispatchable up-front. Every built-in
+    // cost dispatches today (Issue #134 wired the last one, `CATEGORICAL_ERROR`);
+    // the probe stays so a future kernel-only cost that surfaces an error here
+    // is caught before any bytes are read. Issue #200: the inner par_iter now
+    // propagates any per-chunk error via `?` rather than `.expect`, so a
+    // content-dependent failure also returns a clean `Err`.
     accumulate_cost_sum(
         cost,
         network,
@@ -239,7 +240,7 @@ pub fn accumulate_cost_sum_forward_only_fused(
                 }
 
                 total_records += n_records;
-                let chunk_sum = match &mut parallel_networks {
+                let chunk_sum: f64 = match &mut parallel_networks {
                     Some(nets) => {
                         let effective_workers = worker_count.min(n_records).max(1);
                         if effective_workers > 1 {
@@ -250,12 +251,13 @@ pub fn accumulate_cost_sum_forward_only_fused(
                                 n_records,
                                 effective_workers,
                             );
-                            nets[..effective_workers]
+                            // Issue #200: collect into a `Result` so a per-slice
+                            // cost error short-circuits and propagates instead of
+                            // panicking with `.expect` across a Rayon worker.
+                            let partials: Result<Vec<f64>, String> = nets[..effective_workers]
                                 .par_iter_mut()
                                 .zip(slices)
                                 .map(|(net, slice)| {
-                                    // SAFETY: cost validated above — only
-                                    // dispatchable variants reach this point.
                                     accumulate_cost_sum(
                                         cost,
                                         net,
@@ -264,9 +266,9 @@ pub fn accumulate_cost_sum_forward_only_fused(
                                         config.num_outputs,
                                         true,
                                     )
-                                    .expect("cost validated before stream loop")
                                 })
-                                .sum()
+                                .collect();
+                            partials?.into_iter().sum()
                         } else {
                             accumulate_cost_sum(
                                 cost,
@@ -275,8 +277,7 @@ pub fn accumulate_cost_sum_forward_only_fused(
                                 config.num_inputs,
                                 config.num_outputs,
                                 true,
-                            )
-                            .expect("cost validated before stream loop")
+                            )?
                         }
                     }
                     None => accumulate_cost_sum(
@@ -286,8 +287,7 @@ pub fn accumulate_cost_sum_forward_only_fused(
                         config.num_inputs,
                         config.num_outputs,
                         true,
-                    )
-                    .expect("cost validated before stream loop"),
+                    )?,
                 };
                 total_mse_sum += chunk_sum;
             }
@@ -324,7 +324,7 @@ pub fn accumulate_cost_sum_forward_only_fused(
             }
 
             total_records += n_records;
-            let chunk_sum = match &mut parallel_networks {
+            let chunk_sum: f64 = match &mut parallel_networks {
                 Some(nets) => {
                     let effective_workers = worker_count.min(n_records).max(1);
                     if effective_workers > 1 {
@@ -335,7 +335,10 @@ pub fn accumulate_cost_sum_forward_only_fused(
                             n_records,
                             effective_workers,
                         );
-                        nets[..effective_workers]
+                        // Issue #200: collect into a `Result` so a per-slice
+                        // cost error short-circuits and propagates instead of
+                        // panicking with `.expect` across a Rayon worker.
+                        let partials: Result<Vec<f64>, String> = nets[..effective_workers]
                             .par_iter_mut()
                             .zip(slices)
                             .map(|(net, slice)| {
@@ -347,9 +350,9 @@ pub fn accumulate_cost_sum_forward_only_fused(
                                     config.num_outputs,
                                     true,
                                 )
-                                .expect("cost validated before stream loop")
                             })
-                            .sum()
+                            .collect();
+                        partials?.into_iter().sum()
                     } else {
                         accumulate_cost_sum(
                             cost,
@@ -358,8 +361,7 @@ pub fn accumulate_cost_sum_forward_only_fused(
                             config.num_inputs,
                             config.num_outputs,
                             true,
-                        )
-                        .expect("cost validated before stream loop")
+                        )?
                     }
                 }
                 None => accumulate_cost_sum(
@@ -369,8 +371,7 @@ pub fn accumulate_cost_sum_forward_only_fused(
                     config.num_inputs,
                     config.num_outputs,
                     true,
-                )
-                .expect("cost validated before stream loop"),
+                )?,
             };
             total_mse_sum += chunk_sum;
             head += complete_len;

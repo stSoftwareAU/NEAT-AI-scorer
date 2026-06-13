@@ -169,7 +169,7 @@ pub fn compute_score_components(creature: &CreatureExport) -> ScoreComponents {
 /// `complexityPenalty = hiddenNeurons * growthCost + synapses * growthCost / 10
 ///                      + (weightBiasPenalty + squashComplexityPenalty) * growthCost / 100`
 ///
-/// The weight/bias term routes through [`calculate_penalty`] (which adds
+/// The weight/bias term routes through `calculate_penalty` (which adds
 /// finiteness asserts), so every call site shares the same numerical behaviour.
 pub fn complexity_penalty(components: &ScoreComponents, growth_cost: f64) -> f64 {
     let weight_bias_penalty =
