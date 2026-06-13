@@ -22,9 +22,14 @@ Or step-by-step (matches CI):
 export RUSTFLAGS="-D warnings"
 cargo deny check
 cargo fmt --all -- --check
-cargo clippy --workspace --all-targets --all-features -- -D warnings -D clippy::filter_next -D clippy::collapsible_if
-cargo test --workspace --all-features
-cargo build --release -p rust_scorer
+cargo clippy --all-targets --all-features -- \
+  -D warnings \
+  -D clippy::filter_next \
+  -D clippy::collapsible_if
+cargo check --all-targets --all-features
+cargo build --workspace
+cargo test --workspace --all-features --verbose -- --test-threads=2
+RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
 ```
 
 Requires **shellcheck**, **cargo-deny** (`cargo install cargo-deny --locked`), **codespell** (`pip install --user codespell`, used by `scripts/spell-check.sh`), and optionally **cargo-edit** for the **opt-in** upgrade step in `./quality.sh`
