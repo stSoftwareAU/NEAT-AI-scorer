@@ -28,7 +28,7 @@ on:
   pull_request:
     branches: ["*"]
   push:
-    branches: [main, master]
+    branches: [main, master, Develop]
 
 permissions:
   contents: read
@@ -58,6 +58,16 @@ EOF
   [[ "$output" == *"actions/setup-node pinned"* ]]
   [[ "$output" == *"markdownlint-cli2 install step present"* ]]
   [[ "$output" == *"markdownlint-cli2 invoked"* ]]
+  [[ "$output" == *"push trigger targets the default branch (Develop)"* ]]
+}
+
+@test "fails when the push trigger omits Develop (Issue #207)" {
+  write_markdown_lint_workflow "$TMP_WF/markdown-lint.yml"
+  sed -i.bak 's|branches: \[main, master, Develop\]|branches: [main, master]|' \
+    "$TMP_WF/markdown-lint.yml"
+  run "$SCRIPT_UNDER_TEST" --workflow "$TMP_WF/markdown-lint.yml"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"push trigger does not target Develop"* ]]
 }
 
 @test "fails when the workflow is not triggered on pull_request" {
