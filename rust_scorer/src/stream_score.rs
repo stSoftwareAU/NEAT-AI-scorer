@@ -29,16 +29,22 @@ const MAX_ACTIVATION_WORKERS: usize = 64;
 /// Parsed `NEAT_SCORER_ACTIVATION_THREADS`: missing defaults to all available CPUs.
 /// Clamped to `[1, MAX_ACTIVATION_WORKERS]`.
 pub fn activation_worker_count_for_scorer() -> usize {
-    match std::env::var("NEAT_SCORER_ACTIVATION_THREADS") {
-        Ok(s) => {
-            let t = s.trim().parse::<usize>().unwrap_or(1);
-            t.clamp(1, MAX_ACTIVATION_WORKERS)
-        }
-        Err(_) => std::thread::available_parallelism()
-            .map(|n| n.get())
-            .unwrap_or(1)
-            .clamp(1, MAX_ACTIVATION_WORKERS),
+    // Unset/blank/malformed all resolve to "all available CPUs"; a malformed
+    // value additionally warns instead of falling back silently (Issue #204).
+    let default = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(1);
+    let env = std::env::var("NEAT_SCORER_ACTIVATION_THREADS").ok();
+    let (parsed, warning) = crate::env_tuning::parse_tuning_var(
+        "NEAT_SCORER_ACTIVATION_THREADS",
+        env.as_deref(),
+        default,
+        |s| s.parse::<usize>().ok(),
+    );
+    if let Some(warning) = warning {
+        eprintln!("{warning}");
     }
+    parsed.clamp(1, MAX_ACTIVATION_WORKERS)
 }
 
 /// Aligned fused read size (same rounding as [`training_read_target_bytes_from_env`]).

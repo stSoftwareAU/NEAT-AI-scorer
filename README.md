@@ -270,6 +270,22 @@ For forward-only single-creature fused scoring, activation parallelism also
 defaults to all available CPU cores. Set `NEAT_SCORER_ACTIVATION_THREADS` only
 when you want to tune down/up manually.
 
+### Malformed tuning values are reported, not silently ignored (Issue #204)
+
+The numeric performance knobs `NEAT_SCORER_READ_BYTES`,
+`NEAT_SCORER_ACTIVATION_THREADS` and `NEAT_SCORER_GPU_SCRATCH_BYTES` used to
+fall back to their default on an invalid value with no feedback, so a typo
+such as `NEAT_SCORER_READ_BYTES=2MB` looked like it took effect when it was
+ignored. Each now prints a single diagnostic to stderr and continues with the
+default, mirroring how `NEAT_SCORER_GPU` already rejects invalid values:
+
+```text
+[scorer] ignoring invalid NEAT_SCORER_READ_BYTES='2MB', using default 2097152
+```
+
+Unset or blank values stay silent, and a valid value is honoured without any
+warning.
+
 ## Local layout
 
 Place **NEAT-AI-core** and **NEAT-AI-scorer** as **siblings** (e.g. `…/src/NEAT-AI-core` and `…/src/NEAT-AI-scorer`). The path in `rust_scorer/Cargo.toml` is `../../NEAT-AI-core/neat-core` so `cargo build` resolves `neat-core` from your local **NEAT-AI-core** tree. CI does the same via a second checkout (`../NEAT-AI-core`).
