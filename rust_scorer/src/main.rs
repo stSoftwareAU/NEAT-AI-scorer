@@ -15,6 +15,7 @@ mod gpu;
 mod multi_score;
 mod read_tuning;
 mod scoring;
+mod stream_io;
 mod stream_score;
 
 use std::collections::BTreeMap;

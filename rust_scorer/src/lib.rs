@@ -13,4 +13,5 @@ pub mod gpu;
 pub mod multi_score;
 pub mod read_tuning;
 pub mod scoring;
+pub mod stream_io;
 pub mod stream_score;
