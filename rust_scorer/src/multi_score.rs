@@ -40,77 +40,16 @@ use crate::gpu::forward_mse_batched::{BatchedRunner, build_batched_network_data}
 use crate::gpu::{GpuBackendLabel, GpuContext};
 use crate::read_tuning::{training_read_backend_label, training_read_target_bytes_from_env};
 use crate::scoring::{ScoreResult, calculate_score, complexity_penalty, compute_score_components};
+use crate::stream_io::run_io_loop;
 use crate::stream_score::{activation_worker_count_for_scorer, effective_fused_read_buf_len};
 
 /// Keep aligned with main scorer formula.
 const GROWTH_COST: f64 = 0.000_000_1;
-const PENDING_COMPACT_HEAD_BYTES: usize = 512 * 1024;
 
 struct LoadedCreature {
     key: String,
     path: PathBuf,
     creature: CreatureExport,
-}
-
-fn compact_pending_if_needed(pending: &mut Vec<u8>, head: &mut usize) {
-    if *head == 0 {
-        return;
-    }
-    let should_compact = *head >= PENDING_COMPACT_HEAD_BYTES || *head * 2 >= pending.len();
-    if !should_compact {
-        return;
-    }
-    let tail = pending.len() - *head;
-    pending.copy_within(*head.., 0);
-    pending.truncate(tail);
-    *head = 0;
-}
-
-fn reserve_unpack_capacity(buf: &mut Vec<f32>, n: usize) {
-    if buf.capacity() < n {
-        buf.reserve(n - buf.capacity());
-    }
-}
-
-/// Decode little-endian `f32` bytes.
-///
-/// # Panics
-/// Panics if `src.len() != n * 4`. This runtime check runs in both debug and
-/// release builds because the `little` branch performs raw pointer arithmetic
-/// that relies on the length invariant — a malformed `.bin` chunk must not be
-/// allowed to drive an out-of-bounds read (Issue #103).
-fn unpack_f32s_le(src: &[u8], dst: &mut Vec<f32>, n: usize) {
-    assert_eq!(
-        src.len(),
-        n * 4,
-        "unpack_f32s_le: src.len() ({}) != n * 4 ({})",
-        src.len(),
-        n * 4
-    );
-    dst.clear();
-    reserve_unpack_capacity(dst, n);
-
-    #[cfg(target_endian = "little")]
-    {
-        // SAFETY: `src.len() == n * 4`, capacity ≥ `n` after `reserve_unpack_capacity`;
-        // we initialise all `n` elements before `set_len(n)`.
-        unsafe {
-            let out_ptr = dst.as_mut_ptr();
-            let p = src.as_ptr();
-            for i in 0..n {
-                let bits = p.add(i * 4).cast::<u32>().read_unaligned();
-                out_ptr.add(i).write(f32::from_bits(bits));
-            }
-            dst.set_len(n);
-        }
-    }
-
-    #[cfg(not(target_endian = "little"))]
-    {
-        for q in src.chunks_exact(4) {
-            dst.push(f32::from_le_bytes([q[0], q[1], q[2], q[3]]));
-        }
-    }
 }
 
 /// Partition `n_records` packed records into `workers` ranges over the
@@ -433,56 +372,14 @@ pub fn score_from_creature_dir(
     };
 
     for_each_read_chunk(&bin_files, fused_read_buf_len, |chunk| {
-        // Fast path: when nothing is buffered, score the aligned prefix of
-        // `chunk` directly and only copy any trailing fragment into `pending`.
-        // Avoids the `pending.extend_from_slice` memcpy on the common path
-        // where the read buffer is a whole-record multiple. Issue #38.
-        if pending.is_empty() && head == 0 && !chunk.is_empty() {
-            let aligned_len = (chunk.len() / record_bytes) * record_bytes;
-            if aligned_len > 0 {
-                let num_f32 = aligned_len / 4;
-                let n_records = aligned_len / record_bytes;
-                unpack_f32s_le(&chunk[..aligned_len], &mut unpack_floats, num_f32);
-                score_chunk(&unpack_floats, n_records)?;
-            }
-            if aligned_len < chunk.len() {
-                pending.extend_from_slice(&chunk[aligned_len..]);
-                // `head` stays at 0.
-            }
-            return Ok(());
-        }
-
-        // Slow path: residual bytes are buffered in `pending`; merge the new
-        // chunk and consume whole records from the head.
-        if !chunk.is_empty() {
-            pending.extend_from_slice(chunk);
-        }
-        compact_pending_if_needed(&mut pending, &mut head);
-
-        loop {
-            let avail = pending.len() - head;
-            let complete_len = (avail / record_bytes) * record_bytes;
-            if complete_len == 0 {
-                break;
-            }
-
-            let num_f32 = complete_len / 4;
-            let n_records = complete_len / record_bytes;
-            let slice = &pending[head..head + complete_len];
-            unpack_f32s_le(slice, &mut unpack_floats, num_f32);
-            score_chunk(&unpack_floats, n_records)?;
-
-            head += complete_len;
-        }
-
-        // Drop fully-consumed `pending` so the next iteration can take the
-        // fast path again.
-        if head == pending.len() {
-            pending.clear();
-            head = 0;
-        }
-
-        Ok(())
+        run_io_loop(
+            chunk,
+            &mut pending,
+            &mut head,
+            &mut unpack_floats,
+            record_bytes,
+            &mut score_chunk,
+        )
     })?;
 
     if head != pending.len() {
@@ -868,93 +765,9 @@ pub fn score_from_creature_dir_gpu(
     Ok(results)
 }
 
-/// Callback that scores one chunk of decoded packed records. The callee is
-/// expected to update its own per-creature MSE running totals.
-type ScoreChunkFn<'a> = dyn FnMut(&[f32], usize) -> Result<(), String> + 'a;
-
-/// Shared head-and-compact I/O loop reused by both CPU and GPU directory-mode
-/// paths. Calls `score_chunk(floats, n_records)` for each whole-record slice
-/// teased out of the streamed `chunk`.
-fn run_io_loop(
-    chunk: &[u8],
-    pending: &mut Vec<u8>,
-    head: &mut usize,
-    unpack_floats: &mut Vec<f32>,
-    record_bytes: usize,
-    score_chunk: &mut ScoreChunkFn<'_>,
-) -> Result<(), String> {
-    if pending.is_empty() && *head == 0 && !chunk.is_empty() {
-        let aligned_len = (chunk.len() / record_bytes) * record_bytes;
-        if aligned_len > 0 {
-            let num_f32 = aligned_len / 4;
-            let n_records = aligned_len / record_bytes;
-            unpack_f32s_le(&chunk[..aligned_len], unpack_floats, num_f32);
-            score_chunk(unpack_floats, n_records)?;
-        }
-        if aligned_len < chunk.len() {
-            pending.extend_from_slice(&chunk[aligned_len..]);
-        }
-        return Ok(());
-    }
-
-    if !chunk.is_empty() {
-        pending.extend_from_slice(chunk);
-    }
-    compact_pending_if_needed(pending, head);
-
-    loop {
-        let avail = pending.len() - *head;
-        let complete_len = (avail / record_bytes) * record_bytes;
-        if complete_len == 0 {
-            break;
-        }
-        let num_f32 = complete_len / 4;
-        let n_records = complete_len / record_bytes;
-        let slice = &pending[*head..*head + complete_len];
-        unpack_f32s_le(slice, unpack_floats, num_f32);
-        score_chunk(unpack_floats, n_records)?;
-        *head += complete_len;
-    }
-    if *head == pending.len() {
-        pending.clear();
-        *head = 0;
-    }
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn unpack_f32s_le_decodes_exact_length_buffer() {
-        // Two little-endian f32s: 3.5 and 0.0.
-        let mut src = Vec::new();
-        src.extend_from_slice(&3.5_f32.to_le_bytes());
-        src.extend_from_slice(&0.0_f32.to_le_bytes());
-        let mut dst = Vec::new();
-        unpack_f32s_le(&src, &mut dst, 2);
-        assert_eq!(dst, vec![3.5_f32, 0.0_f32]);
-    }
-
-    #[test]
-    #[should_panic(expected = "unpack_f32s_le: src.len()")]
-    fn unpack_f32s_le_rejects_short_buffer_in_release() {
-        // Length 7 with n=2 means src.len() != n*4 (=8). Must panic in
-        // both debug and release builds (Issue #103) — never enter the
-        // unsafe loop with a short slice.
-        let src = vec![0u8; 7];
-        let mut dst = Vec::new();
-        unpack_f32s_le(&src, &mut dst, 2);
-    }
-
-    #[test]
-    #[should_panic(expected = "unpack_f32s_le: src.len()")]
-    fn unpack_f32s_le_rejects_oversize_buffer() {
-        let src = vec![0u8; 9];
-        let mut dst = Vec::new();
-        unpack_f32s_le(&src, &mut dst, 2);
-    }
 
     #[test]
     fn workers_per_creature_one_per_when_population_meets_threads() {
