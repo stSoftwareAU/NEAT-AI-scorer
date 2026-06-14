@@ -40,7 +40,7 @@ flowchart TD
 
 Test output (lib tests):
 
-```
+```text
 test cost::tests::accumulate_cost_sum_rejects_malformed_chunk ... ok
 test cost::tests::accumulate_cost_sum_error_propagates_through_rayon ... ok
 test result: ok. 63 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out

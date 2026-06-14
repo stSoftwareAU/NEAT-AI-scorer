@@ -47,7 +47,7 @@ via the test suite.
 
 New tests pass:
 
-```
+```text
 running 2 tests
 test tests::test_recurrent_single_creature_uses_record_iterator_backend ... ok
 test tests::test_recurrent_matches_forward_only_for_feed_forward_network ... ok

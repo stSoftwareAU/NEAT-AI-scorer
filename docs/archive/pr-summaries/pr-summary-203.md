@@ -89,4 +89,4 @@ both `multi_score.rs` and `stream_score.rs`. Because `unpack_f32s_le` moved to
 `stream_io.rs`, a single canonical copy of those tests now lives alongside it
 in `stream_io.rs`; the two duplicate copies were removed (the function they
 tested no longer lives in those modules). No test coverage was lost — the
-#103 OOB `should_panic` guards still run.
+Issue #103 OOB `should_panic` guards still run.
