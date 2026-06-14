@@ -54,13 +54,14 @@ fn large_creature(input: usize, output: usize, hidden: usize) -> String {
     )
 }
 
-/// Issue #180: `--gpu auto` (the default) over a directory whose creature
-/// exceeds the 256-neuron GPU shader cap must fall back to the CPU pipeline
-/// *cleanly* — valid JSON on stdout, `gpuBackend: "cpu-fallback"`, exit 0.
-/// The production regression aborted instead (`exit 158` / `INVALID_JSON`),
-/// forcing the caller onto slow per-creature CPU scoring.
+/// Issue #180 / #182: `--gpu auto` (the default) over a directory whose creature
+/// exceeds the 256-neuron private-array cap must complete *cleanly* — valid JSON
+/// on stdout, exit 0. Before #180 the production regression aborted instead
+/// (`exit 158` / `INVALID_JSON`). After #182, such creatures no longer force a
+/// CPU fallback on hosts with a compatible GPU — they route to the
+/// `forward_mse_scratch` kernel instead.
 #[test]
-fn gpu_auto_directory_above_shader_cap_falls_back_to_cpu_cleanly() {
+fn gpu_auto_directory_above_private_cap_scores_cleanly() {
     let bin = env!("CARGO_BIN_EXE_rust_scorer");
     let tmp = tempfile::tempdir().expect("create tempdir");
     let creatures_dir = tmp.path().join("creatures");
@@ -90,11 +91,20 @@ fn gpu_auto_directory_above_shader_cap_falls_back_to_cpu_cleanly() {
     let parsed: serde_json::Value = serde_json::from_slice(&output.stdout)
         .expect("auto fallback must emit valid JSON on stdout");
     let entry = parsed.get("big").expect("missing key big");
-    assert_eq!(
-        entry.get("gpuBackend").and_then(|v| v.as_str()),
-        Some("cpu-fallback"),
-        "oversized creature must score on the CPU fallback",
-    );
+    let gpu_backend = entry
+        .get("gpuBackend")
+        .and_then(|v| v.as_str())
+        .expect("gpuBackend must be present");
+    match gpu_backend {
+        // CPU-only CI (no wgpu adapter) — pre-flight passes but auto falls back.
+        "cpu-fallback" => {}
+        // GPU host — Issue #182 routes above-cap creatures to the scratch kernel.
+        _ => assert_eq!(
+            entry.get("gpuKernel").and_then(|v| v.as_str()),
+            Some("forward_mse_scratch"),
+            "oversized creature on GPU must use the scratch kernel, got backend {gpu_backend}",
+        ),
+    }
     assert_eq!(
         entry.get("hiddenNeurons").and_then(|v| v.as_u64()),
         Some(300),
