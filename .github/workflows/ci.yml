@@ -121,8 +121,13 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-
 
-      - name: Install cargo-deny
-        run: cargo install cargo-deny --locked
+      # Fetch a prebuilt cargo-deny binary instead of compiling from source
+      # on every run (Issue #208). taiki-e/install-action resolves a released
+      # binary in seconds, matching the prior unversioned `cargo install`.
+      - name: Install cargo-deny (prebuilt binary)
+        uses: taiki-e/install-action@7a79fe8c3a13344501c80d99cae481c1c9085912  # v2.81.10
+        with:
+          tool: cargo-deny
 
       - name: cargo deny
         run: cargo deny check
@@ -214,6 +219,7 @@ jobs:
             "CHANGELOG.md"
             "quality.sh"
             "deny.toml"
+            "rust-toolchain.toml"
             "rust_scorer/src/main.rs"
             ".github/CODEOWNERS"
             "SECURITY.md"

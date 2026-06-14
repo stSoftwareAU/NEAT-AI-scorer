@@ -32,6 +32,9 @@ if [[ "$SHELLCHECK_FAILED" -ne 0 ]]; then
 fi
 echo "shellcheck: all scripts passed"
 
+echo "🦀 Validating pinned rust-toolchain.toml (Issue #209)..."
+./scripts/check-rust-toolchain.sh
+
 echo "🔗 Validating NEAT-AI-core checkout path strategy in workflows..."
 ./scripts/check-workflow-paths.sh
 
@@ -46,6 +49,9 @@ echo "🦀 Validating Cargo Security Audit workflow (Issue #64)..."
 
 echo "📋 Validating SBOM workflow (Issue #172)..."
 ./scripts/check-sbom-workflow.sh
+
+echo "⚡ Validating prebuilt cargo tool installs in CI (Issue #208)..."
+./scripts/check-prebuilt-tool-install.sh
 
 echo "🧹 Validating Cargo Quality (fmt + clippy) workflow (Issue #66)..."
 ./scripts/check-cargo-quality-workflow.sh
@@ -86,6 +92,9 @@ echo "⏱️  Validating per-job timeout-minutes across workflows (Issue #154)..
 echo "🔁 Validating concurrency groups on pile-up-prone workflows (Issue #156)..."
 ./scripts/check-workflow-concurrency.sh
 
+echo "📖 Validating README 'matches CI' block aligns with the CI quality job (Issue #212)..."
+./scripts/check-readme-ci-alignment.sh
+
 echo "📝 Running codespell preflight (mirrors CI spell-check job)..."
 if ! ./scripts/spell-check.sh; then
   echo "spell-check: FAILED — fix the typos above or update .codespellrc (see README)."
@@ -104,14 +113,10 @@ else
   echo "   Install with: brew install bats-core  (or your package manager)"
 fi
 
-echo "📦 Upgrading Rust library dependencies (optional)..."
-if command -v cargo-upgrade &>/dev/null; then
-  cargo upgrade --incompatible
-  cargo update
-else
-  echo "⚠️  cargo-edit not installed — skipping dependency upgrade"
-  echo "   Install with: cargo install cargo-edit"
-fi
+echo "📦 Dependency upgrade step (opt-in — read-only by default, Issue #210)..."
+# Default gate is read-only against Cargo.lock / Cargo.toml. Pass --upgrade
+# (or QUALITY_UPGRADE=1) to bump library dependencies via cargo-edit.
+./scripts/cargo-upgrade.sh "$@"
 
 echo "📜 Running licence and dependency audit (cargo-deny)..."
 if ! command -v cargo-deny &>/dev/null; then

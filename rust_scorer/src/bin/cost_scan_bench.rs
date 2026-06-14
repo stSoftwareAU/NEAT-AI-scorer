@@ -27,6 +27,9 @@
 //! existing `float_scan_bench` defaults to 7 runs, this bin defaults to 5 so
 //! a 6-cost sweep stays within ~1 minute on a small corpus.
 
+#[path = "../env_tuning.rs"]
+#[allow(dead_code)] // helper module shared with read_tuning; only the parser is used here.
+mod env_tuning;
 #[path = "../read_tuning.rs"]
 #[allow(dead_code)] // selectively used by the bench; the rest mirrors float_scan_bench.
 mod read_tuning;

@@ -17,6 +17,17 @@ section to the released version with its date.
 
 ### Added
 
+- **stderr note when a non-MSE `--cost` forces CPU fallback in directory
+  mode (Issue #205).** Under the default `--gpu auto`, selecting a non-MSE
+  `--cost` makes `auto_should_use_gpu` return false, so the directory path
+  runs on CPU. The fallback was otherwise silent — only the
+  `gpuBackend: "cpu-fallback"` JSON field hinted at it. The scorer now prints
+  one informational `[gpu] auto fallback to CPU directory mode: cost <NAME>
+  is not GPU-supported ...` line to stderr, mirroring the existing
+  `--gpu on` / GPU-runner fallback messages and naming the cost as the reason.
+  MSE / GPU-supported costs and explicit `--gpu on|off` are unaffected
+  (no extra output). New `gpu::auto_cost_fallback_note` helper, unit-tested
+  in `gpu/mod.rs` and end-to-end in `tests/directory_mode_tdd.rs`.
 - **CI lint gate for GitHub Actions (Issue #195).** New
   `.github/workflows/actionlint.yml` runs [actionlint](https://github.com/rhysd/actionlint)
   on every pull request and on pushes to the default branches, so workflow
@@ -42,6 +53,22 @@ section to the released version with its date.
 
 ### Changed
 
+- **`./quality.sh`'s `cargo upgrade` step is now opt-in (Issue #210).** The
+  default gate is read-only against `Cargo.lock` / `Cargo.toml` — running
+  `./quality.sh` to validate an unrelated change no longer bumps dependency
+  versions in the working tree. The upgrade behaviour is preserved behind an
+  explicit opt-in: `./quality.sh --upgrade` or `QUALITY_UPGRADE=1 ./quality.sh`.
+  The step now lives in `scripts/cargo-upgrade.sh`, covered end-to-end by
+  `tests/scripts/cargo_upgrade.bats`. Routine, quarantine-gated bumps continue
+  to go through `./bump-deps.sh` (Issue #105).
+- **Input-reachable `assert!`/serialise `expect` panics are now structured
+  errors (Issue #201).** `scoring::value_penalty`, `compute_score_components`,
+  `complexity_penalty` and `calculate_score` return `Result<_, String>` and
+  emit a clear message for negative/non-finite weights, biases or average
+  errors instead of aborting the process via a release-build panic. The
+  `main` serialisation step routes `serde_json` failures through the standard
+  `eprintln!("Error: ...")` + `exit(1)` path rather than `expect`. Pure
+  internal-math invariants (penalty/score bounds) stay as `debug_assert!`.
 - The GPU pre-flight (`multi_score::gpu_directory_compatible`) and
   `build_batched_network_data` no longer reject creatures above 256 neurons —
   they route to `forward_mse_scratch`. Only an unsupported squash, a shape

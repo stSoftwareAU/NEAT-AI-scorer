@@ -22,12 +22,50 @@ Or step-by-step (matches CI):
 export RUSTFLAGS="-D warnings"
 cargo deny check
 cargo fmt --all -- --check
-cargo clippy --workspace --all-targets --all-features -- -D warnings -D clippy::filter_next -D clippy::collapsible_if
-cargo test --workspace --all-features
-cargo build --release -p rust_scorer
+cargo clippy --all-targets --all-features -- \
+  -D warnings \
+  -D clippy::filter_next \
+  -D clippy::collapsible_if
+cargo check --all-targets --all-features
+cargo build --workspace
+cargo test --workspace --all-features --verbose -- --test-threads=2
+RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
 ```
 
-Requires **shellcheck**, **cargo-deny** (`cargo install cargo-deny --locked`), **codespell** (`pip install --user codespell`, used by `scripts/spell-check.sh`), and optionally **cargo-edit** for the upgrade step in `./quality.sh`
+Requires **shellcheck**, **cargo-deny** (`cargo install cargo-deny --locked`), **codespell** (`pip install --user codespell`, used by `scripts/spell-check.sh`), and optionally **cargo-edit** for the **opt-in** upgrade step in `./quality.sh`
+
+By default `./quality.sh` is **read-only** against `Cargo.lock` / `Cargo.toml` — it never bumps dependency versions in your working tree. To bump library dependencies during the gate, opt in with `./quality.sh --upgrade` (or `QUALITY_UPGRADE=1 ./quality.sh`); this requires **cargo-edit**. Routine, quarantine-gated dependency bumps go through [`./bump-deps.sh`](./bump-deps.sh) (Issue #105) instead.
+
+### Pinned Rust toolchain (Issue #209)
+
+The project SHA-pins every GitHub Action and container digest for reproducibility, but the Rust compiler version would otherwise float — `dtolnay/rust-toolchain` resolves `stable` at run time. Because the gate is `-D warnings` plus specific clippy lints, a fresh stable release can introduce a lint that breaks CI with **no code change**, and contributors cannot reproduce it locally.
+
+The root [`rust-toolchain.toml`](./rust-toolchain.toml) closes that gap by pinning a concrete channel and the `rustfmt`/`clippy` components:
+
+```toml
+[toolchain]
+channel = "1.95.0"
+components = ["rustfmt", "clippy"]
+```
+
+`rustup` reads this file automatically, so both local `./quality.sh` and every CI workflow (`dtolnay/rust-toolchain` honours the file when no explicit `toolchain:` input is given) resolve the **same** `rustc`/`clippy`/`rustfmt`. The pinned compiler auto-installs on the first `cargo` invocation. `edition = "2024"` already requires a recent stable, reinforcing the need to pin.
+
+```mermaid
+flowchart LR
+    TC["rust-toolchain.toml<br/>channel = 1.95.0"]
+    TC --> L["Local ./quality.sh<br/>(rustup)"]
+    TC --> C["CI workflows<br/>(dtolnay/rust-toolchain)"]
+    L --> R["Same rustc / clippy / rustfmt"]
+    C --> R
+```
+
+**Bump cadence.** Review when a new stable lands (~every 6 weeks):
+
+1. Edit `channel` in `rust-toolchain.toml` to the new `X.Y.Z`.
+2. Run `./quality.sh` locally to confirm the gate still passes under the new compiler (fix any newly-surfaced lints).
+3. Land the bump in its own PR so the compiler change is reviewed in isolation.
+
+The pin is validated by `scripts/check-rust-toolchain.sh` (invoked from `quality.sh`) and covered end-to-end by `tests/scripts/rust_toolchain.bats`. The validator rejects a floating channel (`stable`/`beta`/`nightly`) or a missing `rustfmt`/`clippy` component.
 
 ### Spell check
 
@@ -42,7 +80,7 @@ Configuration (ignore list, skip paths, check-filenames / check-hidden flags) is
 - `renderD` — DRM device node name (e.g. `renderD128`).
 - `mape` / `MAPE` — Mean Absolute Percentage Error (a `neat-core` loss function).
 
-Binaries: `rust_scorer`, `float_scan_bench`, `cost_scan_bench` (see `rust_scorer/Cargo.toml`). `cost_scan_bench` (Issue #124) sweeps every supported [`CostKind`](rust_scorer/src/cost.rs) through the forward-only fused path against a single creature and a `.bin` corpus, emitting a JSON summary for per-cost CPU baseline comparison.
+Binaries: `rust_scorer`, `float_scan_bench`, `cost_scan_bench`, `gpu_pipeline_alloc_bench` (see `rust_scorer/Cargo.toml`). `cost_scan_bench` (Issue #124) sweeps every supported [`CostKind`](rust_scorer/src/cost.rs) through the forward-only fused path against a single creature and a `.bin` corpus, emitting a JSON summary for per-cost CPU baseline comparison. `gpu_pipeline_alloc_bench` (Issue #202) counts heap allocations during a multi-chunk pipelined (`inflight_chunks == 2`) GPU directory run; it skips cleanly on CPU-only hosts.
 
 ## CLI
 
@@ -212,9 +250,12 @@ The `forward_mse_batched` GPU kernel currently computes **MSE only**.
 Any non-MSE `--cost` selection forces the CPU pipeline:
 
 - Under `--gpu auto` (the default since Issue #83) a non-MSE cost
-  silently routes to the CPU directory/streaming path — the
-  `gpuBackend` field on the result reports `"cpu-fallback"` so the
-  caller can see what actually ran.
+  routes to the CPU directory/streaming path — the `gpuBackend` field
+  on the result reports `"cpu-fallback"` so the caller can see what
+  actually ran. On the **directory path** the scorer also prints one
+  informational `[gpu] auto fallback ...` line to stderr naming the
+  cost as the reason (Issue #205), so the CPU choice is not silent;
+  MSE / GPU-supported costs print nothing extra.
 - Under `--gpu on` a non-MSE cost is a hard error before any scoring
   runs (no silent downgrade — `--gpu on` is a strict requirement).
 - Under `--gpu off` GPU detection is skipped regardless of `--cost`.
@@ -269,6 +310,22 @@ Per-chunk activation runs through a single flat Rayon layer (Issue #41): a worke
 For forward-only single-creature fused scoring, activation parallelism also
 defaults to all available CPU cores. Set `NEAT_SCORER_ACTIVATION_THREADS` only
 when you want to tune down/up manually.
+
+### Malformed tuning values are reported, not silently ignored (Issue #204)
+
+The numeric performance knobs `NEAT_SCORER_READ_BYTES`,
+`NEAT_SCORER_ACTIVATION_THREADS` and `NEAT_SCORER_GPU_SCRATCH_BYTES` used to
+fall back to their default on an invalid value with no feedback, so a typo
+such as `NEAT_SCORER_READ_BYTES=2MB` looked like it took effect when it was
+ignored. Each now prints a single diagnostic to stderr and continues with the
+default, mirroring how `NEAT_SCORER_GPU` already rejects invalid values:
+
+```text
+[scorer] ignoring invalid NEAT_SCORER_READ_BYTES='2MB', using default 2097152
+```
+
+Unset or blank values stay silent, and a valid value is honoured without any
+warning.
 
 ## Local layout
 
@@ -517,6 +574,16 @@ flowchart LR
     gen --> cdx[*.cdx.json<br/>CycloneDX SBOM]
     cdx --> art[upload-artifact<br/>name: sbom]
 ```
+
+CI installs its cargo CLI tools from **prebuilt binaries**, not from source
+(Issue #208). `cargo-audit` (`cargo-audit.yml`, `security.yml`),
+`cargo-cyclonedx` (`sbom.yml`), and `cargo-deny` (`ci.yml`) are fetched via
+`taiki-e/install-action` — a released binary downloads in seconds, where
+`cargo install <tool> --locked` recompiled the tool from source on every run
+with no behaviour change. The action is SHA-pinned like every other `uses:`
+(supply-chain policy, Issue #100). The invariant is enforced by
+`scripts/check-prebuilt-tool-install.sh` (invoked from `quality.sh`) and
+covered end-to-end by `tests/scripts/prebuilt_tool_install.bats`.
 
 A standalone Cargo Quality workflow (`.github/workflows/cargo-quality.yml`,
 Issue #66) runs `cargo fmt --check` and `cargo clippy -- -D warnings` on

@@ -121,6 +121,9 @@ lookup_policy() {
     # Node 24, post upstream #48)`. Issue #136 cleared the Node 20 exception
     # when we adopted that SHA.
     rustsec/audit-check)              echo "required:2" ;;
+    # taiki-e/install-action installs prebuilt cargo tool binaries (Issue
+    # #208), replacing source compiles. The v2 line ships a Node 24 runtime.
+    taiki-e/install-action)           echo "required:2" ;;
     # dtolnay/rust-toolchain is a composite/shell action. No Node runtime,
     # so the Node 24 deprecation does not apply.
     dtolnay/rust-toolchain)           echo "no-node" ;;

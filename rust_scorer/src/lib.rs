@@ -9,8 +9,10 @@
 //! Issue #36 — Criterion benchmark infrastructure.
 
 pub mod cost;
+pub mod env_tuning;
 pub mod gpu;
 pub mod multi_score;
 pub mod read_tuning;
 pub mod scoring;
+pub mod stream_io;
 pub mod stream_score;

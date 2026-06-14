@@ -21,7 +21,10 @@ on:
   pull_request:
     branches: ["*"]
   push:
-    branches: [main, master]
+    # Default branch is `Develop`; include legacy names for symmetry with
+    # actionlint.yml so markdown lint also runs on pushes to the real default
+    # branch (Issue #207).
+    branches: [main, master, Develop]
 
 permissions:
   contents: read

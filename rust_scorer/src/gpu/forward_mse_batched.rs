@@ -814,11 +814,19 @@ pub fn scratch_workgroups_x_for(
 /// Resolve the scratch-kernel memory budget from `NEAT_SCORER_GPU_SCRATCH_BYTES`,
 /// falling back to [`DEFAULT_SCRATCH_BUDGET_BYTES`] (Issue #182).
 fn scratch_budget_bytes_from_env() -> u64 {
-    std::env::var("NEAT_SCORER_GPU_SCRATCH_BYTES")
-        .ok()
-        .and_then(|s| s.trim().parse::<u64>().ok())
-        .filter(|&b| b > 0)
-        .unwrap_or(DEFAULT_SCRATCH_BUDGET_BYTES)
+    let env = std::env::var("NEAT_SCORER_GPU_SCRATCH_BYTES").ok();
+    let (parsed, warning) = crate::env_tuning::parse_tuning_var(
+        "NEAT_SCORER_GPU_SCRATCH_BYTES",
+        env.as_deref(),
+        DEFAULT_SCRATCH_BUDGET_BYTES,
+        // A zero budget is semantically invalid, so treat it like a parse
+        // failure (warn + default) rather than a silent fallback.
+        |s| s.parse::<u64>().ok().filter(|&b| b > 0),
+    );
+    if let Some(warning) = warning {
+        eprintln!("{warning}");
+    }
+    parsed
 }
 
 /// Pad a `Vec<T>` so its byte length is non-zero — wgpu rejects zero-sized

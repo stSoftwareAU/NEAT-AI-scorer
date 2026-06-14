@@ -27,12 +27,12 @@ parent/
 
 The local gate and CI expect the following tools on your `PATH`:
 
-- **Rust** (stable toolchain) — `cargo`, `rustc`, `clippy`, `rustfmt`.
+- **Rust** — `cargo`, `rustc`, `clippy`, `rustfmt`. The exact compiler is pinned in [`rust-toolchain.toml`](./rust-toolchain.toml) and auto-installed by `rustup`, so local and CI builds use the same version (see the "Pinned Rust toolchain" section in the README for the bump cadence).
 - **shellcheck** — lints the bash helper scripts.
 - **cargo-deny** — licence and dependency audit (`cargo install cargo-deny --locked`).
 - **codespell** — spell check (`pip install --user codespell`), driven by [`scripts/spell-check.sh`](./scripts/spell-check.sh).
 - **bats** *(optional)* — runs the shell helper tests under `tests/scripts`.
-- **cargo-edit** *(optional)* — enables the dependency upgrade step in `./quality.sh`.
+- **cargo-edit** *(optional)* — enables the **opt-in** dependency upgrade step in `./quality.sh` (run `./quality.sh --upgrade`).
 
 ## Local gate
 
@@ -54,6 +54,12 @@ Run the full local quality gate before every commit or pull request:
 8. **`cargo check`**, **`cargo build`**, **`cargo test`** — type checks, debug build, and the test suite.
 9. **`cargo doc`** — rustdoc with `RUSTDOCFLAGS=-D warnings`.
 10. **Release build** — `cargo build --workspace --release`.
+
+The default gate is **read-only** against `Cargo.lock` / `Cargo.toml` — it
+never bumps dependency versions in your working tree. To bump library
+dependencies during the gate, opt in with `./quality.sh --upgrade` (or
+`QUALITY_UPGRADE=1 ./quality.sh`); this requires **cargo-edit**. Routine,
+quarantine-gated bumps go through [`./bump-deps.sh`](./bump-deps.sh) instead.
 
 Keep re-running `./quality.sh < /dev/null` until it passes cleanly.
 

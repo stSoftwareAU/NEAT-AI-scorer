@@ -17,30 +17,34 @@ use std::time::Instant;
 
 use crate::cost::{CostKind, accumulate_cost_sum};
 use crate::read_tuning::{MAX_READ_BYTES, training_read_target_bytes_from_env};
+use crate::stream_io::run_io_loop;
 use neat_core::creature::CreatureExport;
 use neat_core::network::CompiledNetwork;
 use neat_core::training_bin_stream::for_each_read_chunk;
 use neat_core::training_data::TrainingDataConfig;
 use rayon::prelude::*;
 
-/// Compact `pending` when the consumed prefix is large (avoids unbounded `head`).
-const PENDING_COMPACT_HEAD_BYTES: usize = 512 * 1024;
-
 const MAX_ACTIVATION_WORKERS: usize = 64;
 
 /// Parsed `NEAT_SCORER_ACTIVATION_THREADS`: missing defaults to all available CPUs.
 /// Clamped to `[1, MAX_ACTIVATION_WORKERS]`.
 pub fn activation_worker_count_for_scorer() -> usize {
-    match std::env::var("NEAT_SCORER_ACTIVATION_THREADS") {
-        Ok(s) => {
-            let t = s.trim().parse::<usize>().unwrap_or(1);
-            t.clamp(1, MAX_ACTIVATION_WORKERS)
-        }
-        Err(_) => std::thread::available_parallelism()
-            .map(|n| n.get())
-            .unwrap_or(1)
-            .clamp(1, MAX_ACTIVATION_WORKERS),
+    // Unset/blank/malformed all resolve to "all available CPUs"; a malformed
+    // value additionally warns instead of falling back silently (Issue #204).
+    let default = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(1);
+    let env = std::env::var("NEAT_SCORER_ACTIVATION_THREADS").ok();
+    let (parsed, warning) = crate::env_tuning::parse_tuning_var(
+        "NEAT_SCORER_ACTIVATION_THREADS",
+        env.as_deref(),
+        default,
+        |s| s.parse::<usize>().ok(),
+    );
+    if let Some(warning) = warning {
+        eprintln!("{warning}");
     }
+    parsed.clamp(1, MAX_ACTIVATION_WORKERS)
 }
 
 /// Aligned fused read size (same rounding as [`training_read_target_bytes_from_env`]).
@@ -84,71 +88,6 @@ fn partition_packed_records(
     out
 }
 
-/// `unpack_f32s_le` uses `set_len`; reserve up-front so capacity is sufficient.
-#[inline]
-fn reserve_unpack_capacity(buf: &mut Vec<f32>, n: usize) {
-    if buf.capacity() < n {
-        buf.reserve(n - buf.capacity());
-    }
-}
-
-/// Decode little-endian `f32` bytes. On little-endian hosts, one unaligned `u32`
-/// load per float; otherwise `from_le_bytes`.
-///
-/// # Panics
-/// Panics if `src.len() != n * 4`. This check runs in both debug and release
-/// builds because the `little` branch performs raw pointer arithmetic that
-/// relies on the length invariant — a malformed `.bin` chunk must not be
-/// allowed to drive an out-of-bounds read (Issue #103).
-fn unpack_f32s_le(src: &[u8], dst: &mut Vec<f32>, n: usize) {
-    assert_eq!(
-        src.len(),
-        n * 4,
-        "unpack_f32s_le: src.len() ({}) != n * 4 ({})",
-        src.len(),
-        n * 4
-    );
-    dst.clear();
-    reserve_unpack_capacity(dst, n);
-
-    #[cfg(target_endian = "little")]
-    {
-        // SAFETY: `src.len() == n * 4`, capacity ≥ `n` after `reserve_unpack_capacity`;
-        // we initialise all `n` elements before `set_len(n)`.
-        unsafe {
-            let out_ptr = dst.as_mut_ptr();
-            let p = src.as_ptr();
-            for i in 0..n {
-                let bits = p.add(i * 4).cast::<u32>().read_unaligned();
-                out_ptr.add(i).write(f32::from_bits(bits));
-            }
-            dst.set_len(n);
-        }
-    }
-
-    #[cfg(not(target_endian = "little"))]
-    {
-        for q in src.chunks_exact(4) {
-            dst.push(f32::from_le_bytes([q[0], q[1], q[2], q[3]]));
-        }
-    }
-}
-
-#[inline]
-fn compact_pending_if_needed(pending: &mut Vec<u8>, head: &mut usize) {
-    if *head == 0 {
-        return;
-    }
-    let should_compact = *head >= PENDING_COMPACT_HEAD_BYTES || *head * 2 >= pending.len();
-    if !should_compact {
-        return;
-    }
-    let tail = pending.len() - *head;
-    pending.copy_within(*head.., 0);
-    pending.truncate(tail);
-    *head = 0;
-}
-
 /// Accumulate fused cost-function sums over all `.bin` files using env-tuned
 /// chunked reads. Issue #121 generalises this from MSE-only to dispatch via
 /// [`accumulate_cost_sum`] so every supported [`CostKind`] runs through the
@@ -172,11 +111,12 @@ pub fn accumulate_cost_sum_forward_only_fused(
         return Err("Invalid record byte length (zero)".to_string());
     }
 
-    // Issue #121: validate the cost is dispatchable up-front so the inner
-    // par_iter can safely use `accumulate_cost_sum(...).unwrap()`. Every
-    // built-in cost dispatches today (Issue #134 wired the last one,
-    // `CATEGORICAL_ERROR`); the probe stays so a future kernel-only cost
-    // that surfaces an error here is caught before any bytes are read.
+    // Issue #121: validate the cost is dispatchable up-front. Every built-in
+    // cost dispatches today (Issue #134 wired the last one, `CATEGORICAL_ERROR`);
+    // the probe stays so a future kernel-only cost that surfaces an error here
+    // is caught before any bytes are read. Issue #200: the inner par_iter now
+    // propagates any per-chunk error via `?` rather than `.expect`, so a
+    // content-dependent failure also returns a clean `Err`.
     accumulate_cost_sum(
         cost,
         network,
@@ -221,171 +161,77 @@ pub fn accumulate_cost_sum_forward_only_fused(
     let mut parallel_activation_batches = 0_usize;
     let mut max_records_per_activation_batch = 0_usize;
 
-    for_each_read_chunk(bin_files, read_buf_len, |chunk| {
-        // Fast path: when nothing is buffered, score the aligned prefix of
-        // `chunk` directly and only copy any trailing fragment into `pending`.
-        // Saves a full memcpy through `pending` on the common path where the
-        // read buffer is a whole-record multiple. Issue #38.
-        if pending.is_empty() && head == 0 && !chunk.is_empty() {
-            let aligned_len = (chunk.len() / record_bytes) * record_bytes;
-            if aligned_len > 0 {
-                let num_f32 = aligned_len / 4;
-                let n_records = aligned_len / record_bytes;
-                max_records_per_activation_batch = max_records_per_activation_batch.max(n_records);
-                unpack_f32s_le(&chunk[..aligned_len], &mut unpack_floats, num_f32);
-
-                if unpack_floats.len() != n_records * values_per_record {
-                    return Err("Internal float unpack length mismatch".to_string());
-                }
-
-                total_records += n_records;
-                let chunk_sum = match &mut parallel_networks {
-                    Some(nets) => {
-                        let effective_workers = worker_count.min(n_records).max(1);
-                        if effective_workers > 1 {
-                            parallel_activation_batches += 1;
-                            let slices = partition_packed_records(
-                                &unpack_floats,
-                                values_per_record,
-                                n_records,
-                                effective_workers,
-                            );
-                            nets[..effective_workers]
-                                .par_iter_mut()
-                                .zip(slices)
-                                .map(|(net, slice)| {
-                                    // SAFETY: cost validated above — only
-                                    // dispatchable variants reach this point.
-                                    accumulate_cost_sum(
-                                        cost,
-                                        net,
-                                        slice,
-                                        config.num_inputs,
-                                        config.num_outputs,
-                                        true,
-                                    )
-                                    .expect("cost validated before stream loop")
-                                })
-                                .sum()
-                        } else {
+    // Score one whole-record slice teased out by the shared head-and-compact
+    // loop (`run_io_loop`, Issue #203). Issue #121 dispatches every supported
+    // cost through `accumulate_cost_sum`; Issue #200 propagates a per-slice cost
+    // error via `?` rather than `.expect` across a Rayon worker.
+    let mut score_chunk = |floats: &mut Vec<f32>, n_records: usize| -> Result<(), String> {
+        // Read-only consumer: borrow the unpack buffer as a slice in place.
+        let floats: &[f32] = floats;
+        if floats.len() != n_records * values_per_record {
+            return Err("Internal float unpack length mismatch".to_string());
+        }
+        max_records_per_activation_batch = max_records_per_activation_batch.max(n_records);
+        total_records += n_records;
+        let chunk_sum: f64 = match &mut parallel_networks {
+            Some(nets) => {
+                let effective_workers = worker_count.min(n_records).max(1);
+                if effective_workers > 1 {
+                    parallel_activation_batches += 1;
+                    let slices = partition_packed_records(
+                        floats,
+                        values_per_record,
+                        n_records,
+                        effective_workers,
+                    );
+                    let partials: Result<Vec<f64>, String> = nets[..effective_workers]
+                        .par_iter_mut()
+                        .zip(slices)
+                        .map(|(net, slice)| {
                             accumulate_cost_sum(
                                 cost,
-                                network,
-                                &unpack_floats,
+                                net,
+                                slice,
                                 config.num_inputs,
                                 config.num_outputs,
                                 true,
                             )
-                            .expect("cost validated before stream loop")
-                        }
-                    }
-                    None => accumulate_cost_sum(
+                        })
+                        .collect();
+                    partials?.into_iter().sum()
+                } else {
+                    accumulate_cost_sum(
                         cost,
                         network,
-                        &unpack_floats,
+                        floats,
                         config.num_inputs,
                         config.num_outputs,
                         true,
-                    )
-                    .expect("cost validated before stream loop"),
-                };
-                total_mse_sum += chunk_sum;
-            }
-            if aligned_len < chunk.len() {
-                // Buffer only the trailing fragment for the next call.
-                pending.extend_from_slice(&chunk[aligned_len..]);
-                // `head` stays at 0.
-            }
-            return Ok(());
-        }
-
-        // Slow path: residual bytes are buffered in `pending`; merge the new
-        // chunk and consume whole records from the head.
-        if !chunk.is_empty() {
-            pending.extend_from_slice(chunk);
-        }
-        compact_pending_if_needed(&mut pending, &mut head);
-
-        loop {
-            let avail = pending.len() - head;
-            let complete_len = (avail / record_bytes) * record_bytes;
-            if complete_len == 0 {
-                break;
-            }
-
-            let num_f32 = complete_len / 4;
-            let n_records = complete_len / record_bytes;
-            max_records_per_activation_batch = max_records_per_activation_batch.max(n_records);
-            let slice = &pending[head..head + complete_len];
-            unpack_f32s_le(slice, &mut unpack_floats, num_f32);
-
-            if unpack_floats.len() != n_records * values_per_record {
-                return Err("Internal float unpack length mismatch".to_string());
-            }
-
-            total_records += n_records;
-            let chunk_sum = match &mut parallel_networks {
-                Some(nets) => {
-                    let effective_workers = worker_count.min(n_records).max(1);
-                    if effective_workers > 1 {
-                        parallel_activation_batches += 1;
-                        let slices = partition_packed_records(
-                            &unpack_floats,
-                            values_per_record,
-                            n_records,
-                            effective_workers,
-                        );
-                        nets[..effective_workers]
-                            .par_iter_mut()
-                            .zip(slices)
-                            .map(|(net, slice)| {
-                                accumulate_cost_sum(
-                                    cost,
-                                    net,
-                                    slice,
-                                    config.num_inputs,
-                                    config.num_outputs,
-                                    true,
-                                )
-                                .expect("cost validated before stream loop")
-                            })
-                            .sum()
-                    } else {
-                        accumulate_cost_sum(
-                            cost,
-                            network,
-                            &unpack_floats,
-                            config.num_inputs,
-                            config.num_outputs,
-                            true,
-                        )
-                        .expect("cost validated before stream loop")
-                    }
+                    )?
                 }
-                None => accumulate_cost_sum(
-                    cost,
-                    network,
-                    &unpack_floats,
-                    config.num_inputs,
-                    config.num_outputs,
-                    true,
-                )
-                .expect("cost validated before stream loop"),
-            };
-            total_mse_sum += chunk_sum;
-            head += complete_len;
-        }
-
-        // Drop fully-consumed `pending` so the next iteration can take the
-        // fast path again. After the loop `head` may equal `pending.len()`
-        // (no trailing fragment); resetting both keeps `pending.is_empty()`
-        // true and avoids a wasteful compact next time round.
-        if head == pending.len() {
-            pending.clear();
-            head = 0;
-        }
-
+            }
+            None => accumulate_cost_sum(
+                cost,
+                network,
+                floats,
+                config.num_inputs,
+                config.num_outputs,
+                true,
+            )?,
+        };
+        total_mse_sum += chunk_sum;
         Ok(())
+    };
+
+    for_each_read_chunk(bin_files, read_buf_len, |chunk| {
+        run_io_loop(
+            chunk,
+            &mut pending,
+            &mut head,
+            &mut unpack_floats,
+            record_bytes,
+            &mut score_chunk,
+        )
     })?;
 
     if head != pending.len() {
@@ -406,37 +252,10 @@ pub fn accumulate_cost_sum_forward_only_fused(
 
 #[cfg(test)]
 mod tests {
-    use super::{partition_packed_records, unpack_f32s_le};
-
-    #[test]
-    fn unpack_f32s_le_decodes_exact_length_buffer() {
-        // Two little-endian f32s: 1.0 and -2.5.
-        let mut src = Vec::new();
-        src.extend_from_slice(&1.0_f32.to_le_bytes());
-        src.extend_from_slice(&(-2.5_f32).to_le_bytes());
-        let mut dst = Vec::new();
-        unpack_f32s_le(&src, &mut dst, 2);
-        assert_eq!(dst, vec![1.0_f32, -2.5_f32]);
-    }
-
-    #[test]
-    #[should_panic(expected = "unpack_f32s_le: src.len()")]
-    fn unpack_f32s_le_rejects_short_buffer_in_release() {
-        // Length 7 with n=2 means src.len() != n*4 (=8). Must panic in
-        // both debug and release builds (Issue #103) — never enter the
-        // unsafe loop with a short slice.
-        let src = vec![0u8; 7];
-        let mut dst = Vec::new();
-        unpack_f32s_le(&src, &mut dst, 2);
-    }
-
-    #[test]
-    #[should_panic(expected = "unpack_f32s_le: src.len()")]
-    fn unpack_f32s_le_rejects_oversize_buffer() {
-        let src = vec![0u8; 9];
-        let mut dst = Vec::new();
-        unpack_f32s_le(&src, &mut dst, 2);
-    }
+    // `unpack_f32s_le` (and its Issue #103 OOB `should_panic` tests) moved to
+    // the shared `crate::stream_io` module in Issue #203; the canonical copy of
+    // those tests now lives there.
+    use super::partition_packed_records;
 
     #[test]
     fn partition_packed_records_covers_all_and_balances() {

@@ -4,6 +4,8 @@
 //!
 //! Build: `cargo build --release -p rust_scorer --bin float_scan_bench`
 
+#[path = "../env_tuning.rs"]
+mod env_tuning;
 #[path = "../read_tuning.rs"]
 mod read_tuning;
 

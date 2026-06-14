@@ -118,6 +118,20 @@ pub fn accumulate_cost_sum(
     forward_only: bool,
 ) -> Result<f64, String> {
     use neat_core::loss;
+    // Issue #200: reject malformed chunks whose float length is not a whole
+    // number of packed records. The upstream `*_sum_batch_packed` helpers
+    // silently truncate a trailing partial record, so a content-dependent
+    // size mismatch would otherwise pass unnoticed. Surfacing a structured
+    // `Err` here lets the parallel per-chunk dispatch propagate the failure
+    // instead of relying on a panic (`.expect`) when such a case appears.
+    let values_per_record = input_size + num_outputs;
+    if values_per_record > 0 && chunk.len() % values_per_record != 0 {
+        return Err(format!(
+            "Malformed record chunk: {} float(s) is not a whole multiple of the {}-value record stride",
+            chunk.len(),
+            values_per_record
+        ));
+    }
     Ok(match kind {
         CostKind::Mse => {
             loss::mse_sum_batch_packed(network, chunk, input_size, num_outputs, forward_only)
@@ -318,6 +332,64 @@ mod tests {
         assert_eq!(
             via_dispatch, 2.0,
             "expected 2 misclassifications, got {via_dispatch}"
+        );
+    }
+
+    /// Issue #200: a malformed chunk whose float length is not a whole
+    /// multiple of the record stride must return a structured `Err` rather
+    /// than silently truncating or panicking. This is the per-chunk error
+    /// path that the parallel dispatch loops now propagate via `?`/`collect`
+    /// instead of `.expect`.
+    #[test]
+    fn accumulate_cost_sum_rejects_malformed_chunk() {
+        use neat_core::creature::{compile_creature, parse_creature_json};
+        let json = r#"{"input":1,"output":1,"forwardOnly":true,"neurons":[
+            {"type":"output","uuid":"output-0","bias":0.0,"squash":"IDENTITY"}
+        ],"synapses":[
+            {"fromUUID":"input-0","toUUID":"output-0","weight":1.0}
+        ]}"#;
+        let creature = parse_creature_json(json).unwrap();
+        let mut net = compile_creature(&creature).unwrap();
+        // Stride is 2 (1 input + 1 output); 3 floats is one-and-a-half records.
+        let chunk = vec![0.5_f32, 0.5_f32, 0.25_f32];
+        let err = accumulate_cost_sum(CostKind::Mse, &mut net, &chunk, 1, 1, true)
+            .expect_err("misaligned chunk must be rejected");
+        assert!(
+            err.contains("Malformed record chunk"),
+            "error must name the malformed chunk, got: {err}"
+        );
+    }
+
+    /// Issue #200: an error returned by `accumulate_cost_sum` inside a Rayon
+    /// parallel closure must surface as a clean `Err` (via `collect` into a
+    /// `Result`) instead of aborting the process with a panic. This locks the
+    /// propagation mechanism used by the per-chunk dispatch in `multi_score`
+    /// and `stream_score`.
+    #[test]
+    fn accumulate_cost_sum_error_propagates_through_rayon() {
+        use neat_core::creature::{compile_creature, parse_creature_json};
+        use rayon::prelude::*;
+        let json = r#"{"input":1,"output":1,"forwardOnly":true,"neurons":[
+            {"type":"output","uuid":"output-0","bias":0.0,"squash":"IDENTITY"}
+        ],"synapses":[
+            {"fromUUID":"input-0","toUUID":"output-0","weight":1.0}
+        ]}"#;
+        let creature = parse_creature_json(json).unwrap();
+        let mut nets = vec![
+            compile_creature(&creature).unwrap(),
+            compile_creature(&creature).unwrap(),
+        ];
+        // Worker 0 gets a valid aligned slice; worker 1 gets a malformed one.
+        let slices: Vec<&[f32]> = vec![&[0.5_f32, 0.5_f32], &[0.25_f32]];
+        let collected: Result<Vec<f64>, String> = nets
+            .par_iter_mut()
+            .zip(slices)
+            .map(|(net, slice)| accumulate_cost_sum(CostKind::Mse, net, slice, 1, 1, true))
+            .collect();
+        let err = collected.expect_err("malformed slice must propagate as Err, not panic");
+        assert!(
+            err.contains("Malformed record chunk"),
+            "propagated error must name the malformed chunk, got: {err}"
         );
     }
 
