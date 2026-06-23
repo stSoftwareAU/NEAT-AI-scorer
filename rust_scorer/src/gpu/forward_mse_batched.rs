@@ -225,7 +225,9 @@ pub fn build_batched_network_data(
         for s in &net.synapses {
             synapses.push(SynapseGpu {
                 weight: s.weight,
-                from_index: s.from_index,
+                // neat-core narrowed `from_index` to u16 (neat-core #177); the
+                // GPU SSBO layout and WGSL shaders require u32, so widen here.
+                from_index: u32::from(s.from_index),
             });
         }
 
