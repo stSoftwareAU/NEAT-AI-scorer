@@ -225,7 +225,9 @@ pub fn build_batched_network_data(
         for s in &net.synapses {
             synapses.push(SynapseGpu {
                 weight: s.weight,
-                from_index: s.from_index,
+                // neat-core Issue #177 narrowed SynapseData::from_index to u16;
+                // the GPU mirror (and its WGSL shaders) keep it as u32, so widen.
+                from_index: u32::from(s.from_index),
             });
         }
 
