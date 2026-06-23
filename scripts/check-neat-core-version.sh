@@ -132,10 +132,10 @@ parse_semver() {
   if [[ ! "$core" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
     return 1
   fi
-  local IFS='.'
-  # shellcheck disable=SC2086
-  set -- $core
-  echo "$1 $2 $3"
+  local major minor patch
+  # Scope IFS to this single read rather than tampering with it globally.
+  IFS='.' read -r major minor patch <<<"$core"
+  echo "$major $minor $patch"
 }
 
 baseline_raw="$(read_baseline_version)"
