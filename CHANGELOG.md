@@ -17,6 +17,18 @@ section to the released version with its date.
 
 ### Added
 
+- **CI gate against an unhandled breaking neat-core bump (Issue #252).** The
+  `neat-core` dependency stays an unpinned `path` dependency that tracks head
+  (kept by design), so a new version-baseline gate now guards against silently
+  consuming a breaking change. Scorer records the last-handled neat-core
+  version in the checked-in `neat-core.expected-version` file;
+  `scripts/check-neat-core-version.sh` (run in the CI `validation` job and
+  locally via `./quality.sh`) reads the sibling
+  `../NEAT-AI-core/Cargo.toml` `[workspace.package] version` and **fails**
+  when neat-core's breaking component (major for `>= 1.0`, minor for pre-1.0)
+  exceeds the baseline — forcing a deliberate upgrade. Documented in the
+  README and CONTRIBUTING; covered by `tests/scripts/neat_core_version_gate.bats`.
+
 - **stderr note when a non-MSE `--cost` forces CPU fallback in directory
   mode (Issue #205).** Under the default `--gpu auto`, selecting a non-MSE
   `--cost` makes `auto_should_use_gpu` return false, so the directory path

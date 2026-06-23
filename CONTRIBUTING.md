@@ -23,6 +23,16 @@ parent/
   NEAT-AI-scorer/    # this repository
 ```
 
+The `neat-core` path dependency is **unpinned** and tracks head, so a
+**breaking** neat-core change can reach scorer silently. CI guards against
+this with the **neat-core breaking-bump gate** (`scripts/check-neat-core-version.sh`):
+it fails when neat-core's breaking component (major for `>= 1.0`, minor for
+pre-1.0) climbs above the version recorded in
+[`neat-core.expected-version`](./neat-core.expected-version). When the gate
+fails, update `rust_scorer` for the breaking change and bump that baseline
+file in the same PR. See the README "neat-core breaking-bump gate" section
+for the full rationale.
+
 ## Prerequisites
 
 The local gate and CI expect the following tools on your `PATH`:
