@@ -225,7 +225,7 @@ pub fn build_batched_network_data(
         for s in &net.synapses {
             synapses.push(SynapseGpu {
                 weight: s.weight,
-                from_index: s.from_index,
+                from_index: u32::from(s.from_index),
             });
         }
 
