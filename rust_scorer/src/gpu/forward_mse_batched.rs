@@ -225,7 +225,9 @@ pub fn build_batched_network_data(
         for s in &net.synapses {
             synapses.push(SynapseGpu {
                 weight: s.weight,
-                from_index: s.from_index,
+                // neat-core's SynapseExport.from_index is u16; the GPU/WGSL
+                // mirror is u32 (WGSL has no 16-bit int), so widen here.
+                from_index: u32::from(s.from_index),
             });
         }
 
