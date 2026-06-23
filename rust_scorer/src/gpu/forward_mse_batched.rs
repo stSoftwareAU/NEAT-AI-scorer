@@ -225,7 +225,9 @@ pub fn build_batched_network_data(
         for s in &net.synapses {
             synapses.push(SynapseGpu {
                 weight: s.weight,
-                from_index: s.from_index,
+                // neat-core #177 narrowed `SynapseData::from_index` to `u16`;
+                // the GPU/WGSL layout keeps `from_index` as `u32`, so widen here.
+                from_index: u32::from(s.from_index),
             });
         }
 
@@ -908,6 +910,29 @@ mod tests {
 
         assert_eq!(data.num_inputs, 1);
         assert_eq!(data.num_outputs, 1);
+    }
+
+    #[test]
+    fn build_batched_network_data_widens_from_index_to_u32() {
+        // Regression for #250: neat-core #177 narrowed `SynapseData::from_index`
+        // to `u16`, while the GPU/WGSL `SynapseGpu` layout keeps it as `u32`.
+        // `build_batched_network_data` must widen losslessly at the upload
+        // boundary, so every `SynapseGpu.from_index` equals the `u32` widening
+        // of the source network's `u16` `from_index`.
+        let net = synthetic_creature(2, 1, 2);
+        let expected: Vec<u32> = net
+            .synapses
+            .iter()
+            .map(|s| u32::from(s.from_index))
+            .collect();
+
+        let data = build_batched_network_data(&[net], 2, 1).expect("supported squash types");
+
+        let actual: Vec<u32> = data.synapses.iter().map(|s| s.from_index).collect();
+        assert_eq!(
+            actual, expected,
+            "from_index must be widened u16 -> u32 unchanged"
+        );
     }
 
     #[test]
