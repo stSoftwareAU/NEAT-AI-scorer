@@ -225,7 +225,9 @@ pub fn build_batched_network_data(
         for s in &net.synapses {
             synapses.push(SynapseGpu {
                 weight: s.weight,
-                from_index: s.from_index,
+                // neat-core stores `from_index` as u16 (≤ u16::MAX); the GPU
+                // mirror and WGSL shader use u32, so widen explicitly.
+                from_index: u32::from(s.from_index),
             });
         }
 
