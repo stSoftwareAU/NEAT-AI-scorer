@@ -38,6 +38,16 @@ echo "🦀 Validating pinned rust-toolchain.toml (Issue #209)..."
 echo "🔗 Validating NEAT-AI-core checkout path strategy in workflows..."
 ./scripts/check-workflow-paths.sh
 
+echo "🚧 Gating on unhandled breaking neat-core bump (Issue #252)..."
+# Mirrors the CI `validation` job step. Runs only when the sibling neat-core
+# clone is present (CI always has it; local checkouts may not), so a missing
+# sibling does not block an otherwise valid local gate run.
+if [ -f "./../NEAT-AI-core/Cargo.toml" ]; then
+  ./scripts/check-neat-core-version.sh
+else
+  echo "   ⚠️  sibling ../NEAT-AI-core not found — skipping (CI runs this for real)"
+fi
+
 echo "🔐 Validating Gitleaks workflow hardening (Issue #21)..."
 ./scripts/check-gitleaks-workflow.sh
 

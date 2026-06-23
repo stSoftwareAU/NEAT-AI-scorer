@@ -223,6 +223,7 @@ jobs:
             "rust_scorer/src/main.rs"
             ".github/CODEOWNERS"
             "SECURITY.md"
+            "neat-core.expected-version"
           )
           missing_files=()
           for file in "${required_files[@]}"; do
@@ -237,6 +238,16 @@ jobs:
 
       - name: Validate Cargo workspace
         run: cargo metadata --no-deps --format-version 1 > /dev/null
+
+      # Gate against an unhandled breaking neat-core bump (Issue #252). scorer
+      # keeps the unpinned `path` dependency that tracks head, so this step
+      # fails the build when the sibling neat-core's breaking component (major
+      # for >= 1.0, minor for pre-1.0) climbs above the recorded baseline in
+      # neat-core.expected-version — forcing a deliberate upgrade rather than
+      # tracking head blindly. Reuses the neat-core checkout + sibling symlink
+      # above; the default manifest path resolves via that symlink.
+      - name: Gate on unhandled breaking neat-core bump
+        run: ./scripts/check-neat-core-version.sh
 
   shell-checks:
     name: Shell Script Quality
