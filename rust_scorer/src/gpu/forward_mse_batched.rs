@@ -913,6 +913,29 @@ mod tests {
     }
 
     #[test]
+    fn build_batched_network_data_widens_from_index_to_u32() {
+        // Regression for #250: neat-core #177 narrowed `SynapseData::from_index`
+        // to `u16`, while the GPU/WGSL `SynapseGpu` layout keeps it as `u32`.
+        // `build_batched_network_data` must widen losslessly at the upload
+        // boundary, so every `SynapseGpu.from_index` equals the `u32` widening
+        // of the source network's `u16` `from_index`.
+        let net = synthetic_creature(2, 1, 2);
+        let expected: Vec<u32> = net
+            .synapses
+            .iter()
+            .map(|s| u32::from(s.from_index))
+            .collect();
+
+        let data = build_batched_network_data(&[net], 2, 1).expect("supported squash types");
+
+        let actual: Vec<u32> = data.synapses.iter().map(|s| s.from_index).collect();
+        assert_eq!(
+            actual, expected,
+            "from_index must be widened u16 -> u32 unchanged"
+        );
+    }
+
+    #[test]
     fn build_batched_network_data_rejects_unsupported_squash() {
         // Build a creature with an unsupported aggregate squash (MEAN = 37).
         // We can't easily construct one through the public JSON path because

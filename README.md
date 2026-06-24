@@ -331,6 +331,46 @@ warning.
 
 Place **NEAT-AI-core** and **NEAT-AI-scorer** as **siblings** (e.g. `…/src/NEAT-AI-core` and `…/src/NEAT-AI-scorer`). The path in `rust_scorer/Cargo.toml` is `../../NEAT-AI-core/neat-core` so `cargo build` resolves `neat-core` from your local **NEAT-AI-core** tree. CI does the same via a second checkout (`../NEAT-AI-core`).
 
+### neat-core breaking-bump gate (Issue #252)
+
+The `neat-core` dependency is an **unpinned `path` dependency that always
+tracks head** — there is no version to pin (kept by design). To stop scorer
+from silently tracking a **breaking** neat-core change, CI runs a
+version-baseline gate:
+
+- Scorer records the **last-handled** neat-core version in the checked-in
+  [`neat-core.expected-version`](./neat-core.expected-version) file.
+- CI reads neat-core's actual version from the cloned sibling
+  `../NEAT-AI-core/Cargo.toml` (`[workspace.package] version`).
+- The **breaking component** follows SemVer: the **major** for `>= 1.0`
+  releases, the **minor** for pre-1.0 (`0.x`) releases. The gate **fails**
+  when neat-core's breaking component is **greater** than the recorded
+  baseline, and **passes** on patch-level drift or an exact match.
+
+This is what would have caught the neat-core breaking type change
+(NEAT-AI-core #177) before the build broke.
+
+**How to clear the gate** when it fails — in a single deliberate PR:
+
+1. Update `rust_scorer` for the breaking neat-core change.
+2. Bump the recorded version in
+   [`neat-core.expected-version`](./neat-core.expected-version) to match the
+   new neat-core version.
+
+The gate runs as a step in the CI `validation` job and locally via
+`./quality.sh` (the script is `scripts/check-neat-core-version.sh`; it skips
+locally when no sibling `../NEAT-AI-core` clone is present).
+
+```mermaid
+flowchart TD
+    A[CI: read neat-core Cargo.toml version] --> B[read neat-core.expected-version baseline]
+    B --> C{breaking component<br/>greater than baseline?}
+    C -->|"yes (major ↑, or pre-1.0 minor ↑)"| D[FAIL: deliberate upgrade required]
+    C -->|"no (match / patch drift)"| E[PASS]
+    D --> F[update rust_scorer + bump baseline]
+    F --> E
+```
+
 ## Relationship to NEAT-AI
 
 Scorer-specific Rust stays here; **`neat-core`** tracks **NEAT-AI-core**.
