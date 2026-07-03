@@ -55,7 +55,7 @@ sequenceDiagram
 
 Test output:
 
-```
+```text
 running 3 tests
 test gpu::forward_mse_batched::tests::map_readback_result_ok_on_successful_map ... ok
 test gpu::forward_mse_batched::tests::map_readback_result_err_on_dropped_sender ... ok
