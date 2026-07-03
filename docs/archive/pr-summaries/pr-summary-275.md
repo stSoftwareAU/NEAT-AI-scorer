@@ -60,7 +60,7 @@ Backend/CLI change with no web interface to screenshot. The evidence is the
 doctest run: `cargo test --doc -p rust_scorer` reports **17 passed; 0 failed**
 (13 executed with assertions, 4 `no_run` compile-checked):
 
-```
+```text
 running 17 tests
 test rust_scorer/src/cost.rs - cost::CostKind::from_cli ... ok
 test rust_scorer/src/cost.rs - cost::accumulate_cost_sum ... ok
@@ -74,7 +74,7 @@ test result: ok. 17 passed; 0 failed; 0 ignored
 `./quality.sh` passes cleanly (fmt, cargo-deny, clippy, check, build, test,
 rustdoc with `RUSTDOCFLAGS=-D warnings`, release build):
 
-```
+```text
 ✅ All quality checks passed!
 ```
 
