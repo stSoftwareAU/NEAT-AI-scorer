@@ -28,6 +28,16 @@ const MAX_ACTIVATION_WORKERS: usize = 64;
 
 /// Parsed `NEAT_SCORER_ACTIVATION_THREADS`: missing defaults to all available CPUs.
 /// Clamped to `[1, MAX_ACTIVATION_WORKERS]`.
+///
+/// # Examples
+///
+/// ```
+/// use rust_scorer::stream_score::activation_worker_count_for_scorer;
+///
+/// // Always at least one worker and never above the internal cap of 64.
+/// let workers = activation_worker_count_for_scorer();
+/// assert!((1..=64).contains(&workers));
+/// ```
 pub fn activation_worker_count_for_scorer() -> usize {
     // Unset/blank/malformed all resolve to "all available CPUs"; a malformed
     // value additionally warns instead of falling back silently (Issue #204).
@@ -53,6 +63,18 @@ pub fn activation_worker_count_for_scorer() -> usize {
 /// (capped like the core I/O tuner) so `pending` can hold two whole records per activation batch.
 /// Otherwise each read often yields only one complete record when `record_bytes` is large, and
 /// parallel activation never runs (`parallelActivationBatches: 0`).
+///
+/// # Examples
+///
+/// ```
+/// use rust_scorer::stream_score::effective_fused_read_buf_len;
+///
+/// // The buffer is always a whole number of records and holds at least one.
+/// let record_bytes = 256;
+/// let len = effective_fused_read_buf_len(record_bytes, 4096);
+/// assert_eq!(len % record_bytes, 0);
+/// assert!(len >= record_bytes);
+/// ```
 pub fn effective_fused_read_buf_len(record_bytes: usize, target_read_bytes: usize) -> usize {
     let rb = record_bytes.max(1);
     let worker_count = activation_worker_count_for_scorer();
@@ -99,6 +121,36 @@ fn partition_packed_records(
 /// seen in one activation call (diagnostic: if it stays `1` while `parallel_activation_batches`
 /// is `0`, each read chunk holds at most one full record — raise **`NEAT_SCORER_READ_BYTES`**
 /// so multiple records fit in `pending` at once).
+///
+/// # Examples
+///
+/// ```no_run
+/// use std::path::PathBuf;
+/// use rust_scorer::cost::CostKind;
+/// use rust_scorer::stream_score::accumulate_cost_sum_forward_only_fused;
+/// use neat_core::creature::{compile_creature, parse_creature_json};
+/// use neat_core::training_data::TrainingDataConfig;
+///
+/// let creature = parse_creature_json(&std::fs::read_to_string("creature.json").unwrap()).unwrap();
+/// let mut network = compile_creature(&creature).unwrap();
+/// let config = TrainingDataConfig {
+///     num_inputs: creature.input,
+///     num_outputs: creature.output,
+/// };
+/// let bin_files = vec![PathBuf::from("data/train.bin")];
+///
+/// let (loss_sum, records, _batches, _max_batch, _clone_secs) =
+///     accumulate_cost_sum_forward_only_fused(
+///         CostKind::Mse,
+///         &bin_files,
+///         &config,
+///         &creature,
+///         &mut network,
+///     )
+///     .unwrap();
+/// let mean_error = loss_sum / records as f64;
+/// println!("mean error = {mean_error}");
+/// ```
 pub fn accumulate_cost_sum_forward_only_fused(
     cost: CostKind,
     bin_files: &[std::path::PathBuf],

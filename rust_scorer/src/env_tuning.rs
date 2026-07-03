@@ -17,6 +17,22 @@
 ///
 /// The caller is responsible for emitting the warning (so this stays pure and
 /// unit-testable without touching process state or capturing stderr).
+///
+/// # Examples
+///
+/// ```
+/// use rust_scorer::env_tuning::parse_tuning_var;
+///
+/// let parse = |s: &str| s.parse::<usize>().ok();
+/// // An unset knob falls back to the default silently.
+/// let (value, warning) = parse_tuning_var("NEAT_SCORER_READ_BYTES", None, 42, parse);
+/// assert_eq!(value, 42);
+/// assert!(warning.is_none());
+/// // A set-but-malformed value returns the default plus a diagnostic.
+/// let (value, warning) = parse_tuning_var("NEAT_SCORER_READ_BYTES", Some("2MB"), 42, parse);
+/// assert_eq!(value, 42);
+/// assert!(warning.is_some());
+/// ```
 pub fn parse_tuning_var<T, F>(
     name: &str,
     raw: Option<&str>,

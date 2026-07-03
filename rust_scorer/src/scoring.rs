@@ -24,6 +24,19 @@ pub const SEMANTIC_MAJOR_VERSION: u32 = 4;
 /// arbitrary creature JSON — so malformed input yields a structured error
 /// rather than a release-build panic (Issue #201). The remaining bounds are
 /// pure internal-math invariants and stay as `debug_assert!`.
+///
+/// # Examples
+///
+/// ```
+/// use rust_scorer::scoring::value_penalty;
+/// // Magnitudes at or below 1.0 carry no penalty.
+/// assert_eq!(value_penalty(1.0).unwrap(), 0.0);
+/// // Larger magnitudes approach — but never reach — 1.0.
+/// let p = value_penalty(10.0).unwrap();
+/// assert!(p > 0.0 && p < 1.0);
+/// // Negative input is rejected.
+/// assert!(value_penalty(-1.0).is_err());
+/// ```
 pub fn value_penalty(value: f64) -> Result<f64, String> {
     if value < 0.0 {
         return Err(format!("value_penalty: value {value} is negative"));
@@ -99,6 +112,38 @@ pub struct ScoreComponents {
 /// values come straight from user-supplied creature JSON, so a NaN/inf weight
 /// or bias yields a structured error instead of a release-build panic
 /// (Issue #201).
+///
+/// # Examples
+///
+/// ```
+/// use rust_scorer::scoring::compute_score_components;
+/// use neat_core::creature::{CreatureExport, NeuronExport, SynapseExport};
+///
+/// let creature = CreatureExport {
+///     input: 1,
+///     output: 1,
+///     neurons: vec![NeuronExport {
+///         neuron_type: "output".to_string(),
+///         uuid: "output-0".to_string(),
+///         bias: -0.3,
+///         squash: Some("IDENTITY".to_string()),
+///     }],
+///     synapses: vec![SynapseExport {
+///         from_uuid: "input-0".to_string(),
+///         to_uuid: "output-0".to_string(),
+///         weight: 2.0,
+///         synapse_type: None,
+///     }],
+///     semantic_version: Some("4.0.0".to_string()),
+///     forward_only: true,
+/// };
+///
+/// let components = compute_score_components(&creature).unwrap();
+/// assert_eq!(components.synapse_count, 1);
+/// assert_eq!(components.hidden_neuron_count, 0);
+/// // Max absolute weight/bias across `{2.0, 0.3}` is `2.0`.
+/// assert!((components.max_weight_bias - 2.0).abs() < 1e-12);
+/// ```
 pub fn compute_score_components(creature: &CreatureExport) -> Result<ScoreComponents, String> {
     let mut max_weight_bias: f64 = 0.0;
     let mut total_weight_bias: f64 = 0.0;
@@ -189,6 +234,22 @@ pub fn compute_score_components(creature: &CreatureExport) -> Result<ScoreCompon
 /// The weight/bias term routes through `calculate_penalty` (which validates
 /// finiteness), so every call site shares the same numerical behaviour and the
 /// same structured-error propagation (Issue #201).
+///
+/// # Examples
+///
+/// ```
+/// use rust_scorer::scoring::{ScoreComponents, complexity_penalty};
+///
+/// let components = ScoreComponents {
+///     hidden_neuron_count: 2,
+///     synapse_count: 4,
+///     max_weight_bias: 1.5,
+///     avg_weight_bias: 0.75,
+///     squash_complexity_penalty: 0.0,
+/// };
+/// let penalty = complexity_penalty(&components, 0.01).unwrap();
+/// assert!(penalty > 0.0);
+/// ```
 pub fn complexity_penalty(components: &ScoreComponents, growth_cost: f64) -> Result<f64, String> {
     let weight_bias_penalty =
         calculate_penalty(components.max_weight_bias, components.avg_weight_bias)?;
@@ -213,6 +274,27 @@ pub fn complexity_penalty(components: &ScoreComponents, growth_cost: f64) -> Res
 /// rather than a release-build panic (Issue #201). The `score <= 1.0` bound is
 /// a pure internal-math invariant (guaranteed once `error >= 0` and the
 /// penalties are non-negative) and stays as `debug_assert!`.
+///
+/// # Examples
+///
+/// ```
+/// use rust_scorer::scoring::{ScoreComponents, calculate_score};
+///
+/// let components = ScoreComponents {
+///     hidden_neuron_count: 0,
+///     synapse_count: 0,
+///     max_weight_bias: 0.0,
+///     avg_weight_bias: 0.0,
+///     squash_complexity_penalty: 0.0,
+/// };
+/// // Zero error, no complexity, current major version → a perfect score of 1.0.
+/// let score = calculate_score(0.0, &components, 0.01, Some("4.1.0")).unwrap();
+/// assert!((score - 1.0).abs() < 1e-12);
+/// // An off-version creature pays a tiny version penalty.
+/// assert!(calculate_score(0.0, &components, 0.01, Some("3.0.0")).unwrap() < 1.0);
+/// // A negative average error is rejected.
+/// assert!(calculate_score(-0.1, &components, 0.01, None).is_err());
+/// ```
 pub fn calculate_score(
     error: f64,
     components: &ScoreComponents,

@@ -189,6 +189,26 @@ fn workers_per_creature(n_creatures: usize, activation_threads: usize) -> Vec<us
 /// `cost` is the resolved loss function dispatched through
 /// [`accumulate_cost_sum`] inside the per-chunk hot loop. Returns `Err` with a
 /// human-readable message on I/O, shape, or cost-resolution failure.
+///
+/// # Examples
+///
+/// ```no_run
+/// use std::path::Path;
+/// use rust_scorer::cost::CostKind;
+/// use rust_scorer::gpu::GpuBackendLabel;
+/// use rust_scorer::multi_score::score_from_creature_dir;
+///
+/// let scores = score_from_creature_dir(
+///     Path::new("creatures/"),
+///     Path::new("training_data/"),
+///     GpuBackendLabel::CpuFallback,
+///     CostKind::Mse,
+/// )
+/// .unwrap();
+/// for (id, result) in &scores {
+///     println!("{id}: score = {}", result.score);
+/// }
+/// ```
 pub fn score_from_creature_dir(
     creatures_dir: &Path,
     data_path: &Path,
@@ -464,6 +484,18 @@ pub fn score_from_creature_dir(
 ///   GPU-incompatibility: they are left for the normal scoring path to surface
 ///   with its existing, precise error message (e.g. shape mismatch,
 ///   `forwardOnly=false`).
+///
+/// # Examples
+///
+/// ```no_run
+/// use std::path::Path;
+/// use rust_scorer::multi_score::gpu_directory_compatible;
+///
+/// match gpu_directory_compatible(Path::new("creatures/")) {
+///     Ok(()) => println!("set is GPU-hostable (or deferred to the scoring path)"),
+///     Err(reason) => println!("must fall back to CPU: {reason}"),
+/// }
+/// ```
 pub fn gpu_directory_compatible(creatures_dir: &Path) -> Result<(), String> {
     // A load failure here (missing dir, shape mismatch, forwardOnly=false, …)
     // is not a GPU-hostability question — return Ok so the real scoring path
@@ -511,6 +543,29 @@ pub fn gpu_directory_compatible(creatures_dir: &Path) -> Result<(), String> {
 /// path, with `gpuKernel` (`forward_mse_batched` for creatures within the 256
 /// cap, `forward_mse_scratch` above it — Issue #182), `gpuInflightChunks`, and
 /// `gpuDispatchCount` populated for every entry.
+///
+/// # Examples
+///
+/// ```no_run
+/// use std::path::Path;
+/// use std::sync::Arc;
+/// use rust_scorer::cost::CostKind;
+/// use rust_scorer::gpu::{GpuBackendLabel, select_adapter};
+/// use rust_scorer::multi_score::score_from_creature_dir_gpu;
+///
+/// // A real adapter is required — this only runs on a GPU-capable host.
+/// let ctx = Arc::new(select_adapter().unwrap().expect("a compatible GPU adapter"));
+/// let scores = score_from_creature_dir_gpu(
+///     Path::new("creatures/"),
+///     Path::new("training_data/"),
+///     GpuBackendLabel::Metal,
+///     ctx,
+///     2, // pipelined dispatches
+///     CostKind::Mse,
+/// )
+/// .unwrap();
+/// println!("scored {} creatures on the GPU", scores.len());
+/// ```
 pub fn score_from_creature_dir_gpu(
     creatures_dir: &Path,
     data_path: &Path,
