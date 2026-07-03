@@ -67,6 +67,24 @@ flowchart LR
 
 The pin is validated by `scripts/check-rust-toolchain.sh` (invoked from `quality.sh`) and covered end-to-end by `tests/scripts/rust_toolchain.bats`. The validator rejects a floating channel (`stable`/`beta`/`nightly`) or a missing `rustfmt`/`clippy` component.
 
+### Crate-level rustc lint hardening (Issue #274)
+
+The gate configures Clippy lints, but rustc's own (`rust`) lint groups need denying at the **source tree** too. Relying solely on a CI `-D warnings` flag leaves the tree itself unhardened, so a local build or a differently-configured CI step would not catch a regression at the point it is introduced. The root [`Cargo.toml`](./Cargo.toml) adds a `[workspace.lints.rust]` table (inherited by the crate via `[lints] workspace = true`):
+
+```toml
+[workspace.lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+unused = "deny"
+```
+
+- **`unsafe_op_in_unsafe_fn`** — the crate uses `unsafe` in hot paths (`rust_scorer/src/stream_io.rs`, `rust_scorer/src/cost.rs`); denying this stops an unguarded unsafe operation inside an `unsafe fn` slipping in silently.
+- **`unused`** — dead code and unused imports fail the build rather than reaching `Develop`.
+- **`missing_docs`** is scoped to the **library surface** via `#![warn(missing_docs)]` in [`rust_scorer/src/lib.rs`](./rust_scorer/src/lib.rs) rather than the workspace table, because the binary targets are doc-noisy. Under the gate's `-D warnings` it enforces doc discipline on the public API exposed to benches and integration tests.
+
+Per-lint denies are used deliberately in place of a blanket `#![deny(warnings)]` so a future compiler warning does not break the build unexpectedly.
+
+The posture is validated by `scripts/check-rust-lints.sh` (invoked from `quality.sh`) and covered end-to-end by `tests/scripts/rust_lints.bats`. The validator fails if the `[workspace.lints.rust]` table is dropped, if either lint stops being denied, if a blanket `warnings` lint is introduced, or if the `missing_docs` scoping is removed from the library root.
+
 ### Spell check
 
 CI runs `codespell` via `scripts/spell-check.sh`; the same script is invoked by `./quality.sh`, so the local gate and CI stay in lock-step. Reproduce the CI spell check at any time with:

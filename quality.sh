@@ -35,6 +35,9 @@ echo "shellcheck: all scripts passed"
 echo "🦀 Validating pinned rust-toolchain.toml (Issue #209)..."
 ./scripts/check-rust-toolchain.sh
 
+echo "🛡️  Validating crate-level rustc lint hardening (Issue #274)..."
+./scripts/check-rust-lints.sh
+
 echo "🔗 Validating NEAT-AI-core checkout path strategy in workflows..."
 ./scripts/check-workflow-paths.sh
 

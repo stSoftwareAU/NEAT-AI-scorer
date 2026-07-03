@@ -17,6 +17,18 @@ section to the released version with its date.
 
 ### Added
 
+- **Crate-level rustc lint hardening (Issue #274).** The workspace previously
+  configured only Clippy lints, leaving rustc's own (`rust`) lint groups
+  unenforced at the source-tree level. The root `Cargo.toml` now declares a
+  `[workspace.lints.rust]` table denying `unsafe_op_in_unsafe_fn` and `unused`
+  (inherited by `rust_scorer` via `[lints] workspace = true`), and
+  `rust_scorer/src/lib.rs` adds `#![warn(missing_docs)]` scoped to the library
+  surface (the binary targets are doc-noisy). Per-lint denies are used instead
+  of a blanket `#![deny(warnings)]` so a future compiler warning does not break
+  the build unexpectedly. The posture is validated by
+  `scripts/check-rust-lints.sh` (run locally via `./quality.sh`) and covered
+  end-to-end by `tests/scripts/rust_lints.bats`. Documented in the README.
+
 - **CI gate against an unhandled breaking neat-core bump (Issue #252).** The
   `neat-core` dependency stays an unpinned `path` dependency that tracks head
   (kept by design), so a new version-baseline gate now guards against silently

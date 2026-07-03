@@ -115,10 +115,15 @@ pub struct CreatureMetaGpu {
 /// Concatenated per-creature data ready for upload.
 #[derive(Debug, Default)]
 pub struct BatchedNetworkData {
+    /// All creatures' neurons concatenated into one upload buffer.
     pub neurons: Vec<NeuronGpu>,
+    /// All creatures' synapses concatenated into one upload buffer.
     pub synapses: Vec<SynapseGpu>,
+    /// Per-creature metadata indexing into `neurons`/`synapses`.
     pub creatures: Vec<CreatureMetaGpu>,
+    /// Input count shared by every creature in the batch.
     pub num_inputs: u32,
+    /// Output count shared by every creature in the batch.
     pub num_outputs: u32,
 }
 
@@ -135,7 +140,9 @@ pub enum GpuPrepareError {
     /// above the 256-neuron private-array cap are *not* rejected: they route to
     /// the `forward_mse_scratch` kernel.
     TooManyNeurons {
+        /// Index of the offending creature within the batch.
         creature_idx: usize,
+        /// The rejected neuron count that exceeded [`MAX_NEURONS_ABSOLUTE`].
         num_neurons: usize,
     },
     /// Every creature must share the same `(num_inputs, num_outputs)` shape
@@ -268,6 +275,7 @@ pub enum KernelKind {
 /// per-creature SSBOs and the bind-group layout, and lazily grows the records
 /// and partials staging buffers as chunks come in.
 pub struct BatchedRunner {
+    /// Shared GPU context (device + queue) this runner submits work to.
     pub ctx: Arc<GpuContext>,
     pipeline: wgpu::ComputePipeline,
     bind_group_layout: wgpu::BindGroupLayout,

@@ -245,11 +245,17 @@ pub fn calculate_score(
 #[derive(Debug, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ScoreResult {
+    /// Final fitness score (`1.0 - error - complexity_penalty - version_penalty`).
     pub score: f64,
+    /// Mean cost/error of the creature over the training records.
     pub error: f64,
+    /// Penalty applied for network complexity (neurons + synapses).
     pub complexity_penalty: f64,
+    /// Number of training records scored.
     pub record_count: usize,
+    /// Count of hidden neurons in the creature.
     pub hidden_neurons: usize,
+    /// Count of synapses in the creature.
     pub synapse_count: usize,
     /// Creature JSON `forwardOnly` — must be `true` for fused + pipelined `.bin` scoring.
     #[serde(rename = "forwardOnly")]
