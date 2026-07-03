@@ -117,7 +117,9 @@ fn run_parity(
         "creature with {total_neurons} neurons routed to the wrong kernel",
     );
 
-    let gpu_sums = runner.score_chunk(&records, n_records);
+    let gpu_sums = runner
+        .score_chunk(&records, n_records)
+        .expect("GPU readback should succeed in parity fixture");
 
     assert_eq!(cpu_sums.len(), gpu_sums.len());
     for (i, (cpu, gpu)) in cpu_sums.iter().zip(gpu_sums.iter()).enumerate() {

@@ -609,7 +609,7 @@ pub fn score_from_creature_dir_gpu(
                 return Err("Internal float unpack length mismatch".to_string());
             }
             total_records += n_records;
-            let sums = runner.score_chunk(floats, n_records);
+            let sums = runner.score_chunk(floats, n_records)?;
             for (i, s) in sums.iter().enumerate() {
                 total_mse[i] += s;
             }
@@ -648,7 +648,16 @@ pub fn score_from_creature_dir_gpu(
                         result_tx.send(Err("Internal float unpack length mismatch".to_string()));
                     return runner;
                 }
-                let sums = runner.score_chunk(&floats, n_records);
+                let sums = match runner.score_chunk(&floats, n_records) {
+                    Ok(sums) => sums,
+                    Err(e) => {
+                        // Readback failed (e.g. device loss). Surface the error
+                        // so the `--gpu auto` caller can fall back to the CPU
+                        // instead of panicking mid-run (Issue #273).
+                        let _ = result_tx.send(Err(e));
+                        return runner;
+                    }
+                };
                 if result_tx.send(Ok((n_records, sums))).is_err() {
                     break;
                 }
