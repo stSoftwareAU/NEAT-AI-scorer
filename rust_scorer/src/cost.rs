@@ -50,6 +50,14 @@ impl CostKind {
     /// Stable serialised label as a `&'static str`. Matches the TypeScript
     /// `BUILT_IN_COST_NAMES` strings exactly. Used both by tests/benches and
     /// by Issue #121's `costName` JSON field on `ScoreResult`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use rust_scorer::cost::CostKind;
+    /// assert_eq!(CostKind::Mse.as_str(), "MSE");
+    /// assert_eq!(CostKind::CrossEntropy.as_str(), "CROSS_ENTROPY");
+    /// ```
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Mse => "MSE",
@@ -68,6 +76,17 @@ impl CostKind {
     /// logic without going through clap's argv parser. The error message
     /// lists every supported name in the TypeScript order to match the
     /// `--help` output.
+    ///
+    /// Returns `Err` (with a message listing the supported names) when `raw`
+    /// does not exactly match one of the `BUILT_IN_COST_NAMES` strings.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use rust_scorer::cost::CostKind;
+    /// assert_eq!(CostKind::from_cli("MSE").unwrap(), CostKind::Mse);
+    /// assert!(CostKind::from_cli("FOO").is_err());
+    /// ```
     // Consumed by unit tests and downstream callers (`NeatOptions.costName`
     // pass-through, dispatch landing in #119-3); the bin target itself
     // relies on clap, not this helper.
@@ -92,6 +111,14 @@ impl CostKind {
     /// Issue #121: which costs the GPU `forward_mse_batched` kernel can
     /// service. Only [`CostKind::Mse`] today — every other cost forces a
     /// CPU fallback (or a hard error under `--gpu on`).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use rust_scorer::cost::CostKind;
+    /// assert!(CostKind::Mse.gpu_supported());
+    /// assert!(!CostKind::Mae.gpu_supported());
+    /// ```
     pub const fn gpu_supported(self) -> bool {
         matches!(self, Self::Mse)
     }
@@ -109,6 +136,44 @@ impl CostKind {
 /// `Result` return type is retained so future costs that need to surface
 /// a setup error (e.g. a kernel-only cost on the CPU path) can do so
 /// without churning every call site.
+///
+/// Returns `Err` when `chunk`'s float length is not a whole multiple of the
+/// `input_size + num_outputs` record stride (a malformed packed chunk).
+///
+/// # Examples
+///
+/// ```
+/// use rust_scorer::cost::{CostKind, accumulate_cost_sum};
+/// use neat_core::creature::{CreatureExport, NeuronExport, SynapseExport, compile_creature};
+///
+/// // A trivial forward-only creature: one input wired straight to one output.
+/// let creature = CreatureExport {
+///     input: 1,
+///     output: 1,
+///     neurons: vec![NeuronExport {
+///         neuron_type: "output".to_string(),
+///         uuid: "output-0".to_string(),
+///         bias: 0.0,
+///         squash: Some("IDENTITY".to_string()),
+///     }],
+///     synapses: vec![SynapseExport {
+///         from_uuid: "input-0".to_string(),
+///         to_uuid: "output-0".to_string(),
+///         weight: 1.0,
+///         synapse_type: None,
+///     }],
+///     semantic_version: Some("4.0.0".to_string()),
+///     forward_only: true,
+/// };
+/// let mut network = compile_creature(&creature).unwrap();
+///
+/// // One packed record `[input, target]`; MSE sum is finite and non-negative.
+/// let sum = accumulate_cost_sum(CostKind::Mse, &mut network, &[0.5, 0.5], 1, 1, true).unwrap();
+/// assert!(sum.is_finite() && sum >= 0.0);
+///
+/// // A chunk length that is not a whole multiple of the 2-value stride errors.
+/// assert!(accumulate_cost_sum(CostKind::Mse, &mut network, &[0.5], 1, 1, true).is_err());
+/// ```
 pub fn accumulate_cost_sum(
     kind: CostKind,
     network: &mut CompiledNetwork,
