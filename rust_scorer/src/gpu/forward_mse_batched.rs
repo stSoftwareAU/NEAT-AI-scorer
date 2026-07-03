@@ -527,9 +527,14 @@ impl BatchedRunner {
     /// Score a single chunk of `n_records` packed records against every
     /// creature. Returns one `f64` MSE-sum partial per creature that the
     /// caller adds to its running total.
-    pub fn score_chunk(&mut self, floats: &[f32], n_records: usize) -> Vec<f64> {
+    ///
+    /// Returns `Err` when the GPU readback (`map_async`) fails — a recoverable
+    /// device hiccup such as device loss, an out-of-memory condition, or a
+    /// validation error during readback — so the `--gpu auto` caller can fall
+    /// back to the CPU instead of panicking mid-run (Issue #273).
+    pub fn score_chunk(&mut self, floats: &[f32], n_records: usize) -> Result<Vec<f64>, String> {
         if n_records == 0 || self.num_creatures == 0 {
-            return vec![0.0; self.num_creatures as usize];
+            return Ok(vec![0.0; self.num_creatures as usize]);
         }
         let ctx = self.ctx.clone();
         let device = &ctx.device;
@@ -678,10 +683,7 @@ impl BatchedRunner {
             let _ = sender.send(r);
         });
         let _ = device.poll(wgpu::PollType::wait_indefinitely());
-        receiver
-            .recv()
-            .expect("partials map_async sender dropped")
-            .expect("partials map_async failed");
+        map_readback_result(receiver.recv())?;
 
         let mapped = slice.get_mapped_range();
         let floats: &[f32] = bytemuck::cast_slice(&mapped);
@@ -699,7 +701,7 @@ impl BatchedRunner {
         }
         drop(mapped);
         readback_buf.unmap();
-        sums
+        Ok(sums)
     }
 
     fn ensure_records_buf(&mut self, bytes: u64) {
@@ -839,6 +841,26 @@ fn pad_for_storage<T: Copy + Default + Pod>(v: &[T]) -> Vec<T> {
     } else {
         v.to_vec()
     }
+}
+
+/// Turn the readback channel result into `Ok(())` or a descriptive error
+/// string (Issue #273).
+///
+/// The GPU readback maps `partials` via `map_async` and reports completion on a
+/// one-shot channel. Two failure modes are folded into recoverable `Err`s
+/// rather than panicking: the callback sender being dropped (`RecvError`) and
+/// the map itself failing (device loss, out-of-memory, or a validation error
+/// during readback). Both are external-I/O faults on the GPU device, so
+/// surfacing them as `Err` lets the `--gpu auto` caller fall back to the CPU.
+///
+/// Generic over the map error type so the mapping is unit-testable without a
+/// live GPU (`wgpu::BufferAsyncError` has no public constructor).
+fn map_readback_result<E: std::fmt::Debug>(
+    recv: Result<Result<(), E>, std::sync::mpsc::RecvError>,
+) -> Result<(), String> {
+    recv.map_err(|_| "partials map_async sender dropped".to_string())?
+        .map_err(|e| format!("partials map_async failed: {e:?}"))?;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -1008,5 +1030,41 @@ mod tests {
         let err = build_batched_network_data(&[net1, net2], 2, 1)
             .expect_err("input shape mismatch rejected");
         assert!(matches!(err, GpuPrepareError::MismatchedShape));
+    }
+
+    // Issue #273 — GPU readback (`map_async`) failure must surface as an `Err`
+    // string the `--gpu auto` caller can absorb, not panic the process.
+
+    #[test]
+    fn map_readback_result_ok_on_successful_map() {
+        // A successful map (`Ok(Ok(()))`) yields `Ok(())`.
+        let recv: Result<Result<(), &str>, std::sync::mpsc::RecvError> = Ok(Ok(()));
+        assert!(map_readback_result(recv).is_ok());
+    }
+
+    #[test]
+    fn map_readback_result_err_on_map_failure() {
+        // A failed map (`Ok(Err(..))`, e.g. device loss during readback) is
+        // turned into a descriptive error instead of panicking.
+        let recv: Result<Result<(), &str>, std::sync::mpsc::RecvError> = Ok(Err("device lost"));
+        let err = map_readback_result(recv).expect_err("map failure surfaces as Err");
+        assert!(
+            err.contains("partials map_async failed"),
+            "error should name the readback failure, got: {err}",
+        );
+        assert!(
+            err.contains("device lost"),
+            "error should carry the underlying cause, got: {err}",
+        );
+    }
+
+    #[test]
+    fn map_readback_result_err_on_dropped_sender() {
+        // If the callback sender is dropped before sending, `recv()` returns
+        // `RecvError`, which must also become a recoverable `Err`.
+        let (sender, receiver) = std::sync::mpsc::channel::<Result<(), &str>>();
+        drop(sender);
+        let err = map_readback_result(receiver.recv()).expect_err("dropped sender surfaces as Err");
+        assert_eq!(err, "partials map_async sender dropped");
     }
 }
