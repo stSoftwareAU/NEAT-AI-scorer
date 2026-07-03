@@ -15,6 +15,19 @@ section to the released version with its date.
 
 ## [Unreleased]
 
+### Changed
+
+- **Acknowledge the neat-core 0.1 -> 0.2 breaking bump in the version-baseline
+  gate (Issue #252).** `neat-core.expected-version` recorded `0.1.46` while the
+  sibling neat-core had advanced to the 0.2 line, so `check-neat-core-version.sh`
+  (CI `validation` job) and the `neat_core_version_gate.bats` real-repository
+  test both failed the breaking-bump gate. The only breaking boundary crossed is
+  neat-core #177 (`SynapseData::from_index` u32 -> u16), whose scorer handling
+  already landed in milestone #257; a clean `cargo build -p rust_scorer` and the
+  full scorer test suite pass against the sibling. Bumped the recorded baseline
+  to `0.2.5` to record that handling; patch drift within the 0.2 line is
+  non-breaking.
+
 ### Added
 
 - **Crate-level rustc lint hardening (Issue #274).** The workspace previously
