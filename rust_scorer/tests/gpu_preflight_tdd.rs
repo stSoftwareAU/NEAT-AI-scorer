@@ -11,6 +11,7 @@
 
 use std::path::Path;
 
+use rust_scorer::gpu::forward_mse_batched::GpuPrepareError;
 use rust_scorer::multi_score::gpu_directory_compatible;
 
 /// Write a forward-only creature with `hidden` TANH hidden neurons fully
@@ -84,6 +85,32 @@ fn preflight_accepts_small_creature_set() {
     write_creature(tmp.path(), "b.json", 1, 1, 3);
 
     gpu_directory_compatible(tmp.path()).expect("a tiny creature set must be GPU-hostable");
+}
+
+/// Issue #289 (C-GOOD-ERR): an incompatible set now returns the typed
+/// [`GpuPrepareError`] directly instead of a stringly-typed `String`, so callers
+/// can `match` on the specific incompatibility. A creature using a squash the
+/// shader does not implement (GAUSSIAN — valid to parse, but outside the
+/// IDENTITY/RELU/LOGISTIC/TANH set) yields `UnsupportedSquash`.
+#[test]
+fn preflight_returns_typed_error_for_unsupported_squash() {
+    let tmp = tempfile::tempdir().expect("create tempdir");
+    let json = r#"{"input":1,"output":1,"forwardOnly":true,"semanticVersion":"4.0.0",
+        "neurons":[{"type":"output","uuid":"output-0","bias":0.0,"squash":"GAUSSIAN"}],
+        "synapses":[{"fromUUID":"input-0","toUUID":"output-0","weight":0.5}]}"#;
+    std::fs::write(tmp.path().join("gaussian.json"), json).expect("write creature JSON");
+
+    let err =
+        gpu_directory_compatible(tmp.path()).expect_err("a GAUSSIAN squash is not GPU-hostable");
+    assert!(
+        matches!(err, GpuPrepareError::UnsupportedSquash(_)),
+        "expected UnsupportedSquash, got {err:?}"
+    );
+    // Display still yields a human-readable cause for logging.
+    assert!(
+        err.to_string().contains("squash"),
+        "unexpected message: {err}"
+    );
 }
 
 #[test]

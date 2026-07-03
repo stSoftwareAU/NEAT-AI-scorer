@@ -168,7 +168,10 @@ fn run(cli: &Cli) -> Result<RunOutput, String> {
     // constant `cpu-fallback` and never touches `wgpu`; for `auto` (the
     // default since Issue #83) and `on` it triggers adapter selection now
     // so the same label is passed into every scoring path.
-    let mode = gpu::resolve_mode(cli.gpu, std::env::var("NEAT_SCORER_GPU").ok().as_deref())?;
+    // Issue #289: `resolve_mode` now returns the typed `GpuModeParseError`;
+    // flatten it to the binary's `String` error contract at the boundary.
+    let mode = gpu::resolve_mode(cli.gpu, std::env::var("NEAT_SCORER_GPU").ok().as_deref())
+        .map_err(|e| e.to_string())?;
 
     // Issue #121: `--gpu on --cost X != MSE` is a hard error — the GPU kernel
     // only knows how to compute MSE today, so silently downgrading would
@@ -454,18 +457,22 @@ fn score_from_json(
 
     let avg_error = total_error / record_count as f64;
 
-    let components = compute_score_components(&creature)?;
+    // Issue #289: the scoring API now returns the typed `ScoringError`; flatten
+    // to the binary's `String` error contract at the boundary.
+    let components = compute_score_components(&creature).map_err(|e| e.to_string())?;
     let hidden_neurons = components.hidden_neuron_count;
     let synapse_count = components.synapse_count;
 
-    let complexity_penalty = scoring::complexity_penalty(&components, GROWTH_COST)?;
+    let complexity_penalty =
+        scoring::complexity_penalty(&components, GROWTH_COST).map_err(|e| e.to_string())?;
 
     let score = calculate_score(
         avg_error,
         &components,
         GROWTH_COST,
         creature.semantic_version.as_deref(),
-    )?;
+    )
+    .map_err(|e| e.to_string())?;
 
     Ok(ScoreResult {
         score,

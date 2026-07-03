@@ -36,7 +36,7 @@ use neat_core::training_data::{TrainingDataConfig, find_bin_files};
 use rayon::prelude::*;
 
 use crate::cost::{CostKind, accumulate_cost_sum};
-use crate::gpu::forward_mse_batched::{BatchedRunner, build_batched_network_data};
+use crate::gpu::forward_mse_batched::{BatchedRunner, GpuPrepareError, build_batched_network_data};
 use crate::gpu::{GpuBackendLabel, GpuContext};
 use crate::read_tuning::{training_read_backend_label, training_read_target_bytes_from_env};
 use crate::scoring::{ScoreResult, calculate_score, complexity_penalty, compute_score_components};
@@ -418,18 +418,23 @@ pub fn score_from_creature_dir(
     let mut results = BTreeMap::new();
     for (loaded_creature, mse_sum) in loaded.iter().zip(total_mse.iter()) {
         let avg_error = *mse_sum / total_records as f64;
-        let components = compute_score_components(&loaded_creature.creature)?;
+        // Issue #289: the scoring API now returns the typed `ScoringError`;
+        // flatten to this module's `String` error contract at the boundary.
+        let components =
+            compute_score_components(&loaded_creature.creature).map_err(|e| e.to_string())?;
         let hidden_neurons = components.hidden_neuron_count;
         let synapse_count = components.synapse_count;
 
-        let complexity_penalty = complexity_penalty(&components, GROWTH_COST)?;
+        let complexity_penalty =
+            complexity_penalty(&components, GROWTH_COST).map_err(|e| e.to_string())?;
 
         let score = calculate_score(
             avg_error,
             &components,
             GROWTH_COST,
             loaded_creature.creature.semantic_version.as_deref(),
-        )?;
+        )
+        .map_err(|e| e.to_string())?;
 
         results.insert(
             loaded_creature.key.clone(),
@@ -475,10 +480,13 @@ pub fn score_from_creature_dir(
 /// kernel, so a large creature set no longer forces a CPU fallback here.
 ///
 /// Returns:
-/// * `Err(reason)` — the set is genuinely incompatible with the GPU kernels (an
-///   unsupported squash, a shape mismatch, or an absurd neuron count beyond
-///   [`crate::gpu::forward_mse_batched::MAX_NEURONS_ABSOLUTE`]). `reason` is the
-///   human-readable cause.
+/// * `Err(GpuPrepareError)` — the set is genuinely incompatible with the GPU
+///   kernels (an unsupported squash, a shape mismatch, or an absurd neuron
+///   count beyond [`crate::gpu::forward_mse_batched::MAX_NEURONS_ABSOLUTE`]).
+///   Issue #289 (C-GOOD-ERR): the underlying typed [`GpuPrepareError`] is now
+///   returned directly instead of being flattened to a `String`, so callers can
+///   `match` on the specific incompatibility. Its `Display` still yields the
+///   same human-readable cause for logging.
 /// * `Ok(())` — either the set is GPU-hostable, or it could not even be
 ///   loaded/compiled. Load/compile failures are deliberately *not* treated as
 ///   GPU-incompatibility: they are left for the normal scoring path to surface
@@ -496,7 +504,7 @@ pub fn score_from_creature_dir(
 ///     Err(reason) => println!("must fall back to CPU: {reason}"),
 /// }
 /// ```
-pub fn gpu_directory_compatible(creatures_dir: &Path) -> Result<(), String> {
+pub fn gpu_directory_compatible(creatures_dir: &Path) -> Result<(), GpuPrepareError> {
     // A load failure here (missing dir, shape mismatch, forwardOnly=false, …)
     // is not a GPU-hostability question — return Ok so the real scoring path
     // re-runs the load and reports the precise error itself.
@@ -517,9 +525,7 @@ pub fn gpu_directory_compatible(creatures_dir: &Path) -> Result<(), String> {
         }
     }
 
-    build_batched_network_data(&networks, num_inputs, num_outputs)
-        .map(|_| ())
-        .map_err(|e| e.to_string())
+    build_batched_network_data(&networks, num_inputs, num_outputs).map(|_| ())
 }
 
 /// Issue #82 — GPU-backed multi-creature scoring path.
@@ -806,18 +812,23 @@ pub fn score_from_creature_dir_gpu(
     let mut results = BTreeMap::new();
     for (loaded_creature, mse_sum) in loaded.iter().zip(total_mse.iter()) {
         let avg_error = *mse_sum / total_records as f64;
-        let components = compute_score_components(&loaded_creature.creature)?;
+        // Issue #289: the scoring API now returns the typed `ScoringError`;
+        // flatten to this module's `String` error contract at the boundary.
+        let components =
+            compute_score_components(&loaded_creature.creature).map_err(|e| e.to_string())?;
         let hidden_neurons = components.hidden_neuron_count;
         let synapse_count = components.synapse_count;
 
-        let complexity_penalty = complexity_penalty(&components, GROWTH_COST)?;
+        let complexity_penalty =
+            complexity_penalty(&components, GROWTH_COST).map_err(|e| e.to_string())?;
 
         let score = calculate_score(
             avg_error,
             &components,
             GROWTH_COST,
             loaded_creature.creature.semantic_version.as_deref(),
-        )?;
+        )
+        .map_err(|e| e.to_string())?;
 
         results.insert(
             loaded_creature.key.clone(),

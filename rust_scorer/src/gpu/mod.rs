@@ -65,17 +65,42 @@ pub enum GpuMode {
     Off,
 }
 
+/// Typed error returned when a GPU mode string (from `--gpu` or
+/// `NEAT_SCORER_GPU`) is not one of `auto`, `on`, `off` (Issue #289,
+/// C-GOOD-ERR).
+///
+/// Replaces the previous `FromStr::Err = String` / `resolve_mode` stringly
+/// contract. Hand-rolls `Display`/`Error` following [`GpuInitError`]; the
+/// `Display` text is preserved byte-for-byte from the old `format!(...)`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GpuModeParseError {
+    /// The rejected value, already trimmed and lower-cased for the message.
+    pub value: String,
+}
+
+impl std::fmt::Display for GpuModeParseError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "Invalid GPU mode '{}': expected one of 'auto', 'on', 'off'",
+            self.value
+        )
+    }
+}
+
+impl std::error::Error for GpuModeParseError {}
+
 impl FromStr for GpuMode {
-    type Err = String;
+    type Err = GpuModeParseError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.trim().to_ascii_lowercase().as_str() {
             "auto" => Ok(Self::Auto),
             "on" => Ok(Self::On),
             "off" => Ok(Self::Off),
-            other => Err(format!(
-                "Invalid GPU mode '{other}': expected one of 'auto', 'on', 'off'"
-            )),
+            other => Err(GpuModeParseError {
+                value: other.to_string(),
+            }),
         }
     }
 }
@@ -270,7 +295,7 @@ pub fn auto_cost_fallback_note(
 /// pulled from `std::env::var("NEAT_SCORER_GPU")` (or `None`). Returning a
 /// `Result` lets the caller surface env-var typos as a clear error rather
 /// than silently falling back.
-pub fn resolve_mode(cli: Option<GpuMode>, env: Option<&str>) -> Result<GpuMode, String> {
+pub fn resolve_mode(cli: Option<GpuMode>, env: Option<&str>) -> Result<GpuMode, GpuModeParseError> {
     if let Some(m) = cli {
         return Ok(m);
     }
@@ -334,18 +359,60 @@ pub fn select_adapter() -> Result<Option<GpuContext>, GpuInitError> {
     }))
 }
 
+/// Typed error returned by [`resolve_backend`] under `--gpu on` (Issue #289,
+/// C-GOOD-ERR).
+///
+/// Replaces the previous `Result<_, String>` contract so callers can
+/// distinguish "no adapter present" from a genuine device-initialisation
+/// failure, and so the underlying [`GpuInitError`] survives as an error
+/// `source()` rather than being flattened to text.
+#[derive(Debug)]
+pub enum ResolveBackendError {
+    /// `--gpu on` was requested but no compatible GPU adapter was available.
+    NoAdapter,
+    /// An adapter was found but device initialisation failed.
+    Init(GpuInitError),
+}
+
+impl std::fmt::Display for ResolveBackendError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NoAdapter => f.write_str(
+                "No compatible GPU adapter found and --gpu on was requested (use --gpu auto to fall back to CPU, or --gpu off to skip GPU detection entirely)",
+            ),
+            Self::Init(e) => write!(f, "{e}"),
+        }
+    }
+}
+
+impl std::error::Error for ResolveBackendError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::NoAdapter => None,
+            Self::Init(e) => Some(e),
+        }
+    }
+}
+
+impl From<GpuInitError> for ResolveBackendError {
+    fn from(e: GpuInitError) -> Self {
+        Self::Init(e)
+    }
+}
+
 /// Resolve the GPU backend label for a given mode without leaking the
 /// `GpuContext` (useful when callers only care about the JSON label, e.g.
 /// the scorer entry points which do not yet run GPU kernels).
 ///
 /// Returns:
 /// * `Ok(label)` — the label to record in JSON.
-/// * `Err(message)` — only when `mode == GpuMode::On` and no compatible
-///   adapter was available, or `request_device` failed. The caller should
+/// * `Err(ResolveBackendError)` — only when `mode == GpuMode::On` and no
+///   compatible adapter was available ([`ResolveBackendError::NoAdapter`]), or
+///   `request_device` failed ([`ResolveBackendError::Init`]). The caller should
 ///   exit non-zero and surface the message to stderr.
 #[allow(dead_code)] // used by benches/tests; main.rs now resolves the adapter directly so it
 // can keep the resulting `GpuContext` for the GPU multi-creature path (Issue #82).
-pub fn resolve_backend(mode: GpuMode) -> Result<GpuBackendLabel, String> {
+pub fn resolve_backend(mode: GpuMode) -> Result<GpuBackendLabel, ResolveBackendError> {
     match mode {
         GpuMode::Off => Ok(GpuBackendLabel::CpuFallback),
         GpuMode::Auto => match select_adapter() {
@@ -356,10 +423,8 @@ pub fn resolve_backend(mode: GpuMode) -> Result<GpuBackendLabel, String> {
         },
         GpuMode::On => match select_adapter() {
             Ok(Some(ctx)) => Ok(ctx.backend),
-            Ok(None) => Err(
-                "No compatible GPU adapter found and --gpu on was requested (use --gpu auto to fall back to CPU, or --gpu off to skip GPU detection entirely)".to_string(),
-            ),
-            Err(e) => Err(e.to_string()),
+            Ok(None) => Err(ResolveBackendError::NoAdapter),
+            Err(e) => Err(ResolveBackendError::Init(e)),
         },
     }
 }
@@ -384,7 +449,9 @@ mod tests {
 
     #[test]
     fn gpu_mode_rejects_invalid() {
-        let err = GpuMode::from_str("gpu").unwrap_err();
+        // Issue #289: `FromStr` now yields the typed `GpuModeParseError`; assert
+        // on its `Display` text so the historical message contract is preserved.
+        let err = GpuMode::from_str("gpu").unwrap_err().to_string();
         assert!(
             err.contains("auto"),
             "error message should mention 'auto': {err}"
@@ -542,8 +609,16 @@ mod tests {
 
     #[test]
     fn resolve_mode_propagates_invalid_env_value() {
+        // Issue #289: `resolve_mode` now propagates the typed `GpuModeParseError`.
         let err = resolve_mode(None, Some("yes")).unwrap_err();
-        assert!(err.contains("yes") || err.contains("auto"));
+        assert_eq!(
+            err,
+            GpuModeParseError {
+                value: "yes".to_string()
+            }
+        );
+        let msg = err.to_string();
+        assert!(msg.contains("yes") || msg.contains("auto"));
     }
 
     #[test]
@@ -618,5 +693,23 @@ mod tests {
         // No assertion on the variant — CI runners may or may not have a GPU.
         let _ = resolve_backend(GpuMode::Auto)
             .expect("--gpu auto must succeed even with no GPU available");
+    }
+
+    /// Issue #289 (C-GOOD-ERR): `ResolveBackendError` is a typed enum whose
+    /// `NoAdapter` variant carries a stable `Display` message and composes into
+    /// a `Box<dyn std::error::Error>` chain (with the `Init` variant exposing
+    /// its `GpuInitError` as `source()`).
+    #[test]
+    fn resolve_backend_error_is_typed_and_composes() {
+        let no_adapter = ResolveBackendError::NoAdapter;
+        assert!(no_adapter.to_string().contains("--gpu on"));
+
+        let init = ResolveBackendError::Init(GpuInitError::DeviceRequest("boom".to_string()));
+        assert!(init.to_string().contains("boom"));
+        // The underlying GpuInitError survives as the error source.
+        assert!(std::error::Error::source(&init).is_some());
+
+        let boxed: Box<dyn std::error::Error> = Box::new(ResolveBackendError::NoAdapter);
+        assert!(boxed.downcast_ref::<ResolveBackendError>().is_some());
     }
 }

@@ -15,6 +15,33 @@
 use clap::ValueEnum;
 use neat_core::network::CompiledNetwork;
 
+/// Typed error returned by [`CostKind::from_cli`] when a raw CLI value does not
+/// match one of the built-in cost names (Issue #289, C-GOOD-ERR).
+///
+/// Replaces the previous `Result<_, String>` contract so callers can react to
+/// the failure programmatically and compose it into their own
+/// `std::error::Error` chains. Hand-rolls `Display`/`Error` following the
+/// existing [`crate::gpu::GpuInitError`] pattern; the `Display` text is
+/// preserved byte-for-byte from the old `format!(...)` message.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InvalidCostName {
+    /// The rejected raw CLI value.
+    pub value: String,
+}
+
+impl std::fmt::Display for InvalidCostName {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "Invalid cost '{}': expected one of {}",
+            self.value,
+            supported_list(),
+        )
+    }
+}
+
+impl std::error::Error for InvalidCostName {}
+
 /// Built-in NEAT-AI cost function selector.
 ///
 /// The rendered names must match the TypeScript `BUILT_IN_COST_NAMES`
@@ -91,7 +118,7 @@ impl CostKind {
     // pass-through, dispatch landing in #119-3); the bin target itself
     // relies on clap, not this helper.
     #[allow(dead_code)]
-    pub fn from_cli(raw: &str) -> Result<Self, String> {
+    pub fn from_cli(raw: &str) -> Result<Self, InvalidCostName> {
         // Exact-match parsing — the TypeScript names are upper-case, so we
         // do not normalise case. This keeps the CLI contract aligned with
         // what `NeatOptions.costName` will pass through.
@@ -100,10 +127,9 @@ impl CostKind {
                 return Ok(*variant);
             }
         }
-        Err(format!(
-            "Invalid cost '{raw}': expected one of {}",
-            supported_list(),
-        ))
+        Err(InvalidCostName {
+            value: raw.to_string(),
+        })
     }
 }
 
@@ -270,7 +296,11 @@ mod tests {
     /// the supported set.
     #[test]
     fn from_cli_rejects_unknown_cost_name() {
-        let err = CostKind::from_cli("FOO").expect_err("FOO must be rejected");
+        // Issue #289: `from_cli` now returns the typed `InvalidCostName`; assert
+        // on its `Display` text so the historical message contract is preserved.
+        let err = CostKind::from_cli("FOO")
+            .expect_err("FOO must be rejected")
+            .to_string();
         assert!(
             err.contains("FOO"),
             "error must echo the bad value, got: {err}"
@@ -303,6 +333,27 @@ mod tests {
     #[test]
     fn from_cli_rejects_empty_string() {
         assert!(CostKind::from_cli("").is_err());
+    }
+
+    /// Issue #289 (C-GOOD-ERR): `from_cli` returns a typed `InvalidCostName`
+    /// that exposes the rejected value as a field and composes into a caller's
+    /// `Box<dyn std::error::Error>` chain.
+    #[test]
+    fn from_cli_returns_typed_invalid_cost_name() {
+        let err = CostKind::from_cli("FOO").expect_err("FOO must be rejected");
+        assert_eq!(
+            err,
+            InvalidCostName {
+                value: "FOO".to_string()
+            }
+        );
+
+        fn caller() -> Result<CostKind, Box<dyn std::error::Error>> {
+            Ok(CostKind::from_cli("BAR")?)
+        }
+        let boxed = caller().unwrap_err();
+        assert!(boxed.to_string().contains("BAR"));
+        assert!(boxed.downcast_ref::<InvalidCostName>().is_some());
     }
 
     /// The default must be MSE so the historical scoring behaviour is
