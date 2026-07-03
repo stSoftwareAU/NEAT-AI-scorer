@@ -87,9 +87,13 @@ impl FromStr for GpuMode {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum GpuBackendLabel {
+    /// Apple Metal backend.
     Metal,
+    /// Vulkan backend (Linux / Windows / Android).
     Vulkan,
+    /// Direct3D 12 backend (Windows).
     Dx12,
+    /// OpenGL / OpenGL ES backend.
     Gl,
     /// No GPU was selected — either `--gpu off` (the default), or `--gpu auto`
     /// on a host with no compatible adapter.
@@ -158,8 +162,11 @@ impl std::error::Error for GpuInitError {}
 /// this module's public API.
 #[allow(dead_code)] // device/queue used by follow-up GPU kernel issues (#81+).
 pub struct GpuContext {
+    /// The initialised `wgpu` logical device used to allocate kernel resources.
     pub device: wgpu::Device,
+    /// The command queue used to submit work to the device.
     pub queue: wgpu::Queue,
+    /// Stable label identifying which native backend hosts this context.
     pub backend: GpuBackendLabel,
 }
 

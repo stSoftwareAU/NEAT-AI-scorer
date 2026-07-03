@@ -5,4 +5,10 @@
 # presents a breaking bump above this baseline — pre-1.0 a higher minor, or any
 # higher major — forcing a deliberate upgrade. Clear the gate by updating
 # rust_scorer for the change and bumping this version to match neat-core.
+#
+# 0.1.46 -> 0.2.5: acknowledge the 0.1 -> 0.2 breaking bump. The only breaking
+# boundary crossed is neat-core #177 (SynapseData::from_index u32 -> u16), whose
+# rust_scorer handling landed in milestone #257; patch drift within the 0.2 line
+# is non-breaking. Verified by a clean `cargo build -p rust_scorer` and the full
+# scorer test suite passing against the sibling neat-core.
 0.2.5

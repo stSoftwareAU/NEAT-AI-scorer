@@ -36,6 +36,18 @@ opt-level = 3
 [profile.pgo.package.rust_scorer]
 codegen-units = 1
 
+[workspace.lints.rust]
+# Crate-level rustc lint hardening (Issue #274). Denies the rustc lint groups
+# that a Clippy-only posture leaves unenforced at the source-tree level, so a
+# local build catches the regression at the point it is introduced rather than
+# relying solely on a CI `-D warnings` flag. Per-lint denies (not a blanket
+# `#![deny(warnings)]`) keep a future compiler warning from breaking the build
+# unexpectedly. `missing_docs` is a `warn` scoped to the library surface via
+# `#![warn(missing_docs)]` in `rust_scorer/src/lib.rs` — the binary targets are
+# doc-noisy, so it is intentionally NOT set here.
+unsafe_op_in_unsafe_fn = "deny"
+unused = "deny"
+
 [workspace.lints.clippy]
 collapsible_if = "deny"
 filter_next = "deny"

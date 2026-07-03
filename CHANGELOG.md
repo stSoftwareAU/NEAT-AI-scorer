@@ -15,7 +15,32 @@ section to the released version with its date.
 
 ## [Unreleased]
 
+### Changed
+
+- **Acknowledge the neat-core 0.1 -> 0.2 breaking bump in the version-baseline
+  gate (Issue #252).** `neat-core.expected-version` recorded `0.1.46` while the
+  sibling neat-core had advanced to the 0.2 line, so `check-neat-core-version.sh`
+  (CI `validation` job) and the `neat_core_version_gate.bats` real-repository
+  test both failed the breaking-bump gate. The only breaking boundary crossed is
+  neat-core #177 (`SynapseData::from_index` u32 -> u16), whose scorer handling
+  already landed in milestone #257; a clean `cargo build -p rust_scorer` and the
+  full scorer test suite pass against the sibling. Bumped the recorded baseline
+  to `0.2.5` to record that handling; patch drift within the 0.2 line is
+  non-breaking.
+
 ### Added
+
+- **Crate-level rustc lint hardening (Issue #274).** The workspace previously
+  configured only Clippy lints, leaving rustc's own (`rust`) lint groups
+  unenforced at the source-tree level. The root `Cargo.toml` now declares a
+  `[workspace.lints.rust]` table denying `unsafe_op_in_unsafe_fn` and `unused`
+  (inherited by `rust_scorer` via `[lints] workspace = true`), and
+  `rust_scorer/src/lib.rs` adds `#![warn(missing_docs)]` scoped to the library
+  surface (the binary targets are doc-noisy). Per-lint denies are used instead
+  of a blanket `#![deny(warnings)]` so a future compiler warning does not break
+  the build unexpectedly. The posture is validated by
+  `scripts/check-rust-lints.sh` (run locally via `./quality.sh`) and covered
+  end-to-end by `tests/scripts/rust_lints.bats`. Documented in the README.
 
 - **CI gate against an unhandled breaking neat-core bump (Issue #252).** The
   `neat-core` dependency stays an unpinned `path` dependency that tracks head
