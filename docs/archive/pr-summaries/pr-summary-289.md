@@ -63,7 +63,7 @@ Verified via the crate's own test suite and the full local quality gate
 `check`, `build`, unit + integration + doc tests, rustdoc with
 `-D warnings`, and the release build. All checks pass:
 
-```
+```text
 ✅ All quality checks passed!
 ```
 
