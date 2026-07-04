@@ -12,6 +12,90 @@ use crate::gpu::GpuBackendLabel;
 /// Creatures not at this version receive a small penalty.
 pub const SEMANTIC_MAJOR_VERSION: u32 = 4;
 
+/// Typed error for the public scoring API (Issue #289, C-GOOD-ERR).
+///
+/// Replaces the previous stringly-typed `Result<_, String>` contract so callers
+/// can `match` on the specific failure (e.g. distinguish a non-finite synapse
+/// weight from a negative average error) and compose these errors into their own
+/// `Box<dyn std::error::Error>` chains with `?`. Follows the hand-rolled
+/// `Display` + `std::error::Error` pattern the GPU module already uses
+/// ([`crate::gpu::GpuInitError`]) rather than adding a `thiserror` dependency.
+///
+/// Every variant's `Display` text is preserved byte-for-byte from the old
+/// `format!(...)` error strings so downstream message-matching stays stable.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ScoringError {
+    /// A magnitude passed to [`value_penalty`] was negative.
+    NegativeValue {
+        /// The offending value.
+        value: f64,
+    },
+    /// A magnitude passed to [`value_penalty`] was non-finite (NaN or infinite).
+    NonFiniteValue {
+        /// The offending value.
+        value: f64,
+    },
+    /// A synapse weight read from creature JSON was non-finite.
+    NonFiniteSynapseWeight {
+        /// The offending weight.
+        weight: f64,
+        /// `fromUUID` of the synapse.
+        from: String,
+        /// `toUUID` of the synapse.
+        to: String,
+    },
+    /// A neuron bias read from creature JSON was non-finite.
+    NonFiniteNeuronBias {
+        /// The offending bias.
+        bias: f64,
+        /// `uuid` of the neuron.
+        uuid: String,
+    },
+    /// The average error passed to [`calculate_score`] was NaN.
+    AverageErrorNaN,
+    /// The average error passed to [`calculate_score`] was non-finite (infinite).
+    NonFiniteAverageError {
+        /// The offending average error.
+        error: f64,
+    },
+    /// The average error passed to [`calculate_score`] was negative.
+    NegativeAverageError {
+        /// The offending average error.
+        error: f64,
+    },
+}
+
+impl std::fmt::Display for ScoringError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NegativeValue { value } => {
+                write!(f, "value_penalty: value {value} is negative")
+            }
+            Self::NonFiniteValue { value } => {
+                write!(f, "value_penalty: value {value} is not finite")
+            }
+            Self::NonFiniteSynapseWeight { weight, from, to } => {
+                write!(
+                    f,
+                    "Synapse weight {weight} (from {from} to {to}) is not finite"
+                )
+            }
+            Self::NonFiniteNeuronBias { bias, uuid } => {
+                write!(f, "Neuron bias {bias} (uuid {uuid}) is not finite")
+            }
+            Self::AverageErrorNaN => f.write_str("Average error is NaN"),
+            Self::NonFiniteAverageError { error } => {
+                write!(f, "Average error {error} is not finite")
+            }
+            Self::NegativeAverageError { error } => {
+                write!(f, "Average error {error} is negative")
+            }
+        }
+    }
+}
+
+impl std::error::Error for ScoringError {}
+
 /// Calculates a penalty value based on the magnitude of a weight or bias.
 ///
 /// Encourages smaller weights/biases. Returns 0 for values <= 1,
@@ -37,9 +121,9 @@ pub const SEMANTIC_MAJOR_VERSION: u32 = 4;
 /// // Negative input is rejected.
 /// assert!(value_penalty(-1.0).is_err());
 /// ```
-pub fn value_penalty(value: f64) -> Result<f64, String> {
+pub fn value_penalty(value: f64) -> Result<f64, ScoringError> {
     if value < 0.0 {
-        return Err(format!("value_penalty: value {value} is negative"));
+        return Err(ScoringError::NegativeValue { value });
     }
 
     if value <= 1.0 {
@@ -47,7 +131,7 @@ pub fn value_penalty(value: f64) -> Result<f64, String> {
     }
 
     if !value.is_finite() {
-        return Err(format!("value_penalty: value {value} is not finite"));
+        return Err(ScoringError::NonFiniteValue { value });
     }
 
     let primary_penalty = 1.0 / (1.0 + 1.0 / value);
@@ -69,7 +153,7 @@ pub fn value_penalty(value: f64) -> Result<f64, String> {
 }
 
 /// Calculates the combined weight/bias penalty from max and average absolute values.
-fn calculate_penalty(max: f64, avg: f64) -> Result<f64, String> {
+fn calculate_penalty(max: f64, avg: f64) -> Result<f64, ScoringError> {
     let penalty = (value_penalty(max)? + value_penalty(avg)?) / 2.0;
     debug_assert!(penalty.is_finite(), "Penalty: {penalty} is not finite");
     debug_assert!(penalty >= 0.0, "Penalty: {penalty} is negative");
@@ -144,7 +228,9 @@ pub struct ScoreComponents {
 /// // Max absolute weight/bias across `{2.0, 0.3}` is `2.0`.
 /// assert!((components.max_weight_bias - 2.0).abs() < 1e-12);
 /// ```
-pub fn compute_score_components(creature: &CreatureExport) -> Result<ScoreComponents, String> {
+pub fn compute_score_components(
+    creature: &CreatureExport,
+) -> Result<ScoreComponents, ScoringError> {
     let mut max_weight_bias: f64 = 0.0;
     let mut total_weight_bias: f64 = 0.0;
     let mut count_weight_bias: usize = 0;
@@ -153,10 +239,11 @@ pub fn compute_score_components(creature: &CreatureExport) -> Result<ScoreCompon
     // Gather weight statistics from synapses
     for synapse in &creature.synapses {
         if !synapse.weight.is_finite() {
-            return Err(format!(
-                "Synapse weight {} (from {} to {}) is not finite",
-                synapse.weight, synapse.from_uuid, synapse.to_uuid
-            ));
+            return Err(ScoringError::NonFiniteSynapseWeight {
+                weight: synapse.weight,
+                from: synapse.from_uuid.clone(),
+                to: synapse.to_uuid.clone(),
+            });
         }
         let w = synapse.weight.abs();
         if w > max_weight_bias {
@@ -169,10 +256,10 @@ pub fn compute_score_components(creature: &CreatureExport) -> Result<ScoreCompon
     // Gather bias statistics and squash complexity from non-input neurons
     for neuron in &creature.neurons {
         if !neuron.bias.is_finite() {
-            return Err(format!(
-                "Neuron bias {} (uuid {}) is not finite",
-                neuron.bias, neuron.uuid
-            ));
+            return Err(ScoringError::NonFiniteNeuronBias {
+                bias: neuron.bias,
+                uuid: neuron.uuid.clone(),
+            });
         }
         let b = neuron.bias.abs();
         if b > max_weight_bias {
@@ -250,7 +337,10 @@ pub fn compute_score_components(creature: &CreatureExport) -> Result<ScoreCompon
 /// let penalty = complexity_penalty(&components, 0.01).unwrap();
 /// assert!(penalty > 0.0);
 /// ```
-pub fn complexity_penalty(components: &ScoreComponents, growth_cost: f64) -> Result<f64, String> {
+pub fn complexity_penalty(
+    components: &ScoreComponents,
+    growth_cost: f64,
+) -> Result<f64, ScoringError> {
     let weight_bias_penalty =
         calculate_penalty(components.max_weight_bias, components.avg_weight_bias)?;
     let total_penalty = weight_bias_penalty + components.squash_complexity_penalty;
@@ -300,15 +390,15 @@ pub fn calculate_score(
     components: &ScoreComponents,
     growth_cost: f64,
     semantic_version: Option<&str>,
-) -> Result<f64, String> {
+) -> Result<f64, ScoringError> {
     if error.is_nan() {
-        return Err("Average error is NaN".to_string());
+        return Err(ScoringError::AverageErrorNaN);
     }
     if !error.is_finite() {
-        return Err(format!("Average error {error} is not finite"));
+        return Err(ScoringError::NonFiniteAverageError { error });
     }
     if error < 0.0 {
-        return Err(format!("Average error {error} is negative"));
+        return Err(ScoringError::NegativeAverageError { error });
     }
 
     let complexity_penalty = complexity_penalty(components, growth_cost)?;
@@ -449,16 +539,19 @@ mod tests {
     fn test_value_penalty_rejects_negative() {
         // Issue #201: a negative value now returns a structured error rather
         // than panicking (previously a `#[should_panic]` test).
-        let err = value_penalty(-1.0).unwrap_err();
+        // Issue #289: the error is now the typed `ScoringError`; assert on its
+        // `Display` text so the historical message contract is preserved.
+        let err = value_penalty(-1.0).unwrap_err().to_string();
         assert!(err.contains("negative"), "unexpected message: {err}");
     }
 
     #[test]
     fn test_value_penalty_rejects_non_finite() {
         // Issue #201: NaN/inf return a structured error instead of panicking.
-        let nan = value_penalty(f64::NAN).unwrap_err();
+        // Issue #289: assert on the typed error's `Display` text.
+        let nan = value_penalty(f64::NAN).unwrap_err().to_string();
         assert!(nan.contains("not finite"), "unexpected message: {nan}");
-        let inf = value_penalty(f64::INFINITY).unwrap_err();
+        let inf = value_penalty(f64::INFINITY).unwrap_err().to_string();
         assert!(inf.contains("not finite"), "unexpected message: {inf}");
     }
 
@@ -670,22 +763,32 @@ mod tests {
     #[test]
     fn test_compute_score_components_rejects_non_finite_weight() {
         // Issue #201: a NaN weight from user JSON returns a structured error.
-        let nan = compute_score_components(&creature_with(f64::NAN, 0.0)).unwrap_err();
+        // Issue #289: assert on the typed error's `Display` text.
+        let nan = compute_score_components(&creature_with(f64::NAN, 0.0))
+            .unwrap_err()
+            .to_string();
         assert!(nan.contains("Synapse weight"), "unexpected message: {nan}");
         assert!(nan.contains("not finite"), "unexpected message: {nan}");
 
-        let inf = compute_score_components(&creature_with(f64::INFINITY, 0.0)).unwrap_err();
+        let inf = compute_score_components(&creature_with(f64::INFINITY, 0.0))
+            .unwrap_err()
+            .to_string();
         assert!(inf.contains("not finite"), "unexpected message: {inf}");
     }
 
     #[test]
     fn test_compute_score_components_rejects_non_finite_bias() {
         // Issue #201: a non-finite bias from user JSON returns a structured error.
-        let nan = compute_score_components(&creature_with(0.5, f64::NAN)).unwrap_err();
+        // Issue #289: assert on the typed error's `Display` text.
+        let nan = compute_score_components(&creature_with(0.5, f64::NAN))
+            .unwrap_err()
+            .to_string();
         assert!(nan.contains("Neuron bias"), "unexpected message: {nan}");
         assert!(nan.contains("not finite"), "unexpected message: {nan}");
 
-        let inf = compute_score_components(&creature_with(0.5, f64::NEG_INFINITY)).unwrap_err();
+        let inf = compute_score_components(&creature_with(0.5, f64::NEG_INFINITY))
+            .unwrap_err()
+            .to_string();
         assert!(inf.contains("not finite"), "unexpected message: {inf}");
     }
 
@@ -700,9 +803,14 @@ mod tests {
             avg_weight_bias: 0.3,
             squash_complexity_penalty: 0.0,
         };
-        let nan = calculate_score(f64::NAN, &components, 0.0, Some("4.0.0")).unwrap_err();
+        // Issue #289: assert on the typed error's `Display` text.
+        let nan = calculate_score(f64::NAN, &components, 0.0, Some("4.0.0"))
+            .unwrap_err()
+            .to_string();
         assert!(nan.contains("NaN"), "unexpected message: {nan}");
-        let inf = calculate_score(f64::INFINITY, &components, 0.0, Some("4.0.0")).unwrap_err();
+        let inf = calculate_score(f64::INFINITY, &components, 0.0, Some("4.0.0"))
+            .unwrap_err()
+            .to_string();
         assert!(inf.contains("not finite"), "unexpected message: {inf}");
     }
 
@@ -716,7 +824,67 @@ mod tests {
             avg_weight_bias: 0.3,
             squash_complexity_penalty: 0.0,
         };
-        let err = calculate_score(-0.1, &components, 0.0, Some("4.0.0")).unwrap_err();
+        // Issue #289: assert on the typed error's `Display` text.
+        let err = calculate_score(-0.1, &components, 0.0, Some("4.0.0"))
+            .unwrap_err()
+            .to_string();
         assert!(err.contains("negative"), "unexpected message: {err}");
+    }
+
+    #[test]
+    fn scoring_error_matches_specific_variants() {
+        // Issue #289 (C-GOOD-ERR): callers can `match` on the discriminant to
+        // react differently instead of parsing a free-text string.
+        assert_eq!(
+            value_penalty(-2.0).unwrap_err(),
+            ScoringError::NegativeValue { value: -2.0 }
+        );
+        assert_eq!(
+            value_penalty(f64::INFINITY).unwrap_err(),
+            ScoringError::NonFiniteValue {
+                value: f64::INFINITY
+            }
+        );
+
+        match compute_score_components(&creature_with(f64::NAN, 0.0)).unwrap_err() {
+            ScoringError::NonFiniteSynapseWeight { from, to, .. } => {
+                assert_eq!(from, "input-0");
+                assert_eq!(to, "output-0");
+            }
+            other => panic!("expected NonFiniteSynapseWeight, got {other:?}"),
+        }
+        match compute_score_components(&creature_with(0.5, f64::NAN)).unwrap_err() {
+            ScoringError::NonFiniteNeuronBias { uuid, .. } => assert_eq!(uuid, "output-0"),
+            other => panic!("expected NonFiniteNeuronBias, got {other:?}"),
+        }
+
+        let components = ScoreComponents {
+            hidden_neuron_count: 0,
+            synapse_count: 0,
+            max_weight_bias: 0.5,
+            avg_weight_bias: 0.3,
+            squash_complexity_penalty: 0.0,
+        };
+        assert_eq!(
+            calculate_score(f64::NAN, &components, 0.0, None).unwrap_err(),
+            ScoringError::AverageErrorNaN
+        );
+        assert_eq!(
+            calculate_score(-0.5, &components, 0.0, None).unwrap_err(),
+            ScoringError::NegativeAverageError { error: -0.5 }
+        );
+    }
+
+    #[test]
+    fn scoring_error_composes_as_std_error() {
+        // Issue #289: the typed error implements `std::error::Error`, so it can
+        // flow into a caller's `Box<dyn Error>` chain via `?`.
+        fn caller() -> Result<f64, Box<dyn std::error::Error>> {
+            Ok(value_penalty(-1.0)?)
+        }
+        let err = caller().unwrap_err();
+        assert!(err.to_string().contains("negative"));
+        // Downcast confirms the concrete typed error survives boxing.
+        assert!(err.downcast_ref::<ScoringError>().is_some());
     }
 }
