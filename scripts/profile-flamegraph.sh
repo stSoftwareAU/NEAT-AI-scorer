@@ -28,6 +28,14 @@
 #   PROFILE_NUM_INPUTS      inputs per record   (default 8)
 #   PROFILE_NUM_OUTPUTS     outputs per record  (default 2)
 #   PROFILE_HIDDEN          hidden neurons      (default 8)
+#   PROFILE_PROD_CREATURE   path to the GRQ-cluster production network.json
+#                           (Issue #296). When set, the real creature is used
+#                           instead of the synthetic MLP; PROFILE_NUM_INPUTS /
+#                           PROFILE_NUM_OUTPUTS are derived from it and the SVGs
+#                           are written with a `-prod` suffix so the synthetic
+#                           captures are not overwritten. Fetch it first with:
+#                             curl -fsSL -o /tmp/grq-network.json \
+#                               https://raw.githubusercontent.com/stSoftwareAU/GRQ-cluster/main/network.json
 #
 # Prerequisites:
 #   cargo install inferno        # collapsed-stack → SVG
@@ -50,6 +58,27 @@ SAMPLE_SECONDS="${PROFILE_SAMPLE_SECONDS:-60}"
 NUM_INPUTS="${PROFILE_NUM_INPUTS:-8}"
 NUM_OUTPUTS="${PROFILE_NUM_OUTPUTS:-2}"
 HIDDEN="${PROFILE_HIDDEN:-8}"
+
+# Issue #296: production creature mode. When PROFILE_PROD_CREATURE points at the
+# GRQ-cluster network.json, derive the input/output width from it and tag the
+# output SVGs with `-prod` so the synthetic captures are preserved.
+PROD_CREATURE="${PROFILE_PROD_CREATURE:-}"
+SVG_SUFFIX=""
+if [ -n "$PROD_CREATURE" ]; then
+  if [ ! -s "$PROD_CREATURE" ]; then
+    echo "❌ PROFILE_PROD_CREATURE=$PROD_CREATURE is missing or empty" >&2
+    echo "   fetch it: curl -fsSL -o \"$PROD_CREATURE\" \\" >&2
+    echo "     https://raw.githubusercontent.com/stSoftwareAU/GRQ-cluster/main/network.json" >&2
+    exit 1
+  fi
+  # Derive dims from the real creature so the corpus matches it.
+  read -r NUM_INPUTS NUM_OUTPUTS < <(
+    python3 -c "import json,sys; d=json.load(open(sys.argv[1])); print(d['input'], d['output'])" \
+      "$PROD_CREATURE"
+  )
+  SVG_SUFFIX="-prod"
+  echo "🧬 Production creature mode: $PROD_CREATURE (inputs=$NUM_INPUTS outputs=$NUM_OUTPUTS)"
+fi
 
 for tool in sample inferno-collapse-sample inferno-flamegraph python3; do
   if ! command -v "$tool" > /dev/null 2>&1; then
@@ -91,10 +120,11 @@ generate_fixture () {
   local copy_to_creatures="$3"
 
   python3 - "$data_dir" "$CREATURES_DIR" "$total_bytes" "$N_CREATURES" \
-              "$NUM_INPUTS" "$NUM_OUTPUTS" "$HIDDEN" "$TMPDIR" "$copy_to_creatures" <<'PY'
+              "$NUM_INPUTS" "$NUM_OUTPUTS" "$HIDDEN" "$TMPDIR" "$copy_to_creatures" \
+              "$PROD_CREATURE" <<'PY'
 import array, json, os, math, sys
 (data_dir, creatures_dir, total_bytes, n_creatures, num_inputs, num_outputs,
- hidden, tmp_root, copy_creatures) = sys.argv[1:10]
+ hidden, tmp_root, copy_creatures, prod_creature) = sys.argv[1:11]
 total_bytes = int(total_bytes)
 n_creatures = int(n_creatures)
 num_inputs = int(num_inputs)
@@ -106,6 +136,10 @@ record_bytes = values_per_record * 4
 n_records = max(1, total_bytes // record_bytes)
 
 def make_creature():
+    # Issue #296: use the real GRQ-cluster creature when provided.
+    if prod_creature:
+        with open(prod_creature) as f:
+            return json.load(f)
     neurons = []
     for h in range(hidden):
         neurons.append({"type": "hidden", "uuid": f"hidden-{h}",
@@ -206,16 +240,16 @@ profile_scenario () {
     "$folded" > "$svg_path"
 }
 
-profile_scenario "single-creature" \
-  "$REPO_ROOT/docs/evidence/single-creature.svg" \
+profile_scenario "single-creature${SVG_SUFFIX}" \
+  "$REPO_ROOT/docs/evidence/single-creature${SVG_SUFFIX}.svg" \
   "$BIN" "$SINGLE_CREATURE" "$SINGLE_DATA"
 
-profile_scenario "multi-creature" \
-  "$REPO_ROOT/docs/evidence/multi-creature.svg" \
+profile_scenario "multi-creature${SVG_SUFFIX}" \
+  "$REPO_ROOT/docs/evidence/multi-creature${SVG_SUFFIX}.svg" \
   "$BIN" "$CREATURES_DIR" "$MULTI_DATA"
 
 echo
 echo "✅ Flamegraphs written:"
-echo "   docs/evidence/single-creature.svg"
-echo "   docs/evidence/multi-creature.svg"
+echo "   docs/evidence/single-creature${SVG_SUFFIX}.svg"
+echo "   docs/evidence/multi-creature${SVG_SUFFIX}.svg"
 echo "Raw sample output retained under target/profiling-evidence/ (gitignored)."
