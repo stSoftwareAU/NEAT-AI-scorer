@@ -48,6 +48,10 @@ use std::sync::Arc;
 use rust_scorer::cost::CostKind;
 use rust_scorer::gpu::{GpuBackendLabel, GpuMode, resolve_backend, select_adapter};
 use rust_scorer::multi_score::{score_from_creature_dir, score_from_creature_dir_gpu};
+use rust_scorer::prod_fixture::{
+    PRODUCTION_CREATURE_URL, corpus_record_count, fetch_creature_to, load_production_creature,
+    resolve_creature_path,
+};
 use rust_scorer::stream_score::accumulate_cost_sum_forward_only_fused;
 
 use tempfile::TempDir;
@@ -547,6 +551,215 @@ fn bench_large_creature_cpu_vs_gpu(c: &mut Criterion) {
     group.finish();
 }
 
+// ---------------------------------------------------------------------------
+// Issue #296 — production-scale fixture (GRQ-cluster creature).
+//
+// Every candidate optimisation (#297–#299) is gated against the **production**
+// creature, not the synthetic 8→8→2 fixture above. The evolved GRQ-cluster
+// network (≈ 1666 neurons across ≈ 34 squash types, ≈ 21 510 synapses, 2461
+// inputs / 1 output) profiles very differently from pure TANH.
+//
+// Fail-loud: if the creature cannot be fetched / read / deserialized, or its
+// topology is not production-sized, the fixture panics — it never falls back to
+// the synthetic creature, which would corrupt every downstream A/B comparison.
+// ---------------------------------------------------------------------------
+
+/// Workspace root (`.../NEAT-AI-scorer`) — parent of this crate's manifest dir.
+fn workspace_root() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("crate manifest dir has a parent")
+        .to_path_buf()
+}
+
+struct ProdFixture {
+    _tmp: TempDir,
+    creature_json: String,
+    creature: neat_core::creature::CreatureExport,
+    creatures_root: PathBuf,
+    data_dir: PathBuf,
+    num_inputs: usize,
+    num_outputs: usize,
+    total_bytes: usize,
+}
+
+/// Lazily build the production fixture once per process, failing loud on any
+/// problem so a broken fixture can never masquerade as a valid measurement.
+fn prod_fixture() -> &'static ProdFixture {
+    static FIX: OnceLock<ProdFixture> = OnceLock::new();
+    FIX.get_or_init(|| {
+        let root = workspace_root();
+        let creature_path = resolve_creature_path(&root);
+
+        // Fetch on demand when the cache is cold; an explicit BENCH_PROD_CREATURE
+        // override is expected to already exist (documented offline path).
+        if !creature_path.exists() {
+            fetch_creature_to(&creature_path, PRODUCTION_CREATURE_URL).unwrap_or_else(|e| {
+                panic!(
+                    "failed to fetch production creature to {}: {e}\n\
+                     set {} to a pre-downloaded network.json to run offline",
+                    creature_path.display(),
+                    rust_scorer::prod_fixture::PROD_CREATURE_ENV,
+                )
+            });
+        }
+
+        let creature_json = fs::read_to_string(&creature_path).unwrap_or_else(|e| {
+            panic!(
+                "failed to read production creature at {}: {e}",
+                creature_path.display()
+            )
+        });
+
+        // Parse + topology-check — panics (never falls back) on any failure.
+        let creature = load_production_creature(&creature_json).unwrap_or_else(|e| {
+            panic!(
+                "production creature at {} failed the fail-loud load: {e}",
+                creature_path.display()
+            )
+        });
+
+        let num_inputs = creature.input;
+        let num_outputs = creature.output;
+        let total_bytes = env_usize(
+            "BENCH_PROD_BYTES",
+            rust_scorer::prod_fixture::DEFAULT_BENCH_CORPUS_BYTES,
+        );
+
+        let tmp = TempDir::new().expect("tempdir");
+        let data_dir = tmp.path().join("data");
+        fs::create_dir_all(&data_dir).unwrap();
+        write_synthetic_bin(&data_dir, num_inputs, num_outputs, total_bytes);
+
+        // Sanity-assert the corpus row count before any timing starts, so a
+        // regression that silently shrinks the corpus fails here rather than
+        // producing plausible-but-meaningless numbers.
+        let expected_rows = corpus_record_count(total_bytes, num_inputs, num_outputs);
+        let bin_files = find_bin_files(&data_dir).expect("find prod bin files");
+        let actual_bytes: u64 = bin_files
+            .iter()
+            .map(|p| fs::metadata(p).expect("bin metadata").len())
+            .sum();
+        let record_bytes = (num_inputs + num_outputs) * std::mem::size_of::<f32>();
+        let actual_rows = (actual_bytes as usize) / record_bytes;
+        assert_eq!(
+            actual_rows, expected_rows,
+            "production corpus row count {actual_rows} != expected {expected_rows}"
+        );
+
+        // Multi-creature root seeded with copies of the production creature.
+        let creatures_root = tmp.path().join("creatures-root");
+        fs::create_dir_all(&creatures_root).unwrap();
+        let pool_size = env_usize("BENCH_PROD_CREATURES", 4).max(1);
+        for n in 0..pool_size {
+            fs::write(
+                creatures_root.join(format!("creature-{n:03}.json")),
+                &creature_json,
+            )
+            .unwrap();
+        }
+
+        eprintln!(
+            "prod_fixture: {} neurons, {} synapses, {num_inputs} inputs, {num_outputs} outputs; \
+             corpus {actual_bytes} bytes / {actual_rows} records; {pool_size} creature copies",
+            creature.neurons.len(),
+            creature.synapses.len(),
+        );
+
+        ProdFixture {
+            _tmp: tmp,
+            creature_json,
+            creature,
+            creatures_root,
+            data_dir,
+            num_inputs,
+            num_outputs,
+            total_bytes,
+        }
+    })
+}
+
+/// Single-creature forward-only fused path against the production creature.
+fn bench_production_single(c: &mut Criterion) {
+    let fix = prod_fixture();
+    let creature = &fix.creature;
+    let bin_files = find_bin_files(&fix.data_dir).expect("find bin files");
+    let config = TrainingDataConfig {
+        num_inputs: fix.num_inputs,
+        num_outputs: fix.num_outputs,
+    };
+
+    let mut group = c.benchmark_group("production_single_creature");
+    group.sample_size(10);
+    group.measurement_time(Duration::from_secs(15));
+    group.throughput(Throughput::Bytes(fix.total_bytes as u64));
+    group.bench_function("forward_only", |b| {
+        b.iter_batched(
+            || compile_creature(creature).expect("compile"),
+            |mut net| {
+                let r = accumulate_cost_sum_forward_only_fused(
+                    CostKind::Mse,
+                    &bin_files,
+                    &config,
+                    creature,
+                    &mut net,
+                )
+                .expect("fused MSE accumulate");
+                black_box(r);
+            },
+            BatchSize::PerIteration,
+        );
+    });
+    group.finish();
+}
+
+/// Directory mode against copies of the production creature. Population sizes
+/// are kept small (the production creature is ≈ 1666 neurons) and overridable
+/// via `BENCH_PROD_CREATURES`.
+fn bench_production_multi(c: &mut Criterion) {
+    let fix = prod_fixture();
+    let mut group = c.benchmark_group("production_multi_creature");
+    group.sample_size(10);
+    group.measurement_time(Duration::from_secs(20));
+    group.throughput(Throughput::Bytes(fix.total_bytes as u64));
+
+    let pool_size = env_usize("BENCH_PROD_CREATURES", 4).max(1);
+    for &n in &[1_usize, pool_size] {
+        if n > pool_size {
+            continue;
+        }
+        let sub_dir = fix
+            .creatures_root
+            .parent()
+            .unwrap()
+            .join(format!("prod-dir-{n}"));
+        if !sub_dir.exists() {
+            fs::create_dir_all(&sub_dir).unwrap();
+            for i in 0..n {
+                fs::write(
+                    sub_dir.join(format!("creature-{i:03}.json")),
+                    &fix.creature_json,
+                )
+                .unwrap();
+            }
+        }
+
+        group.bench_with_input(BenchmarkId::new("creatures", n), &sub_dir, |b, dir| {
+            b.iter(|| {
+                let result = score_from_creature_dir(
+                    dir,
+                    &fix.data_dir,
+                    GpuBackendLabel::CpuFallback,
+                    CostKind::default(),
+                )
+                .expect("multi-creature score");
+                black_box(result);
+            });
+        });
+    }
+    group.finish();
+}
+
 criterion_group!(
     benches,
     bench_score_from_json_fused,
@@ -555,5 +768,7 @@ criterion_group!(
     bench_gpu_score_from_creature_dir,
     bench_gpu_pipelining_toggle,
     bench_large_creature_cpu_vs_gpu,
+    bench_production_single,
+    bench_production_multi,
 );
 criterion_main!(benches);
