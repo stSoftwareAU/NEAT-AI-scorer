@@ -58,8 +58,8 @@ const GROWTH_COST: f64 = 0.000_000_1;
 /// per-creature re-reads of the training data (which would make the sweep count
 /// scale with creature count instead of staying flat at `1`).
 ///
-/// Usage from a test: call [`reset`], run one scoring invocation, then assert
-/// [`count`] equals `1`.
+/// Usage from a test: call [`training_pass_probe::reset`], run one scoring
+/// invocation, then assert [`training_pass_probe::count`] equals `1`.
 ///
 /// Production overhead is a single atomic increment per whole scoring run —
 /// negligible against a full training-corpus sweep.
