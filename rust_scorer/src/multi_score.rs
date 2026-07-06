@@ -46,6 +46,48 @@ use crate::stream_score::{activation_worker_count_for_scorer, effective_fused_re
 /// Keep aligned with main scorer formula.
 const GROWTH_COST: f64 = 0.000_000_1;
 
+/// Instrumentation for the "single pass over training data" invariant
+/// (Issue #3236).
+///
+/// Every multi-creature batch scoring path in this module sweeps the training
+/// corpus **exactly once** via
+/// [`neat_core::training_bin_stream::for_each_read_chunk`], scoring the whole
+/// batch of creatures in that single pass. This process-global counter lets the
+/// `single_pass_assertion` integration test observe how many sweeps a scoring
+/// invocation performs and fail loudly if a future change reintroduces
+/// per-creature re-reads of the training data (which would make the sweep count
+/// scale with creature count instead of staying flat at `1`).
+///
+/// Usage from a test: call [`reset`], run one scoring invocation, then assert
+/// [`count`] equals `1`.
+///
+/// Production overhead is a single atomic increment per whole scoring run —
+/// negligible against a full training-corpus sweep.
+pub mod training_pass_probe {
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static TRAINING_DATA_SWEEPS: AtomicU64 = AtomicU64::new(0);
+
+    /// Reset the sweep counter to zero. Call immediately before a scoring
+    /// invocation whose sweep count you want to observe.
+    #[allow(dead_code)] // used by the `single_pass_assertion` integration test.
+    pub fn reset() {
+        TRAINING_DATA_SWEEPS.store(0, Ordering::SeqCst);
+    }
+
+    /// Number of full training-data sweeps recorded since the last [`reset`].
+    #[allow(dead_code)] // used by the `single_pass_assertion` integration test.
+    pub fn count() -> u64 {
+        TRAINING_DATA_SWEEPS.load(Ordering::SeqCst)
+    }
+
+    /// Record one full sweep over the training corpus. Called immediately
+    /// before each `for_each_read_chunk` invocation in the batch paths.
+    pub(crate) fn record_sweep() {
+        TRAINING_DATA_SWEEPS.fetch_add(1, Ordering::SeqCst);
+    }
+}
+
 struct LoadedCreature {
     key: String,
     path: PathBuf,
@@ -393,6 +435,10 @@ pub fn score_from_creature_dir(
         Ok(())
     };
 
+    // Issue #3236: one sweep over the whole training corpus scores every
+    // creature in the batch. Record it so `single_pass_assertion` fails loudly
+    // if a future change reintroduces per-creature re-reads.
+    training_pass_probe::record_sweep();
     for_each_read_chunk(&bin_files, fused_read_buf_len, |chunk| {
         run_io_loop(
             chunk,
@@ -677,6 +723,8 @@ pub fn score_from_creature_dir_gpu(
             Ok(())
         };
 
+        // Issue #3236: single sweep over the corpus for the whole GPU batch.
+        training_pass_probe::record_sweep();
         for_each_read_chunk(&bin_files, fused_read_buf_len, |chunk| {
             run_io_loop(
                 chunk,
@@ -771,6 +819,9 @@ pub fn score_from_creature_dir_gpu(
             Ok(())
         };
 
+        // Issue #3236: single sweep over the corpus for the whole pipelined
+        // GPU batch.
+        training_pass_probe::record_sweep();
         for_each_read_chunk(&bin_files, fused_read_buf_len, |chunk| {
             run_io_loop(
                 chunk,
