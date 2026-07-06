@@ -18,9 +18,23 @@
 #   BENCH_SCORING_OUTPUTS outputs per record (default 2)
 #   BENCH_SCORING_HIDDEN  hidden neurons per synthetic creature (default 8)
 #
+# Production creature bench (Issue #296) — `production_single_creature` /
+# `production_multi_creature`. These fetch the GRQ-cluster production
+# `network.json` (≈ 3 MB) at bench time and build a synthetic corpus sized to
+# match it. The fetch caches under `target/bench-fixtures/`; the bench is
+# fail-loud — it panics (never falls back to the synthetic fixture) if the
+# creature cannot be fetched / read / deserialized or is not production-sized.
+#   BENCH_PROD_CREATURE   path to a pre-downloaded network.json (skips fetch;
+#                         use for offline / air-gapped reproduction)
+#   BENCH_PROD_BYTES      total bytes per production .bin corpus (default 64 MiB;
+#                         the full production corpus is 20 845 703 976 bytes /
+#                         520 files — see docs/performance-baseline.md)
+#   BENCH_PROD_CREATURES  creature copies for the multi-creature group (default 4)
+#
 # All extra arguments are forwarded to `cargo bench`. Common filters:
 #   ./scripts/run-benches.sh -- score_from_json_fused
 #   ./scripts/run-benches.sh -- score_from_creature_dir/creatures/10
+#   ./scripts/run-benches.sh -- production_          # production creature only
 set -euo pipefail
 
 if [ -f "$HOME/.cargo/env" ]; then
@@ -35,6 +49,9 @@ echo "   BENCH_SCORING_BYTES=${BENCH_SCORING_BYTES:-16777216 (default)}"
 echo "   BENCH_SCORING_INPUTS=${BENCH_SCORING_INPUTS:-8 (default)}"
 echo "   BENCH_SCORING_OUTPUTS=${BENCH_SCORING_OUTPUTS:-2 (default)}"
 echo "   BENCH_SCORING_HIDDEN=${BENCH_SCORING_HIDDEN:-8 (default)}"
+echo "   BENCH_PROD_CREATURE=${BENCH_PROD_CREATURE:-<fetch GRQ-cluster network.json>}"
+echo "   BENCH_PROD_BYTES=${BENCH_PROD_BYTES:-67108864 (default 64 MiB)}"
+echo "   BENCH_PROD_CREATURES=${BENCH_PROD_CREATURES:-4 (default)}"
 echo
 
 cargo bench -p rust_scorer "$@"

@@ -14,6 +14,8 @@ the runs with [`scripts/run-benches.sh`](../scripts/run-benches.sh) or
 | `score_from_json_fused/forward_only` | End-to-end forward-only fused MSE accumulate over a synthetic creature + a `.bin` corpus. | Calls [`accumulate_mse_sum_forward_only_fused`](../rust_scorer/src/stream_score.rs) — the hot path the CLI runs in default mode. |
 | `score_from_creature_dir/creatures/N` | Directory mode, one shared scan + `N` creatures evaluated in parallel (`N=10`, `N=50`). | Calls [`score_from_creature_dir`](../rust_scorer/src/multi_score.rs); future `multi_score.rs` work can be A/B'd against this. |
 | `unpack_and_mse_inner/unpack_then_mse` | Micro-benchmark of the little-endian `f32` unpack + `mse_sum_batch_packed` inner loop on a fixed in-memory chunk (16 K records). | Mirrors the shared inner loop in `unpack_f32s_le` + `mse_sum_batch_packed` so vectorisation work can be measured in isolation. |
+| `production_single_creature/forward_only` | End-to-end forward-only fused MSE accumulate over the **production** GRQ-cluster creature (Issue #296). | Fetches [`network.json`](https://raw.githubusercontent.com/stSoftwareAU/GRQ-cluster/main/network.json) at bench time; **fail-loud** — panics rather than falling back to the synthetic fixture. See [`prod_fixture`](../rust_scorer/src/prod_fixture.rs). |
+| `production_multi_creature/creatures/N` | Directory mode over copies of the production creature (`N=1`, `N=BENCH_PROD_CREATURES`). | The candidate optimisations #297–#299 A/B against this on the real creature, not the synthetic fixture. |
 
 ## Fixture parameters
 
@@ -441,7 +443,150 @@ flowchart LR
     C -->|No| Negative[Comment numbers, close negative]
 ```
 
-## Refreshing the baseline
+## Production-creature baseline — 7 July 2026 (Issue #296)
+
+The measuring stick for the [#295](https://github.com/stSoftwareAU/NEAT-AI-scorer/issues/295)
+"verified speedups on production" milestone. Every candidate optimisation
+(#297–#299) is gated against the **production** GRQ-cluster creature, not the
+synthetic 8→8→2 fixture the older sections above use. The older sections stay
+unchanged so their numbers remain reproducible at their original fixture sizes.
+
+### The production creature
+
+Fetched from
+[`stSoftwareAU/GRQ-cluster` → `network.json`](https://raw.githubusercontent.com/stSoftwareAU/GRQ-cluster/main/network.json)
+at bench time (≈ 3 MB — not committed; the evolved creature is re-published, so a
+committed copy would drift silently). Topology observed on this run:
+
+| Property | Production creature | Synthetic fixture |
+|---|---:|---:|
+| Inputs | 2461 | 8 |
+| Outputs | 1 | 2 |
+| Neurons (hidden + output + constant) | 1666 | 10 |
+| Synapses | 21 510 | ~24 |
+| Distinct squash types | **34** | 1 (`TANH`) |
+| `forwardOnly` | true | true |
+
+The bench is **fail-loud**: if `network.json` cannot be fetched, is empty, fails
+to deserialize, or presents a topology outside the production ranges, the
+fixture panics rather than silently falling back to the synthetic creature (which
+would corrupt every downstream A/B comparison). Before Criterion timing starts it
+also asserts the corpus row count matches the requested `BENCH_PROD_BYTES`.
+
+### Corpus sizing
+
+The **full** production training corpus (from GRQ-cluster `performance.csv`) is
+`training_data_size_bytes = 20 845 703 976` (≈ 19.4 GiB) across
+`training_data_files = 520`. That is impractical to materialise on an unattended
+worker, so the bench builds a synthetic corpus of `BENCH_PROD_BYTES` bytes
+(default 64 MiB) with the creature's real 2461-input / 1-output record shape
+(9848 bytes/record). Numbers below were captured at **32 MiB** (`BENCH_PROD_BYTES=33554432`
+→ 3407 records); the corpus is packed little-endian `f32` deterministic `sin`
+values, matching the other synthetic benches. **Re-run at the same
+`BENCH_PROD_BYTES`** — absolute numbers are corpus-size-specific.
+
+### Host
+
+| Field | Value |
+|---|---|
+| Host CPU | Apple M4 (10 cores) — the authoritative Apple Silicon benchmark host |
+| RAM | 24 GB |
+| OS | macOS 26.5.2 (Darwin 25.5.0, arm64) |
+| Toolchain | rustc 1.95.0 (`bench` profile: release + `lto = true`, `codegen-units = 1`) |
+| `NEAT_SCORER_*` env | unset (defaults) |
+| Fixture | `BENCH_PROD_CREATURE=<network.json>`, `BENCH_PROD_BYTES=33554432` (32 MiB), `BENCH_PROD_CREATURES=4` |
+| Criterion | sample size 10 |
+
+Criterion lower / median / upper (95 % CI); half-width ≈ std-dev proxy.
+
+| Benchmark | Lower | **Median** | Upper | Throughput (median) | Half-width |
+|---|---|---|---|---|---|
+| `production_single_creature/forward_only` | 13.019 ms | **13.134 ms** | 13.201 ms | 2.3793 GiB/s | ±0.091 ms |
+| `production_multi_creature/creatures/1` | 18.821 ms | **18.914 ms** | 18.999 ms | 1.6522 GiB/s | ±0.089 ms |
+| `production_multi_creature/creatures/4` | 66.051 ms | **66.398 ms** | 66.604 ms | 481.94 MiB/s | ±0.28 ms |
+
+Source: `BENCH_PROD_CREATURE=<network.json> BENCH_PROD_BYTES=33554432 BENCH_PROD_CREATURES=4 ./scripts/run-benches.sh -- production_`
+on the host above. The single-creature median (13.1 ms / 32 MiB → 2.38 GiB/s)
+is faster per byte than `production_multi_creature/creatures/1` (18.9 ms) because
+directory mode adds a per-creature scan/collect wrapper; multiplying the shared
+scan throughput by N gives the effective work (`creatures/4` ≈ 1.9 GiB/s of
+network forward-only work).
+
+### Hot spots — 7 July 2026 (Issue #296)
+
+Sample-based flamegraphs captured with
+[`scripts/profile-flamegraph.sh`](../scripts/profile-flamegraph.sh) against the
+**real creature** via the new `PROFILE_PROD_CREATURE` mode
+(`PROFILE_PROD_CREATURE=<network.json> ./scripts/profile-flamegraph.sh 2147483648 524288000 4`).
+Committed under [`docs/evidence/`](evidence/):
+
+* [`single-creature-prod.svg`](evidence/single-creature-prod.svg) — 2,407 samples (2 GiB corpus, one production creature)
+* [`multi-creature-prod.svg`](evidence/multi-creature-prod.svg) — 2,038 samples (500 MB corpus, 4 production creatures)
+
+The synthetic captures (`single-creature.svg`, `multi-creature.svg`,
+`*-200mb.svg`) are preserved unchanged.
+
+> **The production creature profiles very differently from the synthetic
+> 8→8→2 fixture.** On the synthetic fixture `tanhf` alone was the single
+> largest active-CPU hot spot (27.9 %–48 % of active samples). On the
+> production creature `tanhf` **collapses to 3.7 % / 1.8 % active** — only 12
+> of 1662 hidden neurons are `TANH`. The activation cost instead spreads
+> thinly across the full libm transcendental family (`tanhf`, `sinf`, `expf`,
+> `exp`, `atanf`, `logf`, `cos`, …) reflecting the **34 distinct squash
+> types**, totalling only ≈ 14 % / 11 % active with **no single squash
+> function dominating**. The dominant cost shifts almost entirely into
+> `neat_core::loss::mse_sum_batch_packed` (the fused loop that dispatches every
+> squash), which rises to **60.8 % / 72.1 % of active CPU**. Memory-movement
+> frames shrink because the per-record forward pass is ≈ 166× heavier (1666 vs
+> 10 neurons).
+
+#### Single-creature fused path — top self-time frames
+
+_Active % excludes scheduler/startup samples. `_dyld_start` (18 % active) is
+one-shot CLI process launch under `sample`, not steady-state, and is excluded
+from the ranking below._ Active sample base ≈ 1,640.
+
+| # | Function | Total % | Active % | Where it comes from | Owner / route |
+|---|---|---|---|---|---|
+| 1 | `neat_core::loss::mse_sum_batch_packed` | 41.4 % | 60.8 % | Fused MSE + per-neuron squash dispatch over 1662 hidden neurons. | **neat_core → [NEAT-AI-core#227](https://github.com/stSoftwareAU/NEAT-AI-core/issues/227)** |
+| 2 | libm transcendental mix (`tanhf`, `sinf`, `expf`, `exp`, `atanf`, `logf`, …) | 9.7 % | 14.3 % | Activation across 34 squash types; no single function dominates. | **neat_core → #227** |
+| 3 | `neat_core::loss::mse_sum_batch_4way` closure | 4.7 % | 7.0 % | Four-way unrolled inner body called from `mse_sum_batch_packed`. | **neat_core → #227** |
+| 4 | `_platform_memmove` | 3.2 % | 4.8 % | `pending` compaction in the `stream_score` fused closure **plus** neat_core buffer moves. | **scorer-owned (partial)** — `stream_score` compaction |
+| 5 | `swtch_pri` (scheduler idle) | 16.3 % | 23.9 % | Rayon over-parallelism on the single-creature path (persists from the synthetic finding). | **scorer-owned** — worker-count threshold in `stream_score` |
+
+#### Multi-creature directory mode (4 creatures) — top self-time frames
+
+_Active sample base ≈ 1,644._ `--gpu auto` cleanly fell back to CPU (the
+production squash mix is unhostable by the MSE-only GPU kernel — discriminant 10),
+so this is the CPU directory path.
+
+| # | Function | Total % | Active % | Where it comes from | Owner / route |
+|---|---|---|---|---|---|
+| 1 | `neat_core::loss::mse_sum_batch_packed` | 58.1 % | 72.1 % | Fused MSE + squash dispatch, stacked across 4 networks per chunk. | **neat_core → #227** |
+| 2 | libm transcendental mix (`expf`, `sinf`, `tanhf`, `atanf`, `exp`, `log`, `cos`, …) | 9.3 % | 11.5 % | Activation across 34 squash types. | **neat_core → #227** |
+| 3 | `neat_core::loss::mse_sum_batch_4way` closure | 5.4 % | 6.7 % | Inner four-way unrolled body. | **neat_core → #227** |
+| 4 | `_platform_memmove` | 1.8 % | 2.3 % | Mostly neat_core buffer/SIMD moves; a tiny share is scorer-side `pending.extend_from_slice`. | mostly **neat_core → #227** |
+| 5 | `swtch_pri` (scheduler idle) | 18.2 % | 22.6 % | Rayon scheduling across the worker pool. | scorer-owned |
+
+### Scorer-owned hot spots (what #297–#299 can A/B here)
+
+Per repo isolation, this issue stays within NEAT-AI-scorer; the two dominant
+frames (`mse_sum_batch_packed` + the libm activation mix) live in `neat_core`
+and are **routed to [NEAT-AI-core#227](https://github.com/stSoftwareAU/NEAT-AI-core/issues/227)**,
+not fixed here. The remaining scorer-owned candidates, enumerated so the
+sub-issues can be gated against the reproducible numbers above:
+
+1. **Rayon over-parallelism on the single-creature path** — `swtch_pri` is
+   ≈ 24 % of active CPU. The worker-count / fan-out threshold in
+   [`stream_score::accumulate_cost_sum_forward_only_fused`](../rust_scorer/src/stream_score.rs)
+   is the scorer-owned lever. This persists from the synthetic-fixture finding
+   and is the largest scorer-owned opportunity.
+2. **`pending`-compaction `_platform_memmove`** in the same fused closure —
+   ≈ 4.8 % active single-creature; the scorer-side share is small on the
+   production creature because per-record activation work dwarfs the buffer
+   moves.
+
+Everything else at the top of both profiles is `neat_core` territory (#227).
 
 1. Run `./scripts/run-benches.sh` (default fixture) and record the median +
    std-dev proxy for each benchmark.
