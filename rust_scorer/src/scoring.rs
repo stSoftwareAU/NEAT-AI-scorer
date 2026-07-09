@@ -479,6 +479,14 @@ pub struct ScoreResult {
     /// across the whole corpus (one per chunk on the multi-creature path).
     #[serde(rename = "gpuDispatchCount", skip_serializing_if = "Option::is_none")]
     pub gpu_dispatch_count: Option<usize>,
+    /// Issue #310: the effective record-level sub-sampling rate applied by the
+    /// forward-only streaming reader (`--sample-rate`). Present (and in
+    /// `(0, 1)`) only when sub-sampling actually ran, so a consumer can confirm
+    /// the scorer honoured `--sample-rate` rather than silently ignoring it, and
+    /// read `record_count` as the number of *sampled* records scored. Absent for
+    /// a full-corpus run (`--sample-rate 1`, the default).
+    #[serde(rename = "sampleRate", skip_serializing_if = "Option::is_none")]
+    pub sample_rate: Option<f64>,
 }
 
 #[cfg(test)]

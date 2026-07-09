@@ -17,6 +17,7 @@ use std::time::Instant;
 
 use crate::cost::{CostKind, accumulate_cost_sum};
 use crate::read_tuning::{MAX_READ_BYTES, training_read_target_bytes_from_env};
+use crate::sampling::SampleSpec;
 use crate::stream_io::run_io_loop;
 use neat_core::creature::CreatureExport;
 use neat_core::network::CompiledNetwork;
@@ -151,12 +152,44 @@ fn partition_packed_records(
 /// let mean_error = loss_sum / records as f64;
 /// println!("mean error = {mean_error}");
 /// ```
+// `#[allow(dead_code)]`: the full-rate wrapper is the library entry point used
+// by benches/tests; the CLI binary calls the `_sampled` variant directly, so its
+// self-contained module tree never invokes this delegator.
+#[allow(dead_code)]
 pub fn accumulate_cost_sum_forward_only_fused(
+    cost: CostKind,
+    bin_files: &[std::path::PathBuf],
+    config: &TrainingDataConfig,
+    creature: &CreatureExport,
+    network: &mut CompiledNetwork,
+) -> Result<(f64, usize, usize, usize, f64), String> {
+    accumulate_cost_sum_forward_only_fused_sampled(
+        cost,
+        bin_files,
+        config,
+        creature,
+        network,
+        SampleSpec::full(),
+    )
+}
+
+/// Issue #310 — record-level sub-sampling variant of
+/// [`accumulate_cost_sum_forward_only_fused`].
+///
+/// Identical to the full-rate function except that `sample` selects a
+/// deterministic, stratified subsample of the corpus (see
+/// [`crate::sampling`]). `sample = SampleSpec::full()` reproduces the full-rate
+/// behaviour exactly (the returned `record_count` then equals the full corpus
+/// count); a sub-rate `sample` returns the loss sum and count over the **kept**
+/// records only, so `loss_sum / record_count` is still the mean error over the
+/// scored subset.
+pub fn accumulate_cost_sum_forward_only_fused_sampled(
     cost: CostKind,
     bin_files: &[std::path::PathBuf],
     config: &TrainingDataConfig,
     _creature: &CreatureExport,
     network: &mut CompiledNetwork,
+    sample: SampleSpec,
 ) -> Result<(f64, usize, usize, usize, f64), String> {
     let record_bytes = config.bytes_per_record();
     if record_bytes == 0 {
@@ -275,6 +308,9 @@ pub fn accumulate_cost_sum_forward_only_fused(
         Ok(())
     };
 
+    // Issue #310: one stateful sampler threads the global record index across
+    // every streamed chunk so the kept set is independent of chunk boundaries.
+    let mut sampler = sample.sampler();
     for_each_read_chunk(bin_files, read_buf_len, |chunk| {
         run_io_loop(
             chunk,
@@ -282,6 +318,7 @@ pub fn accumulate_cost_sum_forward_only_fused(
             &mut head,
             &mut unpack_floats,
             record_bytes,
+            &mut sampler,
             &mut score_chunk,
         )
     })?;

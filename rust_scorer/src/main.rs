@@ -15,6 +15,7 @@ mod env_tuning;
 mod gpu;
 mod multi_score;
 mod read_tuning;
+mod sampling;
 mod scoring;
 mod stream_io;
 mod stream_score;
@@ -34,8 +35,9 @@ use std::sync::Arc;
 
 use crate::cost::CostKind;
 use crate::gpu::{GpuBackendLabel, GpuMode, ScoringPath, auto_should_use_gpu};
-use crate::multi_score::{score_from_creature_dir, score_from_creature_dir_gpu};
+use crate::multi_score::{score_from_creature_dir_gpu_sampled, score_from_creature_dir_sampled};
 use crate::read_tuning::{training_read_backend_label, training_read_target_bytes_from_env};
+use crate::sampling::{SampleSpec, parse_sample_rate};
 use crate::scoring::{ScoreResult, calculate_score, compute_score_components};
 use crate::stream_score::activation_worker_count_for_scorer;
 
@@ -107,6 +109,32 @@ struct Cli {
     #[arg(long, value_enum, value_name = "NAME", default_value_t = CostKind::default())]
     cost: CostKind,
 
+    /// Record-level sub-sampling rate for the forward-only streaming reader
+    /// (Issue #310, multi-fidelity fitness).
+    ///
+    /// A value in `(0, 1]`; defaults to `1` (score every record). When `< 1`
+    /// the reader deterministically keeps a stratified subsample of the corpus
+    /// — record `i` is kept iff `floor((i+1)·rate) > floor(i·rate)` — cutting
+    /// the scored record count (and wall-clock) roughly proportionally with **no
+    /// second corpus on disk**. The stride matches the TypeScript consumer
+    /// (NEAT-AI#3257) so both agree on which records survive. Out-of-range
+    /// values are rejected with a non-zero exit (never silently clamped).
+    ///
+    /// The reported `error`/`score` are then computed over the sampled subset,
+    /// `recordCount` is the number of records actually scored, and `sampleRate`
+    /// echoes the effective rate so a caller can confirm it was honoured.
+    #[arg(long, value_name = "RATE", value_parser = parse_sample_rate)]
+    sample_rate: Option<f64>,
+
+    /// Stride phase offset for `--sample-rate` (Issue #310).
+    ///
+    /// Shifts the deterministic stratified stride to select a *different*
+    /// subsample of the same size — e.g. rotating the sampled stratum per
+    /// generation — without any randomness. Defaults to `0`. Ignored when
+    /// `--sample-rate` is `1` or absent.
+    #[arg(long, value_name = "PHASE", default_value_t = 0)]
+    sample_phase: u64,
+
     /// Positional arguments.
     ///
     /// * default mode: `<creature.json> <data_dir>` (two values).
@@ -173,6 +201,15 @@ fn run(cli: &Cli) -> Result<RunOutput, String> {
     let mode = gpu::resolve_mode(cli.gpu, std::env::var("NEAT_SCORER_GPU").ok().as_deref())
         .map_err(|e| e.to_string())?;
 
+    // Issue #310: resolve the record-level sub-sampling spec once. `--sample-rate`
+    // was range-validated by clap's value_parser; re-validate here so `--sample-phase`
+    // is bound to the same spec (and fails loud on any inconsistency rather than
+    // silently dropping the flag).
+    let sample = match cli.sample_rate {
+        Some(rate) => SampleSpec::new(rate, cli.sample_phase)?,
+        None => SampleSpec::full(),
+    };
+
     // Issue #121: `--gpu on --cost X != MSE` is a hard error — the GPU kernel
     // only knows how to compute MSE today, so silently downgrading would
     // produce a wrong scoring result. Check this before adapter selection so
@@ -234,6 +271,7 @@ fn run(cli: &Cli) -> Result<RunOutput, String> {
             &data_path,
             GpuBackendLabel::CpuFallback,
             cli.cost,
+            &sample,
         )
         .map(|r| RunOutput::Single(Box::new(r)));
     }
@@ -296,13 +334,14 @@ fn run(cli: &Cli) -> Result<RunOutput, String> {
             };
 
             if let Some((backend, ctx)) = resolved_ctx {
-                match score_from_creature_dir_gpu(
+                match score_from_creature_dir_gpu_sampled(
                     creature_path,
                     data_path,
                     backend,
                     ctx,
                     2,
                     cli.cost,
+                    &sample,
                 ) {
                     Ok(r) => return Ok(RunOutput::Multi(r)),
                     Err(e) => {
@@ -321,11 +360,12 @@ fn run(cli: &Cli) -> Result<RunOutput, String> {
         // could not host the creature set, or the path is not GPU-default),
         // or the mode is Off. Report `cpu-fallback` so `gpuBackend` reflects
         // what actually ran (Issue #83).
-        score_from_creature_dir(
+        score_from_creature_dir_sampled(
             creature_path,
             data_path,
             GpuBackendLabel::CpuFallback,
             cli.cost,
+            &sample,
         )
         .map(RunOutput::Multi)
     } else {
@@ -342,6 +382,7 @@ fn run(cli: &Cli) -> Result<RunOutput, String> {
             data_path,
             GpuBackendLabel::CpuFallback,
             cli.cost,
+            &sample,
         )
         .map(|r| RunOutput::Single(Box::new(r)))
     }
@@ -355,6 +396,10 @@ fn score_from_json(
     // streaming path for `forwardOnly` creatures and through a per-record
     // `accumulate_cost_sum` call for recurrent creatures.
     cost: CostKind,
+    // Issue #310 — record-level sub-sampling spec; applies to both the fused
+    // forward-only path and the per-record recurrent path so the flag never
+    // silently no-ops for a single creature.
+    sample: &SampleSpec,
 ) -> Result<ScoreResult, String> {
     let started = Instant::now();
     let creature = parse_creature_json(creature_json).map_err(|e| e.to_string())?;
@@ -405,12 +450,13 @@ fn score_from_json(
     let (total_error, record_count, parallel_activation_batches, max_activation_batch_records) =
         if use_fused_stream {
             let (loss_sum, count, parallel_batches, max_batch, clone_secs) =
-                stream_score::accumulate_cost_sum_forward_only_fused(
+                stream_score::accumulate_cost_sum_forward_only_fused_sampled(
                     cost,
                     &bin_files,
                     &config,
                     &creature,
                     &mut network,
+                    *sample,
                 )?;
             if count == 0 {
                 return Err("No training records found".to_string());
@@ -430,11 +476,18 @@ fn score_from_json(
             let mut total_error = 0.0_f64;
             let mut record_count: usize = 0;
             let mut packed: Vec<f32> = Vec::with_capacity(creature.input + num_outputs);
+            // Issue #310: the same deterministic stride drops records here too so
+            // `--sample-rate` is honoured (not silently ignored) for recurrent
+            // creatures. The network state is reset per scored record below.
+            let mut sampler = sample.sampler();
 
             while let Some(record) = iter
                 .next_record()
                 .map_err(|e| format!("Failed reading training record: {e}"))?
             {
+                if !sampler.keep_next() {
+                    continue;
+                }
                 packed.clear();
                 packed.extend_from_slice(&record.inputs);
                 packed.extend_from_slice(&record.outputs);
@@ -496,6 +549,8 @@ fn score_from_json(
         gpu_inflight_chunks: None,
         gpu_dispatch_count: None,
         cost_name: cost.as_str().to_string(),
+        // Issue #310: report the effective rate only when sub-sampling ran.
+        sample_rate: (!sample.is_full()).then_some(sample.rate()),
     })
 }
 
@@ -622,6 +677,8 @@ mod tests {
             creature_stdin: false,
             gpu: None,
             cost: CostKind::default(),
+            sample_rate: None,
+            sample_phase: 0,
             args: vec![creature.to_path_buf(), data.to_path_buf()],
         }
     }
@@ -798,6 +855,7 @@ mod tests {
             &data_dir,
             GpuBackendLabel::CpuFallback,
             CostKind::default(),
+            &SampleSpec::full(),
         )
         .unwrap();
         let recurrent = score_from_json(
@@ -805,6 +863,7 @@ mod tests {
             &data_dir,
             GpuBackendLabel::CpuFallback,
             CostKind::default(),
+            &SampleSpec::full(),
         )
         .unwrap();
 
@@ -907,6 +966,7 @@ mod tests {
             gpu_inflight_chunks: None,
             gpu_dispatch_count: None,
             cost_name: "MSE".to_string(),
+            sample_rate: None,
         };
         let json = serde_json::to_string_pretty(&result).unwrap();
         // Verify camelCase keys in output
@@ -997,6 +1057,7 @@ mod tests {
             &data_dir,
             GpuBackendLabel::CpuFallback,
             CostKind::default(),
+            &SampleSpec::full(),
         )
         .unwrap();
 
@@ -1015,6 +1076,8 @@ mod tests {
             creature_stdin: true,
             gpu: None,
             cost: CostKind::default(),
+            sample_rate: None,
+            sample_phase: 0,
             args: vec![PathBuf::from("/tmp/creature.json"), PathBuf::from("/tmp")],
         };
         let err = resolve_inputs(&cli).expect_err("extra positional args should fail");
@@ -1031,6 +1094,8 @@ mod tests {
             creature_stdin: false,
             gpu: None,
             cost: CostKind::default(),
+            sample_rate: None,
+            sample_phase: 0,
             args: vec![PathBuf::from("/tmp")],
         };
         let err = resolve_inputs(&cli).expect_err("single positional arg should fail");
@@ -1053,6 +1118,7 @@ mod tests {
             &data_dir,
             GpuBackendLabel::CpuFallback,
             CostKind::default(),
+            &SampleSpec::full(),
         )
         .expect_err("invalid JSON should fail");
         assert!(!err.is_empty());
@@ -1149,6 +1215,7 @@ mod tests {
             &data_dir,
             GpuBackendLabel::CpuFallback,
             CostKind::default(),
+            &SampleSpec::full(),
         )
         .unwrap();
         assert_eq!(result.gpu_backend, GpuBackendLabel::CpuFallback);

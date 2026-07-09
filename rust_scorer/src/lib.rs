@@ -21,6 +21,7 @@ pub mod gpu;
 pub mod multi_score;
 pub mod prod_fixture;
 pub mod read_tuning;
+pub mod sampling;
 pub mod scoring;
 pub mod stream_io;
 pub mod stream_score;

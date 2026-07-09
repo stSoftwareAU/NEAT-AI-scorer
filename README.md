@@ -316,6 +316,74 @@ flowchart LR
     Dispatch -->|non-MSE OR no GPU| CPU[CPU pipeline]
 ```
 
+### Record-level sub-sampling — `--sample-rate` (Issue #310)
+
+Multi-fidelity fitness scores a creature on a deterministic, stratified
+**subsample** of the binary corpus instead of the full corpus, trading a little
+ranking fidelity for a large wall-clock saving during a per-generation ranking
+pass. Production spends ≈95 % of its fitness wall-clock in the forward-only Rust
+batch path (`rust_scorer <creatures_dir> <data_dir>`) over a single ~21 GiB
+corpus file, so the byte cut has to happen **inside the streaming reader** — there
+is no shard to drop and no room for a second corpus on disk.
+
+- `--sample-rate <f>` — a value in `(0, 1]`, default `1` (score every record).
+  When `< 1`, the reader keeps a stratified subsample: record `i` is kept iff
+  `floor((i+1)·rate) > floor(i·rate)`. This keeps `floor(N·rate)` of `N` records
+  spread evenly across the corpus in a **single pass, no second corpus on disk**.
+  Out-of-range values are rejected with a non-zero exit (never silently clamped).
+- `--sample-phase <u64>` — default `0`. Shifts the stride to select a *different*
+  subsample of the same size (e.g. rotating the sampled stratum per generation)
+  with no randomness. Ignored when `--sample-rate` is `1` or absent.
+
+The stride matches the TypeScript consumer (NEAT-AI#3257) exactly, so both agree
+on which records survive. When sub-sampling runs, `error`/`score` are computed
+over the kept subset, `recordCount` is the number of records actually scored,
+and a `sampleRate` JSON field echoes the effective rate so a caller can confirm
+the scorer honoured the flag rather than silently ignoring it. A full-corpus run
+(`--sample-rate 1`, the default) emits the pre-#310 JSON unchanged. The consumer
+can probe `--help` for `--sample-rate` (the `resolveProbeState` pattern) and pass
+it on the batch path once a release advertises it.
+
+```text
+rust_scorer --sample-rate 0.25 <creatures_dir> <training_data_dir>  # score a 25% stratified subsample
+rust_scorer --sample-rate 0.5 --sample-phase 1 <c.json> <data_dir>  # a different 50% stratum
+```
+
+The flag applies uniformly to every scoring path — the single-creature fused
+path, the multi-creature CPU directory path, the GPU directory path, and the
+per-record recurrent path — because sampling is threaded through the one shared
+head-and-compact reader (`run_io_loop`). A stateful sampler carries the global
+record index across streamed chunks so the kept set is **independent of how the
+reader chunks the bytes**.
+
+```mermaid
+flowchart LR
+    Read[for_each_read_chunk] --> Loop[run_io_loop: decode whole records]
+    Loop --> Filter{RecordSampler: keep i?}
+    Filter -->|floor rule true| Keep[compact kept records to front]
+    Filter -->|false| Drop[skip record]
+    Keep --> Score[score_chunk: activate + accumulate cost]
+    Drop --> Loop
+```
+
+Synthetic corpus (1.5 M records, forward-only 4→128→2 creature, CPU path,
+`--gpu off`; best of 3 runs) — wall-clock scales down with the rate while the
+score stays stable:
+
+| `--sample-rate` | records scored | wall-clock | speed-up |
+|-----------------|----------------|------------|----------|
+| `1.0` (default) | 1,500,000      | 0.121 s    | 1.00×    |
+| `0.5`           | 750,000        | 0.069 s    | 1.76×    |
+| `0.25`          | 375,000        | 0.039 s    | 3.15×    |
+| `0.1`           | 150,000        | 0.021 s    | 5.67×    |
+
+> **Production gate (needs production data + a human).** Lighting this up on the
+> real GRQ corpus is gated on ≥ 5 % `evolveDir` wall-clock **and** rank
+> correlation (Spearman/pairwise) of subsample vs full ≥ 0.95, published on
+> NEAT-AI#3256 / #3257. The scorer does **not** auto-release — the consumer bumps
+> to a released scorer through the normal dependency-bump flow once a human cuts
+> the release.
+
 ### Stdin input mode
 
 For restricted worker/sandbox environments where writing a temp file may fail
@@ -331,7 +399,7 @@ single positional argument (`<training_data_dir>`).
 
 ### Output
 
-Single-creature mode JSON includes **`forwardOnly`** (from the creature) and **`trainingReadBackend`**: on a native release build you should see **`pipelined_double_buffer`** when `forwardOnly` is `true` (fused scoring + `training_bin_stream`). If `forwardOnly` is `false`, you get **`record_iterator`** instead (no pipelining — much slower on large data). The **`gpuBackend`** field reports which `wgpu` backend the scorer would run on (`"cpu-fallback"` until GPU kernels land; see [GPU mode](#gpu-mode-issues-80--83) above).
+Single-creature mode JSON includes **`forwardOnly`** (from the creature) and **`trainingReadBackend`**: on a native release build you should see **`pipelined_double_buffer`** when `forwardOnly` is `true` (fused scoring + `training_bin_stream`). If `forwardOnly` is `false`, you get **`record_iterator`** instead (no pipelining — much slower on large data). The **`gpuBackend`** field reports which `wgpu` backend the scorer would run on (`"cpu-fallback"` until GPU kernels land; see [GPU mode](#gpu-mode-issues-80--83) above). When record-level sub-sampling runs (`--sample-rate < 1`, see [Record-level sub-sampling](#record-level-sub-sampling--sample-rate-issue-310)) a **`sampleRate`** field echoes the effective rate and `recordCount` is the number of *sampled* records scored; the field is absent for a full-corpus run.
 
 In directory mode, output is a top-level object keyed by creature filename stem, where each value has the same shape as a single-creature `ScoreResult`.
 

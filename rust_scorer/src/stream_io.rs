@@ -9,6 +9,8 @@
 //! driver here so a single copy is shared, keeping the Issue #103
 //! out-of-bounds-safety invariant in `unpack_f32s_le` in one place.
 
+use crate::sampling::RecordSampler;
+
 /// Compact `pending` when the consumed prefix is large (avoids unbounded `head`).
 pub(crate) const PENDING_COMPACT_HEAD_BYTES: usize = 512 * 1024;
 
@@ -128,21 +130,36 @@ impl FloatBufPool {
 /// memcpy through `pending` on the common path (Issue #38). Slow path: residual
 /// bytes are buffered in `pending`; merge the new chunk and consume whole
 /// records from the head.
+///
+/// Issue #310: `sampler` applies record-level sub-sampling *after* decode and
+/// *before* `score_chunk`, compacting the kept records to the front of the
+/// unpack buffer so every downstream path (fused, multi-CPU, multi-GPU) scores
+/// only the sampled subset with no second corpus on disk. Threading the sampler
+/// through here keeps the kept set independent of chunk boundaries. A full-rate
+/// (`--sample-rate 1`, the default) sampler is a zero-overhead pass-through.
+/// When a chunk's sampled subset is empty, `score_chunk` is skipped entirely —
+/// callers therefore never see a zero-record chunk.
 pub(crate) fn run_io_loop(
     chunk: &[u8],
     pending: &mut Vec<u8>,
     head: &mut usize,
     unpack_floats: &mut Vec<f32>,
     record_bytes: usize,
+    sampler: &mut RecordSampler,
     score_chunk: &mut ScoreChunkFn<'_>,
 ) -> Result<(), String> {
+    // Records are packed as `record_bytes / 4` little-endian f32 values.
+    let values_per_record = record_bytes / 4;
     if pending.is_empty() && *head == 0 && !chunk.is_empty() {
         let aligned_len = (chunk.len() / record_bytes) * record_bytes;
         if aligned_len > 0 {
             let num_f32 = aligned_len / 4;
             let n_records = aligned_len / record_bytes;
             unpack_f32s_le(&chunk[..aligned_len], unpack_floats, num_f32);
-            score_chunk(unpack_floats, n_records)?;
+            let kept = sampler.filter_in_place(unpack_floats, n_records, values_per_record);
+            if kept > 0 {
+                score_chunk(unpack_floats, kept)?;
+            }
         }
         if aligned_len < chunk.len() {
             // Buffer only the trailing fragment for the next call; `head` stays at 0.
@@ -166,7 +183,10 @@ pub(crate) fn run_io_loop(
         let n_records = complete_len / record_bytes;
         let slice = &pending[*head..*head + complete_len];
         unpack_f32s_le(slice, unpack_floats, num_f32);
-        score_chunk(unpack_floats, n_records)?;
+        let kept = sampler.filter_in_place(unpack_floats, n_records, values_per_record);
+        if kept > 0 {
+            score_chunk(unpack_floats, kept)?;
+        }
         *head += complete_len;
     }
 
@@ -182,6 +202,7 @@ pub(crate) fn run_io_loop(
 #[cfg(test)]
 mod tests {
     use super::{FloatBufPool, compact_pending_if_needed, run_io_loop, unpack_f32s_le};
+    use crate::sampling::{RecordSampler, SampleSpec};
 
     #[test]
     fn float_buf_pool_reuses_recycled_buffer_allocation() {
@@ -293,6 +314,7 @@ mod tests {
         let mut pending = Vec::new();
         let mut head = 0_usize;
         let mut floats = Vec::new();
+        let mut sampler = RecordSampler::full();
         let mut scored: Vec<(Vec<f32>, usize)> = Vec::new();
         let mut score_chunk = |f: &mut Vec<f32>, n: usize| -> Result<(), String> {
             scored.push((f.clone(), n));
@@ -305,6 +327,7 @@ mod tests {
             &mut head,
             &mut floats,
             record_bytes,
+            &mut sampler,
             &mut score_chunk,
         )
         .unwrap();
@@ -323,6 +346,7 @@ mod tests {
         let mut pending = Vec::new();
         let mut head = 0_usize;
         let mut floats = Vec::new();
+        let mut sampler = RecordSampler::full();
         let mut scored: Vec<(Vec<f32>, usize)> = Vec::new();
 
         // First chunk: 4 bytes (half a record) → buffered, nothing scored.
@@ -341,6 +365,7 @@ mod tests {
                 &mut head,
                 &mut floats,
                 record_bytes,
+                &mut sampler,
                 &mut score_chunk,
             )
             .unwrap();
@@ -353,6 +378,7 @@ mod tests {
                 &mut head,
                 &mut floats,
                 record_bytes,
+                &mut sampler,
                 &mut score_chunk,
             )
             .unwrap();
@@ -377,6 +403,7 @@ mod tests {
         let mut pending = Vec::new();
         let mut head = 0_usize;
         let mut floats = Vec::new();
+        let mut sampler = RecordSampler::full();
         let mut score_chunk =
             |_f: &mut Vec<f32>, _n: usize| -> Result<(), String> { Err("boom".to_string()) };
 
@@ -386,9 +413,55 @@ mod tests {
             &mut head,
             &mut floats,
             record_bytes,
+            &mut sampler,
             &mut score_chunk,
         )
         .unwrap_err();
         assert_eq!(err, "boom");
+    }
+
+    #[test]
+    fn run_io_loop_sub_sampling_drops_records_and_ignores_chunk_splits() {
+        // record_bytes = 4 (one f32 per record); value == global record index.
+        // rate 0.5, phase 0 keeps the odd global indices {1, 3, 5, 7}.
+        let record_bytes = 4_usize;
+        let mut sampler = SampleSpec::new(0.5, 0).unwrap().sampler();
+        let mut pending = Vec::new();
+        let mut head = 0_usize;
+        let mut floats = Vec::new();
+        let mut scored: Vec<f32> = Vec::new();
+
+        {
+            let mut score_chunk = |f: &mut Vec<f32>, n: usize| -> Result<(), String> {
+                assert!(n > 0, "score_chunk must never see an empty sampled chunk");
+                assert_eq!(f.len(), n);
+                scored.extend_from_slice(f);
+                Ok(())
+            };
+
+            // Feed records 0..8 in uneven byte chunks to prove the kept set is
+            // independent of where the byte boundaries fall.
+            let bytes = |records: std::ops::Range<usize>| -> Vec<u8> {
+                let mut b: Vec<u8> = Vec::new();
+                for i in records {
+                    b.extend_from_slice(&(i as f32).to_le_bytes());
+                }
+                b
+            };
+            for chunk in [bytes(0..3), bytes(3..4), bytes(4..8)] {
+                run_io_loop(
+                    &chunk,
+                    &mut pending,
+                    &mut head,
+                    &mut floats,
+                    record_bytes,
+                    &mut sampler,
+                    &mut score_chunk,
+                )
+                .unwrap();
+            }
+        }
+
+        assert_eq!(scored, vec![1.0, 3.0, 5.0, 7.0]);
     }
 }
