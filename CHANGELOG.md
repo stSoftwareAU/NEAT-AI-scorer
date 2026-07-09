@@ -17,6 +17,24 @@ section to the released version with its date.
 
 ### Added
 
+- **Record-level `--sample-rate` sub-sampling in the forward-only streaming
+  reader (Issue #310, multi-fidelity fitness).** New `--sample-rate <f>`
+  (`(0, 1]`, default `1`) and `--sample-phase <u64>` (default `0`) flags make the
+  reader deterministically keep a stratified subsample of the corpus — record
+  `i` is kept iff `floor((i+1)·rate) > floor(i·rate)` — in a single pass with **no
+  second corpus on disk**. The stride matches the TypeScript consumer
+  (NEAT-AI#3257) so both agree on which records survive, and a stateful sampler
+  threads the global record index through `run_io_loop` so the kept set is
+  independent of chunk boundaries. Sampling applies uniformly to the fused
+  single-creature, multi-creature CPU, GPU directory, and recurrent paths. When
+  sub-sampling runs, `error`/`score` are over the kept subset, `recordCount` is
+  the sampled count, and a new `sampleRate` JSON field echoes the effective rate
+  (absent for a full-corpus run, so the default JSON is unchanged). Out-of-range
+  rates fail loud with a non-zero exit. Synthetic CPU benchmark (1.5 M records,
+  4→128→2 forward-only creature): `0.5`→1.76×, `0.25`→3.15×, `0.1`→5.67×
+  wall-clock speed-up. Lighting this up on the production corpus is gated on
+  production data + a human (rank-correlation gate on NEAT-AI#3256 / #3257); the
+  scorer does not auto-release.
 - **Expand GPU squash coverage to every point-wise activation (Issue #305).**
   The `forward_mse_batched` / `forward_mse_scratch` WGSL kernels now inline all
   32 point-wise squashes (`SquashType` 0..=31 — SELU, GELU, SINE, ABSOLUTE,

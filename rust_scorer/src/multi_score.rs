@@ -39,6 +39,7 @@ use crate::cost::{CostKind, accumulate_cost_sum};
 use crate::gpu::forward_mse_batched::{BatchedRunner, GpuPrepareError, build_batched_network_data};
 use crate::gpu::{GpuBackendLabel, GpuContext};
 use crate::read_tuning::{training_read_backend_label, training_read_target_bytes_from_env};
+use crate::sampling::SampleSpec;
 use crate::scoring::{ScoreResult, calculate_score, complexity_penalty, compute_score_components};
 use crate::stream_io::{FloatBufPool, run_io_loop};
 use crate::stream_score::{activation_worker_count_for_scorer, effective_fused_read_buf_len};
@@ -319,6 +320,9 @@ const EARLY_EXIT_ABORT_ALL_SENTINEL: &str = "\u{0}neat-scorer-early-exit-abort-a
 ///     println!("{id}: score = {}", result.score);
 /// }
 /// ```
+// `#[allow(dead_code)]`: full-rate library entry point used by benches/tests;
+// the CLI binary calls `score_from_creature_dir_sampled` directly.
+#[allow(dead_code)]
 pub fn score_from_creature_dir(
     creatures_dir: &Path,
     data_path: &Path,
@@ -328,8 +332,35 @@ pub fn score_from_creature_dir(
     cost: CostKind,
 ) -> Result<BTreeMap<String, ScoreResult>, String> {
     // No callback registered → behaviour and scores are identical to before the
-    // early-exit surface landed (Issue #308).
-    score_from_creature_dir_cpu(creatures_dir, data_path, gpu_backend, cost, None)
+    // early-exit surface landed (Issue #308). Full-rate sampling (Issue #310).
+    score_from_creature_dir_cpu(
+        creatures_dir,
+        data_path,
+        gpu_backend,
+        cost,
+        None,
+        &SampleSpec::full(),
+    )
+}
+
+/// Issue #310 — record-level sub-sampling variant of
+/// [`score_from_creature_dir`].
+///
+/// Streams the corpus once and scores every creature on the deterministic,
+/// stratified subsample selected by `sample` (see [`crate::sampling`]). With
+/// `sample = SampleSpec::full()` the results are identical to
+/// [`score_from_creature_dir`]; with a sub-rate `sample` each creature's
+/// `error` is its mean cost over the kept records and `record_count` is the
+/// kept count. This is the production hot path (`rust_scorer <creatures_dir>
+/// <data_dir>`) where multi-fidelity fitness delivers its wall-clock saving.
+pub fn score_from_creature_dir_sampled(
+    creatures_dir: &Path,
+    data_path: &Path,
+    gpu_backend: GpuBackendLabel,
+    cost: CostKind,
+    sample: &SampleSpec,
+) -> Result<BTreeMap<String, ScoreResult>, String> {
+    score_from_creature_dir_cpu(creatures_dir, data_path, gpu_backend, cost, None, sample)
 }
 
 /// Issue #308 — directory-mode batch scoring with a per-chunk early-exit hook.
@@ -400,6 +431,7 @@ where
         gpu_backend,
         cost,
         Some(&mut on_chunk),
+        &SampleSpec::full(),
     )
 }
 
@@ -415,6 +447,9 @@ fn score_from_creature_dir_cpu(
     gpu_backend: GpuBackendLabel,
     cost: CostKind,
     mut on_chunk: Option<&mut EarlyExitCallback<'_>>,
+    // Issue #310 — record-level sub-sampling. `SampleSpec::full()` restores the
+    // pre-#310 full-corpus behaviour exactly.
+    sample: &SampleSpec,
 ) -> Result<BTreeMap<String, ScoreResult>, String> {
     let started = Instant::now();
     let loaded = load_creatures_from_dir(creatures_dir)?;
@@ -656,6 +691,9 @@ fn score_from_creature_dir_cpu(
     // creature in the batch. Record it so `single_pass_assertion` fails loudly
     // if a future change reintroduces per-creature re-reads.
     training_pass_probe::record_sweep();
+    // Issue #310: one stateful sampler threads the global record index across
+    // the whole sweep so the kept subset is stable regardless of chunking.
+    let mut sampler = sample.sampler();
     let sweep = for_each_read_chunk(&bin_files, fused_read_buf_len, |chunk| {
         run_io_loop(
             chunk,
@@ -663,6 +701,7 @@ fn score_from_creature_dir_cpu(
             &mut head,
             &mut unpack_floats,
             record_bytes,
+            &mut sampler,
             &mut score_chunk,
         )
     });
@@ -743,6 +782,9 @@ fn score_from_creature_dir_cpu(
                 gpu_inflight_chunks: None,
                 gpu_dispatch_count: None,
                 cost_name: cost.as_str().to_string(),
+                // Issue #310: report the effective rate only when sub-sampling
+                // actually ran, so a full-corpus run keeps the pre-#310 JSON.
+                sample_rate: (!sample.is_full()).then_some(sample.rate()),
             },
         );
     }
@@ -857,6 +899,9 @@ pub fn gpu_directory_compatible(creatures_dir: &Path) -> Result<(), GpuPrepareEr
 /// .unwrap();
 /// println!("scored {} creatures on the GPU", scores.len());
 /// ```
+// `#[allow(dead_code)]`: full-rate GPU library entry point used by
+// benches/tests; the CLI binary calls `score_from_creature_dir_gpu_sampled`.
+#[allow(dead_code)]
 pub fn score_from_creature_dir_gpu(
     creatures_dir: &Path,
     data_path: &Path,
@@ -868,6 +913,57 @@ pub fn score_from_creature_dir_gpu(
     // expected to detect this via [`crate::gpu::auto_should_use_gpu`] and
     // route to the CPU path instead.
     cost: CostKind,
+) -> Result<BTreeMap<String, ScoreResult>, String> {
+    // Full-rate (Issue #310) — identical to the pre-sampling GPU path.
+    score_from_creature_dir_gpu_impl(
+        creatures_dir,
+        data_path,
+        gpu_backend,
+        ctx,
+        inflight_chunks,
+        cost,
+        &SampleSpec::full(),
+    )
+}
+
+/// Issue #310 — record-level sub-sampling variant of
+/// [`score_from_creature_dir_gpu`].
+///
+/// Same single-pass GPU envelope, but only the deterministic subsample selected
+/// by `sample` is dispatched to the kernel. `SampleSpec::full()` reproduces the
+/// full-corpus GPU result exactly.
+// `#[allow(dead_code)]`: library API used by the CLI's sampled path and by
+// tests/benches; the binary's self-contained module tree may not call it.
+#[allow(dead_code)]
+pub fn score_from_creature_dir_gpu_sampled(
+    creatures_dir: &Path,
+    data_path: &Path,
+    gpu_backend: GpuBackendLabel,
+    ctx: Arc<GpuContext>,
+    inflight_chunks: usize,
+    cost: CostKind,
+    sample: &SampleSpec,
+) -> Result<BTreeMap<String, ScoreResult>, String> {
+    score_from_creature_dir_gpu_impl(
+        creatures_dir,
+        data_path,
+        gpu_backend,
+        ctx,
+        inflight_chunks,
+        cost,
+        sample,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn score_from_creature_dir_gpu_impl(
+    creatures_dir: &Path,
+    data_path: &Path,
+    gpu_backend: GpuBackendLabel,
+    ctx: Arc<GpuContext>,
+    inflight_chunks: usize,
+    cost: CostKind,
+    sample: &SampleSpec,
 ) -> Result<BTreeMap<String, ScoreResult>, String> {
     if !cost.gpu_supported() {
         return Err(format!(
@@ -945,6 +1041,9 @@ pub fn score_from_creature_dir_gpu(
     let mut pending: Vec<u8> = Vec::new();
     let mut head: usize = 0;
     let mut unpack_floats: Vec<f32> = Vec::new();
+    // Issue #310: one sampler for the whole sweep, shared by whichever branch
+    // (synchronous or pipelined) runs below.
+    let mut sampler = sample.sampler();
 
     if inflight_chunks <= 1 {
         // Synchronous: one chunk in flight at a time.
@@ -971,6 +1070,7 @@ pub fn score_from_creature_dir_gpu(
                 &mut head,
                 &mut unpack_floats,
                 record_bytes,
+                &mut sampler,
                 &mut score_chunk,
             )
         })?;
@@ -1068,6 +1168,7 @@ pub fn score_from_creature_dir_gpu(
                 &mut head,
                 &mut unpack_floats,
                 record_bytes,
+                &mut sampler,
                 &mut submit_chunk,
             )
         })?;
@@ -1142,6 +1243,9 @@ pub fn score_from_creature_dir_gpu(
                 gpu_inflight_chunks: Some(inflight_chunks),
                 gpu_dispatch_count: Some(dispatch_count),
                 cost_name: cost.as_str().to_string(),
+                // Issue #310: report the effective rate only when sub-sampling
+                // actually ran, so a full-corpus run keeps the pre-#310 JSON.
+                sample_rate: (!sample.is_full()).then_some(sample.rate()),
             },
         );
     }
