@@ -17,6 +17,17 @@ section to the released version with its date.
 
 ### Changed
 
+- **Document the recommended `NEAT_SCORER_READ_BYTES` for large-record GRQ
+  hosts (Issue #307).** Swept `NEAT_SCORER_READ_BYTES` ∈ {2, 8, 16, 32, 64} MiB
+  on the #296 production fixture (9848-byte records). Larger aligned reads
+  recover ~20–24 % on the single-creature and multi-creature production groups
+  (sweet spot 16–32 MiB) by giving the Rayon worker pool bigger per-chunk
+  batches — a chunk-count amortisation effect that only helps large records.
+  The global default stays **2 MiB** (the gain is record-size specific and the
+  sweep host was contended, not the quiet host the merge gate requires); the
+  README now documents exporting `NEAT_SCORER_READ_BYTES=33554432` (32 MiB) on
+  GRQ hosts, and `docs/performance-baseline.md` records the sweep table. No code
+  or default change.
 - **Acknowledge the neat-core 0.1 -> 0.2 breaking bump in the version-baseline
   gate (Issue #252).** `neat-core.expected-version` recorded `0.1.46` while the
   sibling neat-core had advanced to the 0.2 line, so `check-neat-core-version.sh`

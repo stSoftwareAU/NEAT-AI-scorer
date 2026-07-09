@@ -588,6 +588,90 @@ sub-issues can be gated against the reproducible numbers above:
 
 Everything else at the top of both profiles is `neat_core` territory (#227).
 
+## `NEAT_SCORER_READ_BYTES` sweep — 9 July 2026 (Issue #307)
+
+Chunk-granularity sweep on the production creature: does a larger aligned read
+buffer (up to the existing 64 MiB cap in `read_tuning.rs`) beat the 2 MiB
+default for the 9848-byte production record? Only I/O / chunk granularity
+changes here — same `for_each_read_chunk` API, no mmap, no alternate scan
+modes.
+
+### Host
+
+| Field | Value |
+|---|---|
+| Host CPU | Apple M4 (10 cores) |
+| RAM | 24 GB |
+| OS | macOS 26.5.2 (Darwin 25.5.0, arm64) |
+| Toolchain | rustc 1.95.0 (`bench` profile: release + `lto = true`, `codegen-units = 1`) |
+| Fixture | `BENCH_PROD_CREATURE=<network.json>`, `BENCH_PROD_BYTES=134217728` (128 MiB → 13 628 records), `BENCH_PROD_CREATURES=4` |
+| Criterion | sample size 10, `--warm-up-time 1 --measurement-time 5` |
+
+> **Host-load caveat.** Unlike the #296 baseline, this sweep ran on a shared
+> worker host (not idle). Absolute medians drifted run-to-run (single-creature
+> ranged 46–92 ms depending on background load), so the sweep is reported as
+> the **relative** wall-clock reduction vs the 2 MiB default measured
+> **back-to-back within one interleaved run**. That relative ordering was
+> stable and monotone across every repeat: 2 MiB was always the slowest cell,
+> 16–32 MiB always the fastest.
+
+### Sweep — median wall-clock reduction vs 2 MiB default (lower is faster)
+
+| `NEAT_SCORER_READ_BYTES` | records/chunk | `production_single_creature` | `production_multi_creature/1` | `production_multi_creature/4` |
+|---|---:|---:|---:|---:|
+| 2 MiB (2097152) | ~213 | baseline | baseline | baseline |
+| 8 MiB (8388608) | ~851 | −19 % | −15 % | −6 % |
+| 16 MiB (16777216) | ~1704 | −22 % | −20 % | −5 % |
+| 32 MiB (33554432) | ~3407 | −24 % | −24 % | −14 % |
+| 64 MiB (67108864) | ~6813 | −22 % | −22 % | −15 % |
+
+A representative single interleaved single-creature run (heavier load) gave
+medians 91.7 / 74.1 / 71.3 / 69.9 / 71.6 ms for 2 / 8 / 16 / 32 / 64 MiB; a
+lighter-load 3× A/B of 2 MiB vs 16 MiB gave 52.6/48.6/51.5 ms vs
+40.9/42.8/45.3 ms (every 16 MiB sample beat every 2 MiB sample).
+
+### Reading the sweep
+
+The gain is a **chunk-count / Rayon-amortisation** effect, not raw I/O
+bandwidth: at 9848 bytes/record a 2 MiB chunk yields only ~213 records, which
+partition into ~21 records per worker across the 10-worker pool — too small to
+amortise the per-chunk `par_iter_mut` dispatch and `pending` compaction.
+Larger reads give each worker a substantial batch; the curve plateaus at
+16–32 MiB and turns back up slightly at 64 MiB (larger transient buffer, no
+extra batching benefit).
+
+The effect scales with `record_bytes`: the synthetic 40-byte-record fixtures
+already pack ~52 000 records into 2 MiB, so they see no benefit — which is why
+the sweet spot is specific to large-record production hosts.
+
+### Decision (Issue #307)
+
+The clear ≥ 5 % gain on every production group qualifies under the issue's
+merge gate, but the **global default stays 2 MiB** and no auto-tuner ships:
+
+- The optimum is narrow and record-size specific, and this run was captured on
+  a **contended** host rather than the quiet host the gate asks for — not a
+  sound basis for fixing a global constant.
+- Instead, the recommended env for large-record GRQ hosts is documented in the
+  README ("Large-record hosts: raise `NEAT_SCORER_READ_BYTES`"): export
+  `NEAT_SCORER_READ_BYTES=33554432` (32 MiB), or `16777216` (16 MiB) for most
+  of the gain at half the transient buffer.
+- **Peak RSS:** the read buffer is per-scan, not per-worker (single shared
+  scan), so 32 MiB adds ≤ ~64 MiB transient buffer (pipelined double-buffer),
+  not 32 MiB × worker count — well within GRQ host headroom.
+
+Reproduce:
+
+```bash
+export BENCH_PROD_CREATURE=/path/to/GRQ-cluster/network.json
+export BENCH_PROD_BYTES=134217728   # 128 MiB — a few multiples of the 64 MiB read cap
+export BENCH_PROD_CREATURES=4
+for b in 2097152 8388608 16777216 33554432 67108864; do
+  echo "=== READ_BYTES=$b ==="
+  NEAT_SCORER_READ_BYTES=$b ./scripts/run-benches.sh -- production_
+done
+```
+
 1. Run `./scripts/run-benches.sh` (default fixture) and record the median +
    std-dev proxy for each benchmark.
 2. For an issue-target run, set `BENCH_SCORING_BYTES=200000000` (200 MB) and

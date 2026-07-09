@@ -345,6 +345,48 @@ default, mirroring how `NEAT_SCORER_GPU` already rejects invalid values:
 Unset or blank values stay silent, and a valid value is honoured without any
 warning.
 
+### Large-record hosts: raise `NEAT_SCORER_READ_BYTES` (Issue #307)
+
+The default `NEAT_SCORER_READ_BYTES` (2 MiB) is tuned for the synthetic
+small-record fixtures. **Production GRQ-cluster records are 9848 bytes**
+(2461 inputs + 1 output, `f32`), so a 2 MiB chunk holds only ~213 records —
+too few to amortise the per-chunk Rayon dispatch across the worker pool. A
+sweep on the #296 production fixture (see
+[`docs/performance-baseline.md`](docs/performance-baseline.md)) shows larger
+aligned reads recover **~20 %** on the single-creature path, with the sweet
+spot at **16–32 MiB**:
+
+| `NEAT_SCORER_READ_BYTES` | `production_single_creature` | `production_multi_creature/1` | `production_multi_creature/4` |
+|---|---:|---:|---:|
+| 2 MiB (default) | baseline | baseline | baseline |
+| 8 MiB | −19 % | −15 % | −6 % |
+| **16 MiB** | **−22 %** | **−20 %** | −5 % |
+| **32 MiB** | **−24 %** | **−24 %** | **−14 %** |
+| 64 MiB | −22 % | −22 % | −15 % |
+
+(Deltas are the median wall-clock reduction vs the 2 MiB default measured
+back-to-back on one Apple Silicon host; absolute times are host-load
+sensitive, so the table reports the relative improvement each cell held across
+repeated interleaved runs.)
+
+On GRQ hosts with these large records, export a bigger chunk before scoring:
+
+```bash
+# ~24 % faster forward-only scoring on 9848-byte production records.
+export NEAT_SCORER_READ_BYTES=33554432   # 32 MiB
+```
+
+`16777216` (16 MiB) captures most of the gain at half the transient read
+buffer. The read buffer is **per-scan, not per-worker** — directory mode runs
+a single shared scan and partitions the unpacked records across the worker
+pool — so a 32 MiB setting adds at most ~64 MiB of transient buffer (the
+pipelined path double-buffers), not 32 MiB × worker count. That stays well
+within GRQ host RAM headroom.
+
+The global default is intentionally **left at 2 MiB**: the gain is specific to
+large (> ~1 KiB) records, and raising it globally would enlarge the buffer for
+the small-record synthetic path for no benefit. Set the env per-host instead.
+
 ## Local layout
 
 Place **NEAT-AI-core** and **NEAT-AI-scorer** as **siblings** (e.g. `…/src/NEAT-AI-core` and `…/src/NEAT-AI-scorer`). The path in `rust_scorer/Cargo.toml` is `../../NEAT-AI-core/neat-core` so `cargo build` resolves `neat-core` from your local **NEAT-AI-core** tree. CI does the same via a second checkout (`../NEAT-AI-core`).
