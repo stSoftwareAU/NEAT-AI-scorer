@@ -88,6 +88,72 @@ BENCH_SCORING_HIDDEN_SQUASH=MIXED BENCH_SCORING_HIDDEN=32 BENCH_SCORING_BYTES=16
   cargo bench -p rust_scorer --bench scoring -- creature_dir
 ```
 
+> **Superseded for the GRQ default decision by the #312 section below**, which
+> ran the A/B against the **real** GRQ `network.json` (aggregates + constant
+> neurons now host) instead of the synthetic mixed-squash stand-in.
+
+## Production GPU aggregates + constant neurons — 10 July 2026 (Issue #312)
+
+Cross-links [NEAT-AI#3256](https://github.com/stSoftwareAU/NEAT-AI/issues/3256)
+(production evolution wall-clock); resolves the "pending production data" note
+in the #305 section above.
+
+**Hostable? Now yes — the *whole* GRQ creature.** #305 hosted the point-wise
+squashes but left the GRQ creature CPU-bound because it also carries aggregate
+neurons and constant neurons. #312 taught both WGSL kernels to reduce the three
+aggregate squashes **MINIMUM (32) / MAXIMUM (33) / IF (34)** inline (min / max /
+synapse-type branch, matching `neat_core::batch_scoring::neuron_activation_scalar`)
+and to host **constant neurons** (clamped bias, synapses ignored). The real
+GRQ-cluster creature (1666 neurons, 33 distinct squashes — IF ×6, MINIMUM ×4,
+MAXIMUM ×2, 3 constant neurons, no HYPOT/HYPOTv2/MEAN) is therefore now fully
+GPU-hostable. `SynapseGpu` gained a `synapse_type` field and `NeuronGpu` an
+`is_constant` flag for this.
+
+**Parity:** the aggregate + constant reductions match the CPU path within
+relative error < 1e-3 on Apple M4 Pro / Metal —
+`cpu_vs_gpu_minimum_aggregate` / `cpu_vs_gpu_maximum_aggregate` /
+`cpu_vs_gpu_if_aggregate` / `cpu_vs_gpu_mixed_aggregates_and_constant_neuron`,
+plus `cpu_vs_gpu_real_prod_creature_when_available` which scores the actual
+`network.json` when `BENCH_PROD_CREATURE` is set
+([`tests/gpu_multi_score_parity.rs`](../rust_scorer/tests/gpu_multi_score_parity.rs)).
+
+**CPU vs GPU — real GRQ directory A/B (`production_gpu_vs_cpu`).** Host: Apple
+M4 Pro / Metal; corpus `BENCH_PROD_BYTES=16777216` (16 MiB / 1703 records),
+production 2461-input / 1-output creature. Criterion lower / median / upper
+(95% CI):
+
+| Pool `N` | CPU median | GPU median | GPU vs CPU |
+|---|---|---|---|
+| 8  | 128.2 ms `[126.96, 129.39]` | 217.4 ms `[214.89, 221.92]` | **+69.6 % (1.70× slower)** |
+| 50 | 952.9 ms `[937.97, 968.30]` | 868.0 ms `[863.97, 871.97]` | **−8.9 % (1.10× faster)**, non-overlapping CIs |
+
+The GPU amortises across the creature pool: one dispatch scores every
+`(creature, record)` pair, so per-dispatch overhead is fixed while the CPU cost
+scales linearly with `N`. At a small pool (`N=8`) the fixed cost dominates and
+the GPU loses by 1.7×; by `N=50` — a realistic evolution population — the GPU
+pulls ahead by ~9 % with non-overlapping CIs. The break-even sits between the
+two.
+
+**Decision (the "default to GPU on GRQ" call):** *the hosting work merges; the
+`auto` default is not flipped in this PR.* The mergeable deliverable is that the
+real GRQ creature is now GPU-hostable with verified CPU↔GPU parity, and the CPU
+path is untouched (no CPU regression). The A/B is a **crossover**, not a clean
+win: GPU is faster only above a population-size break-even (~9 % at `N=50`) and
+slower below it, so a blanket default flip would regress small-pool runs.
+Encoding a population-size-aware `auto_should_use_gpu` threshold for GRQ is left
+to the parent [NEAT-AI#3256](https://github.com/stSoftwareAU/NEAT-AI/issues/3256)
+wall-clock decision, since it changes the #82/#83 default heuristic (unchanged
+here).
+
+Reproduce the real-GRQ A/B (point `BENCH_PROD_CREATURE` at a downloaded
+`network.json`):
+
+```bash
+BENCH_PROD_CREATURE=/path/to/GRQ-cluster/network.json \
+  BENCH_PROD_BYTES=16777216 BENCH_PROD_CREATURES=50 \
+  cargo bench -p rust_scorer --bench scoring -- production_gpu_vs_cpu
+```
+
 ## Baseline — 25 April 2026
 
 | Field | Value |

@@ -796,6 +796,69 @@ fn bench_production_multi(c: &mut Criterion) {
     group.finish();
 }
 
+/// Issue #312: production GRQ-cluster creature CPU↔GPU A/B. The real creature
+/// carries the aggregate squashes (MINIMUM/MAXIMUM/IF) and constant neurons
+/// that #312 taught the kernels to host, so — unlike `bench_production_multi`,
+/// which stays CPU-only — this directly compares directory-mode GPU against the
+/// CPU pipeline on the actual production blocker. Skips the GPU row cleanly when
+/// no adapter is present. The `gpu`/`cpu` rows drive the GPU-default decision
+/// (parent NEAT-AI#3256): recommend the default flip only if the GPU row is
+/// demonstrably faster with non-overlapping CIs.
+fn bench_production_gpu_vs_cpu(c: &mut Criterion) {
+    let fix = prod_fixture();
+    let pool_size = env_usize("BENCH_PROD_CREATURES", 4).max(1);
+
+    let mut group = c.benchmark_group("production_gpu_vs_cpu");
+    group.sample_size(10);
+    group.measurement_time(Duration::from_secs(20));
+    group.throughput(Throughput::Bytes(fix.total_bytes as u64));
+
+    // CPU baseline over the production creature pool.
+    group.bench_function(BenchmarkId::new("cpu", pool_size), |b| {
+        b.iter(|| {
+            let result = score_from_creature_dir(
+                &fix.creatures_root,
+                &fix.data_dir,
+                GpuBackendLabel::CpuFallback,
+                CostKind::default(),
+            )
+            .expect("cpu prod score");
+            black_box(result);
+        });
+    });
+
+    let backend = resolve_backend(GpuMode::Auto).unwrap_or(GpuBackendLabel::CpuFallback);
+    if backend == GpuBackendLabel::CpuFallback {
+        eprintln!("production_gpu_vs_cpu: no GPU adapter — skipping GPU row");
+        group.finish();
+        return;
+    }
+    let ctx = match select_adapter() {
+        Ok(Some(c)) => Arc::new(c),
+        _ => {
+            eprintln!("production_gpu_vs_cpu: select_adapter returned no context");
+            group.finish();
+            return;
+        }
+    };
+    group.bench_function(BenchmarkId::new("gpu", pool_size), |b| {
+        let ctx = ctx.clone();
+        b.iter(|| {
+            let result = score_from_creature_dir_gpu(
+                &fix.creatures_root,
+                &fix.data_dir,
+                backend,
+                ctx.clone(),
+                2,
+                CostKind::default(),
+            )
+            .expect("gpu prod score");
+            black_box(result);
+        });
+    });
+    group.finish();
+}
+
 /// Issue #308: directory-mode early-exit A/B. For each population `N` this
 /// benches the full-score baseline (`score_from_creature_dir`) against the
 /// early-exit path (`score_from_creature_dir_with_early_exit`) with a callback
@@ -881,5 +944,6 @@ criterion_group!(
     bench_large_creature_cpu_vs_gpu,
     bench_production_single,
     bench_production_multi,
+    bench_production_gpu_vs_cpu,
 );
 criterion_main!(benches);

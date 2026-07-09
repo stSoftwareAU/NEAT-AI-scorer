@@ -303,3 +303,187 @@ fn cpu_vs_gpu_large_creature_grid_stride_remainder() {
     // the scratch path as well.
     run_parity(6, 8, 2, 300, 300);
 }
+
+// --- Issue #312: aggregate (MINIMUM/MAXIMUM/IF) + constant-neuron parity ------
+
+/// Build a creature whose hidden layer uses an aggregate squash
+/// (MINIMUM/MAXIMUM/IF). For IF, the input→hidden synapses cycle through the
+/// three synapse types so the condition/positive/negative buckets are all
+/// exercised; for MIN/MAX the type is irrelevant and left standard. The output
+/// layer is IDENTITY summing the hidden activations (Issue #312).
+fn aggregate_creature_json(
+    num_inputs: usize,
+    num_outputs: usize,
+    hidden: usize,
+    squash: &str,
+) -> String {
+    let mut neurons: Vec<String> = Vec::new();
+    for h in 0..hidden {
+        // Non-zero bias so the aggregate's `+ bias` term is exercised.
+        neurons.push(format!(
+            r#"{{"type":"hidden","uuid":"hidden-{h}","bias":0.1,"squash":"{squash}"}}"#
+        ));
+    }
+    for o in 0..num_outputs {
+        neurons.push(format!(
+            r#"{{"type":"output","uuid":"output-{o}","bias":0.0,"squash":"IDENTITY"}}"#
+        ));
+    }
+    let mut synapses: Vec<String> = Vec::new();
+    for i in 0..num_inputs {
+        for h in 0..hidden {
+            let w = 0.3 + 0.05 * ((i * hidden + h) as f64);
+            // Cycle condition/negative/positive/standard for IF; MIN/MAX ignore.
+            let ty = match (i * hidden + h) % 4 {
+                0 => r#","type":"condition""#,
+                1 => r#","type":"negative""#,
+                2 => r#","type":"positive""#,
+                _ => "",
+            };
+            synapses.push(format!(
+                r#"{{"fromUUID":"input-{i}","toUUID":"hidden-{h}","weight":{w}{ty}}}"#
+            ));
+        }
+    }
+    for h in 0..hidden {
+        for o in 0..num_outputs {
+            let w = 0.2 + 0.01 * ((h * num_outputs + o) as f64);
+            synapses.push(format!(
+                r#"{{"fromUUID":"hidden-{h}","toUUID":"output-{o}","weight":{w}}}"#
+            ));
+        }
+    }
+    format!(
+        r#"{{"input":{num_inputs},"output":{num_outputs},"forwardOnly":true,"semanticVersion":"4.0.0","neurons":[{}],"synapses":[{}]}}"#,
+        neurons.join(","),
+        synapses.join(","),
+    )
+}
+
+/// CPU↔GPU parity for a creature JSON string, replicated `num_creatures` times.
+/// Shared by the aggregate and constant-neuron tests (Issue #312).
+fn run_parity_json(label: &str, json: &str, num_creatures: usize, n_records: usize) {
+    if resolve_backend(GpuMode::Auto)
+        .map(|b| b.as_str() == "cpu-fallback")
+        .unwrap_or(true)
+    {
+        eprintln!("skipping GPU parity for {label}: no compatible adapter");
+        return;
+    }
+    let ctx = match select_adapter() {
+        Ok(Some(c)) => Arc::new(c),
+        _ => {
+            eprintln!("skipping GPU parity for {label}: no context");
+            return;
+        }
+    };
+
+    let creature = parse_creature_json(json).expect("parse creature");
+    let template = compile_creature(&creature).expect("compile");
+    let num_inputs = template.num_inputs;
+    let num_outputs = creature.output;
+    let mut nets: Vec<_> = (0..num_creatures).map(|_| template.clone()).collect();
+
+    let records = build_varied_records(num_inputs, num_outputs, n_records);
+
+    let cpu_sums: Vec<f64> = nets
+        .iter_mut()
+        .map(|net| mse_sum_batch_packed(net, &records, num_inputs, num_outputs, true))
+        .collect();
+
+    let mut runner = BatchedRunner::new(ctx, &nets, num_inputs, num_outputs)
+        .unwrap_or_else(|e| panic!("{label} must be GPU-supported: {e:?}"));
+    let gpu_sums = runner
+        .score_chunk(&records, n_records)
+        .expect("GPU readback should succeed");
+
+    assert_eq!(cpu_sums.len(), gpu_sums.len());
+    for (i, (cpu, gpu)) in cpu_sums.iter().zip(gpu_sums.iter()).enumerate() {
+        let denom = cpu.abs().max(1e-9);
+        let rel = (cpu - gpu).abs() / denom;
+        assert!(
+            rel < 1e-3,
+            "{label} creature {i}: CPU={cpu} GPU={gpu} relative_error={rel} exceeds 1e-3",
+        );
+    }
+}
+
+#[test]
+fn cpu_vs_gpu_minimum_aggregate() {
+    let json = aggregate_creature_json(8, 2, 6, "MINIMUM");
+    run_parity_json("MINIMUM", &json, 4, 512);
+}
+
+#[test]
+fn cpu_vs_gpu_maximum_aggregate() {
+    let json = aggregate_creature_json(8, 2, 6, "MAXIMUM");
+    run_parity_json("MAXIMUM", &json, 4, 512);
+}
+
+#[test]
+fn cpu_vs_gpu_if_aggregate() {
+    // IF exercises the condition/positive/negative synapse-type buckets on the
+    // GPU (needs `SynapseGpu.synapse_type` — Issue #312).
+    let json = aggregate_creature_json(8, 2, 6, "IF");
+    run_parity_json("IF", &json, 4, 512);
+}
+
+/// Issue #312: the real GRQ-cluster creature (aggregates + constant neurons)
+/// must now be GPU-hostable and score within tolerance of the CPU path. Gated
+/// on `BENCH_PROD_CREATURE` pointing at a downloaded `network.json` (the 3 MB
+/// evolved creature is not committed), and skipped when no GPU is present, so
+/// CI stays green while a Metal/Vulkan host validates the production blocker.
+#[test]
+fn cpu_vs_gpu_real_prod_creature_when_available() {
+    let path = match std::env::var("BENCH_PROD_CREATURE") {
+        Ok(p) if !p.is_empty() => p,
+        _ => {
+            eprintln!("skipping real-creature parity: BENCH_PROD_CREATURE unset");
+            return;
+        }
+    };
+    let json = match std::fs::read_to_string(&path) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("skipping real-creature parity: cannot read {path}: {e}");
+            return;
+        }
+    };
+    // Smaller corpus / pool than the bench — this is a correctness gate, not a
+    // timing run — but still exercises the full aggregate + constant mix.
+    run_parity_json("GRQ-prod", &json, 2, 128);
+}
+
+#[test]
+fn cpu_vs_gpu_mixed_aggregates_and_constant_neuron() {
+    // One creature carrying every Issue #312 blocker at once: a MINIMUM, a
+    // MAXIMUM, an IF hidden neuron, plus a constant neuron — mirroring the real
+    // GRQ-cluster creature's mix. Output sums the four hidden activations.
+    let json = r#"{
+        "input":4,"output":1,"forwardOnly":true,"semanticVersion":"4.0.0",
+        "neurons":[
+            {"type":"hidden","uuid":"h-min","bias":0.1,"squash":"MINIMUM"},
+            {"type":"hidden","uuid":"h-max","bias":-0.2,"squash":"MAXIMUM"},
+            {"type":"hidden","uuid":"h-if","bias":0.05,"squash":"IF"},
+            {"type":"constant","uuid":"h-const","bias":0.73,"squash":"IDENTITY"},
+            {"type":"output","uuid":"out-0","bias":0.0,"squash":"IDENTITY"}
+        ],
+        "synapses":[
+            {"fromUUID":"input-0","toUUID":"h-min","weight":0.4},
+            {"fromUUID":"input-1","toUUID":"h-min","weight":0.7},
+            {"fromUUID":"input-2","toUUID":"h-min","weight":-0.5},
+            {"fromUUID":"input-0","toUUID":"h-max","weight":0.6},
+            {"fromUUID":"input-2","toUUID":"h-max","weight":-0.3},
+            {"fromUUID":"input-3","toUUID":"h-max","weight":0.9},
+            {"fromUUID":"input-0","toUUID":"h-if","weight":0.5,"type":"condition"},
+            {"fromUUID":"input-1","toUUID":"h-if","weight":0.8,"type":"positive"},
+            {"fromUUID":"input-2","toUUID":"h-if","weight":0.6,"type":"negative"},
+            {"fromUUID":"input-3","toUUID":"h-const","weight":0.5},
+            {"fromUUID":"h-min","toUUID":"out-0","weight":0.3},
+            {"fromUUID":"h-max","toUUID":"out-0","weight":0.25},
+            {"fromUUID":"h-if","toUUID":"out-0","weight":0.2},
+            {"fromUUID":"h-const","toUUID":"out-0","weight":0.15}
+        ]
+    }"#;
+    run_parity_json("mixed+constant", json, 4, 400);
+}
