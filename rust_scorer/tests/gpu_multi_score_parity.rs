@@ -16,10 +16,22 @@ use rust_scorer::gpu::forward_mse_batched::{BatchedRunner, KernelKind, MAX_NEURO
 use rust_scorer::gpu::{GpuMode, resolve_backend, select_adapter};
 
 fn synthetic_creature_json(num_inputs: usize, num_outputs: usize, hidden: usize) -> String {
+    synthetic_creature_json_squash(num_inputs, num_outputs, hidden, "TANH")
+}
+
+/// Like [`synthetic_creature_json`] but with an explicit hidden-layer squash so
+/// the CPU↔GPU parity tests can exercise every activation the shader inlines
+/// (Issue #305).
+fn synthetic_creature_json_squash(
+    num_inputs: usize,
+    num_outputs: usize,
+    hidden: usize,
+    hidden_squash: &str,
+) -> String {
     let mut neurons: Vec<String> = Vec::new();
     for h in 0..hidden {
         neurons.push(format!(
-            r#"{{"type":"hidden","uuid":"hidden-{h}","bias":0.05,"squash":"TANH"}}"#
+            r#"{{"type":"hidden","uuid":"hidden-{h}","bias":0.05,"squash":"{hidden_squash}"}}"#
         ));
     }
     for o in 0..num_outputs {
@@ -133,6 +145,123 @@ fn run_parity(
 
     // Diagnostic counter is incremented on each chunk dispatch.
     assert!(runner.dispatch_count >= 1);
+}
+
+/// Build records whose input slice spans a wider range than the default
+/// `build_test_records` so each activation is exercised on both sides of zero
+/// (Issue #305 parity coverage). Targets are left small so the MSE stays
+/// well-conditioned.
+fn build_varied_records(num_inputs: usize, num_outputs: usize, n_records: usize) -> Vec<f32> {
+    let values_per_record = num_inputs + num_outputs;
+    let mut floats = Vec::with_capacity(n_records * values_per_record);
+    for i in 0..n_records {
+        for k in 0..num_inputs {
+            // Roughly [-3, 3], deterministic and varied across (record, input).
+            let v = 3.0 * ((i.wrapping_mul(37) + k * 13) as f32 * 7.0e-3).sin();
+            floats.push(v);
+        }
+        for k in 0..num_outputs {
+            let v = 0.25 * ((i.wrapping_mul(19) + k) as f32 * 3.0e-3).cos();
+            floats.push(v);
+        }
+    }
+    floats
+}
+
+/// CPU↔GPU parity for a single named hidden-layer squash (Issue #305).
+fn run_parity_squash(hidden_squash: &str, num_creatures: usize, hidden: usize, n_records: usize) {
+    let num_inputs = 8;
+    let num_outputs = 2;
+
+    // Skip cleanly when no GPU is available — CI runners are CPU-only.
+    if resolve_backend(GpuMode::Auto)
+        .map(|b| b.as_str() == "cpu-fallback")
+        .unwrap_or(true)
+    {
+        eprintln!("skipping GPU parity for {hidden_squash}: no compatible adapter");
+        return;
+    }
+    let ctx = match select_adapter() {
+        Ok(Some(c)) => Arc::new(c),
+        _ => {
+            eprintln!("skipping GPU parity for {hidden_squash}: no context");
+            return;
+        }
+    };
+
+    let json = synthetic_creature_json_squash(num_inputs, num_outputs, hidden, hidden_squash);
+    let creature = parse_creature_json(&json).expect("parse creature");
+    let template = compile_creature(&creature).expect("compile");
+    let mut nets: Vec<_> = (0..num_creatures).map(|_| template.clone()).collect();
+
+    let records = build_varied_records(num_inputs, num_outputs, n_records);
+
+    let cpu_sums: Vec<f64> = nets
+        .iter_mut()
+        .map(|net| mse_sum_batch_packed(net, &records, num_inputs, num_outputs, true))
+        .collect();
+
+    let mut runner = BatchedRunner::new(ctx, &nets, num_inputs, num_outputs)
+        .unwrap_or_else(|e| panic!("squash {hidden_squash} must be GPU-supported: {e:?}"));
+    let gpu_sums = runner
+        .score_chunk(&records, n_records)
+        .expect("GPU readback should succeed");
+
+    assert_eq!(cpu_sums.len(), gpu_sums.len());
+    for (i, (cpu, gpu)) in cpu_sums.iter().zip(gpu_sums.iter()).enumerate() {
+        let denom = cpu.abs().max(1e-9);
+        let rel = (cpu - gpu).abs() / denom;
+        assert!(
+            rel < 1e-3,
+            "squash {hidden_squash} creature {i}: CPU={cpu} GPU={gpu} relative_error={rel} exceeds 1e-3",
+        );
+    }
+}
+
+/// Issue #305: every point-wise squash the shader now inlines must score within
+/// tolerance of the CPU path. Covers the production GRQ blockers named in the
+/// issue (ABSOLUTE, BENT_IDENTITY, SELU, SINE, GELU, CUBE, HARD_TANH, …) plus
+/// the rest of the 0..=31 set.
+#[test]
+fn cpu_vs_gpu_pointwise_squash_coverage() {
+    // Names must match `neat_core::creature::parse_squash_name`.
+    const SQUASHES: &[&str] = &[
+        "IDENTITY",
+        "RELU",
+        "ReLU6",
+        "LeakyReLU",
+        "SELU",
+        "ELU",
+        "LOGISTIC",
+        "TANH",
+        "HARD_TANH",
+        "SOFTSIGN",
+        "Softplus",
+        "Swish",
+        "Mish",
+        "GELU",
+        "SINE",
+        "Cosine",
+        "TAN",
+        "ArcTan",
+        "GAUSSIAN",
+        "BENT_IDENTITY",
+        "BIPOLAR_SIGMOID",
+        "BIPOLAR",
+        "STEP",
+        "COMPLEMENT",
+        "ABSOLUTE",
+        "SQUARE",
+        "Cube",
+        "SQRT",
+        "StdInverse",
+        "Exponential",
+        "LogSigmoid",
+        "ISRU",
+    ];
+    for name in SQUASHES {
+        run_parity_squash(name, 4, 8, 512);
+    }
 }
 
 #[test]

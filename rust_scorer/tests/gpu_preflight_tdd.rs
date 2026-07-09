@@ -89,19 +89,23 @@ fn preflight_accepts_small_creature_set() {
 
 /// Issue #289 (C-GOOD-ERR): an incompatible set now returns the typed
 /// [`GpuPrepareError`] directly instead of a stringly-typed `String`, so callers
-/// can `match` on the specific incompatibility. A creature using a squash the
-/// shader does not implement (GAUSSIAN — valid to parse, but outside the
-/// IDENTITY/RELU/LOGISTIC/TANH set) yields `UnsupportedSquash`.
+/// can `match` on the specific incompatibility.
+///
+/// Issue #305 widened shader coverage to every point-wise activation, so
+/// GAUSSIAN (once the canonical "unsupported" example here) is now hostable.
+/// The remaining unsupported squashes are the *aggregate* functions, which
+/// combine the individual weighted inputs rather than their sum — MEAN is used
+/// here, and still yields `UnsupportedSquash`.
 #[test]
 fn preflight_returns_typed_error_for_unsupported_squash() {
     let tmp = tempfile::tempdir().expect("create tempdir");
     let json = r#"{"input":1,"output":1,"forwardOnly":true,"semanticVersion":"4.0.0",
-        "neurons":[{"type":"output","uuid":"output-0","bias":0.0,"squash":"GAUSSIAN"}],
+        "neurons":[{"type":"output","uuid":"output-0","bias":0.0,"squash":"MEAN"}],
         "synapses":[{"fromUUID":"input-0","toUUID":"output-0","weight":0.5}]}"#;
-    std::fs::write(tmp.path().join("gaussian.json"), json).expect("write creature JSON");
+    std::fs::write(tmp.path().join("mean.json"), json).expect("write creature JSON");
 
-    let err =
-        gpu_directory_compatible(tmp.path()).expect_err("a GAUSSIAN squash is not GPU-hostable");
+    let err = gpu_directory_compatible(tmp.path())
+        .expect_err("a MEAN aggregate squash is not GPU-hostable");
     assert!(
         matches!(err, GpuPrepareError::UnsupportedSquash(_)),
         "expected UnsupportedSquash, got {err:?}"

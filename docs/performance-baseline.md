@@ -25,12 +25,68 @@ the runs with [`scripts/run-benches.sh`](../scripts/run-benches.sh) or
 | `BENCH_SCORING_INPUTS` | `8` | inputs per record |
 | `BENCH_SCORING_OUTPUTS` | `2` | outputs per record |
 | `BENCH_SCORING_HIDDEN` | `8` | hidden neurons in the synthetic creature |
+| `BENCH_SCORING_HIDDEN_SQUASH` | `TANH` | hidden-layer activation (Issue #305). `MIXED` cycles a production squash set (GELU/SELU/SINE/ABSOLUTE/BENT_IDENTITY/Cube/HARD_TANH/…) so the GPU-vs-CPU A/B exercises the coverage the shader now hosts; a literal name applies one squash to every hidden neuron. |
 
 The realistic perf target is the **50–200 MB** range called out in the issue.
 Defaults are kept conservative so `cargo bench` finishes in a few minutes on
 typical dev hardware; sweep upwards via `BENCH_SCORING_BYTES` for the full
 target. **Always re-run the baseline at the same `BENCH_SCORING_BYTES`** — the
 absolute numbers below are fixture-size-specific.
+
+## Production GPU coverage — 9 July 2026 (Issue #305)
+
+Cross-links [NEAT-AI#3256](https://github.com/stSoftwareAU/NEAT-AI/issues/3256)
+(production evolution wall-clock).
+
+**Hostable?** **Yes (point-wise squashes).** Before #305 the GPU kernels
+inlined only IDENTITY / RELU / LOGISTIC / TANH, so a production GRQ creature
+mixing ~34 squash types fell back to CPU on **~95.8 %** of its neurons
+(Scorer#299, negative). Both kernels' `activate()` now inline **every
+point-wise activation** (`SquashType` 0..=31), matching the CPU `apply_squash`
++ `apply_limit_range` pipeline. The six **aggregate** squashes (32..=37) stay
+CPU-only. A production creature built purely from point-wise squashes is
+therefore fully GPU-hostable; one that also uses an aggregate still falls back
+cleanly.
+
+**Parity:** `cpu_vs_gpu_pointwise_squash_coverage`
+([`tests/gpu_multi_score_parity.rs`](../rust_scorer/tests/gpu_multi_score_parity.rs))
+asserts CPU↔GPU MSE agreement across all 32 point-wise squashes on Apple M4 /
+Metal (relative error < 1e-3).
+
+**CPU vs GPU medians — synthetic mixed-squash directory A/B.** The real GRQ
+`network.json` was unreachable in this environment
+(`GRQ-cluster/main/network.json` → HTTP 404), so the A/B uses a synthetic
+directory creature whose hidden layer cycles the production squash mix
+(`BENCH_SCORING_HIDDEN_SQUASH=MIXED`). Host: Apple M4 (10 cores), 24 GB, macOS;
+fixture `BENCH_SCORING_BYTES=16777216` (16 MiB), `BENCH_SCORING_HIDDEN=32`.
+
+| Group (N creatures) | CPU median | GPU median | GPU vs CPU |
+|---|---|---|---|
+| `…creature_dir/creatures/10` | 0.283 s | 0.100 s | **−64.7 %** (2.83× faster) |
+| `…creature_dir/creatures/50` | 1.163 s | 0.326 s | **−72.0 %** (3.57× faster) |
+
+On this shape the GPU wins comfortably: the mixed squash set is
+transcendental-heavy, so scalar CPU libm dominates per-neuron cost while the
+GPU evaluates every `(creature, record)` activation in parallel. This is
+indicative (synthetic) — the real GRQ decision must still run the production
+A/B — but it confirms the coverage both **unblocks** the GPU path for
+mixed-squash creatures and does **not** regress CPU (the CPU path is unchanged).
+
+**Decision (the "default to GPU on GRQ" call):** *pending production data.* The
+mergeable deliverable here is the **coverage** (the creature becomes hostable)
+and CPU↔GPU parity — the CPU path is untouched, so this does not regress CPU and
+merges on its own merits per the issue. Flipping the `auto` default for the real
+GRQ creature requires the production `network.json` + a multi-GiB corpus run of
+the `production_multi_creature` A/B (issue's benchmark gate), which a host with
+GRQ-cluster access must run. `auto_should_use_gpu` (#82/#83) is unchanged by
+this PR.
+
+Reproduce the synthetic A/B:
+
+```bash
+BENCH_SCORING_HIDDEN_SQUASH=MIXED BENCH_SCORING_HIDDEN=32 BENCH_SCORING_BYTES=16777216 \
+  cargo bench -p rust_scorer --bench scoring -- creature_dir
+```
 
 ## Baseline — 25 April 2026
 
