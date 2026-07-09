@@ -15,6 +15,27 @@ section to the released version with its date.
 
 ## [Unreleased]
 
+### Added
+
+- **Early-exit / partial-score API for directory-mode batch scoring
+  (Issue #308).** New library entrypoint
+  `multi_score::score_from_creature_dir_with_early_exit` mirrors
+  `score_from_creature_dir` but invokes a caller-supplied callback after each
+  scored chunk with a `PartialScore` snapshot (running mean error + records
+  scored) per still-active creature. The callback returns an `EarlyExit`
+  directive — `Continue`, `AbortCreatures(indices)` (freeze those creatures at
+  their partial score for the rest of the corpus), or `AbortAll` (stop the
+  sweep). Aborted creatures skip all remaining activation work, which is the
+  wall-clock saving. This unblocks NEAT-AI#3264's cascading / early-abort
+  fitness ranking without reimplementing the fused scoring loop in TypeScript.
+  **Full-score parity:** with no callback (or a callback that always returns
+  `Continue`) scores are bit-identical to the old path — verified by
+  `tests/early_exit_tdd.rs`. **Benchmark (Issue #308 gate,
+  `BENCH_SCORING_BYTES=32 MiB`, synthetic 8→8→2 population, aborting 50 % of
+  creatures after the first chunk):** directory-mode median wall-clock drops
+  **40.4 %** at N=50 (2.02 s → 1.20 s) and **45.1 %** at N=200 (4.77 s →
+  2.62 s) — far above the ≥5 % merge gate. Single-creature path unchanged.
+
 ### Changed
 
 - **Document the recommended `NEAT_SCORER_READ_BYTES` for large-record GRQ

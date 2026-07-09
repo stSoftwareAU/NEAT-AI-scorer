@@ -47,7 +47,10 @@ use std::sync::Arc;
 
 use rust_scorer::cost::CostKind;
 use rust_scorer::gpu::{GpuBackendLabel, GpuMode, resolve_backend, select_adapter};
-use rust_scorer::multi_score::{score_from_creature_dir, score_from_creature_dir_gpu};
+use rust_scorer::multi_score::{
+    EarlyExit, score_from_creature_dir, score_from_creature_dir_gpu,
+    score_from_creature_dir_with_early_exit,
+};
 use rust_scorer::prod_fixture::{
     PRODUCTION_CREATURE_URL, corpus_record_count, fetch_creature_to, load_production_creature,
     resolve_creature_path,
@@ -760,10 +763,85 @@ fn bench_production_multi(c: &mut Criterion) {
     group.finish();
 }
 
+/// Issue #308: directory-mode early-exit A/B. For each population `N` this
+/// benches the full-score baseline (`score_from_creature_dir`) against the
+/// early-exit path (`score_from_creature_dir_with_early_exit`) with a callback
+/// that aborts ~50 % of the population after the first scored chunk — the
+/// representative "early-exit fires on ≥30 % of the population" scenario from
+/// the issue. Criterion's report lets you read the wall-clock delta between the
+/// `full` and `abort50` rows; the merge gate is ≥5 % on `abort50`.
+fn bench_early_exit_directory(c: &mut Criterion) {
+    let fix = fixture();
+    let mut group = c.benchmark_group("early_exit_directory");
+    group.sample_size(10);
+    group.measurement_time(Duration::from_secs(15));
+    group.throughput(Throughput::Bytes(fix.total_bytes as u64));
+
+    for &n in &[50_usize, 200_usize] {
+        let sub_dir = fix
+            .creatures_root
+            .parent()
+            .unwrap()
+            .join(format!("ee-dir-{n}"));
+        if !sub_dir.exists() {
+            fs::create_dir_all(&sub_dir).unwrap();
+            for i in 0..n {
+                let src = fix.creatures_root.join(format!("creature-{i:03}.json"));
+                let dst = sub_dir.join(format!("creature-{i:03}.json"));
+                fs::copy(&src, &dst).expect("copy creature");
+            }
+        }
+
+        // Full-score baseline.
+        group.bench_with_input(BenchmarkId::new("full", n), &sub_dir, |b, dir| {
+            b.iter(|| {
+                let result = score_from_creature_dir(
+                    dir,
+                    &fix.data_dir,
+                    GpuBackendLabel::CpuFallback,
+                    CostKind::default(),
+                )
+                .expect("full-score");
+                black_box(result);
+            });
+        });
+
+        // Early-exit: abort ~50 % of the population (even indices) after the
+        // first callback fires, then let the rest run to completion.
+        group.bench_with_input(BenchmarkId::new("abort50", n), &sub_dir, |b, dir| {
+            b.iter(|| {
+                let mut aborted = false;
+                let result = score_from_creature_dir_with_early_exit(
+                    dir,
+                    &fix.data_dir,
+                    GpuBackendLabel::CpuFallback,
+                    CostKind::default(),
+                    |partials| {
+                        if !aborted {
+                            aborted = true;
+                            let losers: Vec<usize> = partials
+                                .iter()
+                                .map(|p| p.creature_index)
+                                .filter(|i| i % 2 == 0)
+                                .collect();
+                            return EarlyExit::AbortCreatures(losers);
+                        }
+                        EarlyExit::Continue
+                    },
+                )
+                .expect("early-exit score");
+                black_box(result);
+            });
+        });
+    }
+    group.finish();
+}
+
 criterion_group!(
     benches,
     bench_score_from_json_fused,
     bench_score_from_creature_dir,
+    bench_early_exit_directory,
     bench_unpack_and_mse_inner,
     bench_gpu_score_from_creature_dir,
     bench_gpu_pipelining_toggle,

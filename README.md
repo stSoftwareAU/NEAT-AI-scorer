@@ -325,6 +325,67 @@ This mode uses one shared training-data scan and parallelises scoring across cre
 
 Per-chunk activation runs through a single flat Rayon layer (Issue #41): a worker network pool sized to `activation_threads` is built up-front, and every chunk dispatches one `par_iter_mut` over that pool. When the population meets or exceeds `activation_threads` each creature owns one worker; below that, the thread budget is spread across creatures so a small population still saturates the CPU. The JSON output keeps the same shape — `parallelActivationBatches` and `maxActivationBatchRecords` are not emitted in directory mode.
 
+#### Early-exit / partial-score API (Issue #308)
+
+The directory-mode batch path is also exposed as a library entrypoint with a
+per-chunk early-exit hook, so a caller (e.g. NEAT-AI#3264's cascading fitness
+ranking) can abort creatures mid-corpus without reimplementing the fused
+scoring loop:
+
+```rust
+use rust_scorer::multi_score::{score_from_creature_dir_with_early_exit, EarlyExit};
+use rust_scorer::{cost::CostKind, gpu::GpuBackendLabel};
+use std::path::Path;
+
+let scores = score_from_creature_dir_with_early_exit(
+    Path::new("creatures/"),
+    Path::new("training_data/"),
+    GpuBackendLabel::CpuFallback,
+    CostKind::Mse,
+    |partials| {
+        // Abort any creature whose running error is already 10x the best so far.
+        let best = partials.iter().map(|p| p.partial_error).fold(f64::INFINITY, f64::min);
+        let losers: Vec<usize> = partials
+            .iter()
+            .filter(|p| p.partial_error > best * 10.0)
+            .map(|p| p.creature_index)
+            .collect();
+        if losers.is_empty() { EarlyExit::Continue } else { EarlyExit::AbortCreatures(losers) }
+    },
+).unwrap();
+```
+
+After each scored chunk the callback receives one `PartialScore` per
+still-active creature (`creature_index`, `key`, running `partial_error`,
+`records_scored`) and returns an `EarlyExit`:
+
+- `Continue` — keep scoring every active creature.
+- `AbortCreatures(indices)` — stop scoring those creatures; each freezes at its
+  current partial score (its final `error` over a partial `record_count`).
+  Skipping them removes their activation cost from every remaining chunk.
+- `AbortAll` — stop the sweep entirely; every active creature freezes.
+
+**Full-score parity is guaranteed:** the plain `score_from_creature_dir` (no
+callback), and a callback that always returns `Continue`, produce
+**bit-identical** scores (`tests/early_exit_tdd.rs`). Aborting ~50 % of the
+population after the first chunk cuts directory-mode median wall-clock by
+**40–45 %** on the synthetic bench (`early_exit_directory` in
+`benches/scoring.rs`).
+
+```mermaid
+flowchart TD
+    A[Read chunk] --> B[Score chunk: active creatures only]
+    B --> C{Callback registered?}
+    C -- No --> A
+    C -- Yes --> D[Build PartialScore per active creature]
+    D --> E{EarlyExit?}
+    E -- Continue --> A
+    E -- AbortCreatures --> F[Mark listed creatures inactive] --> A
+    E -- AbortAll --> G[Stop sweep]
+    A -- corpus exhausted --> H[Finalise: error = sum / records_scored]
+    G --> H
+```
+
 For forward-only single-creature fused scoring, activation parallelism also
 defaults to all available CPU cores. Set `NEAT_SCORER_ACTIVATION_THREADS` only
 when you want to tune down/up manually.
