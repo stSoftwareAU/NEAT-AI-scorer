@@ -223,6 +223,70 @@ fn workers_per_creature(n_creatures: usize, activation_threads: usize) -> Vec<us
         .collect()
 }
 
+/// Running snapshot of one still-active creature's score, handed to the
+/// early-exit callback after each scored chunk (Issue #308).
+///
+/// The directory-mode batch path sweeps the training corpus exactly once and
+/// scores every creature in that single pass. After each scored chunk a
+/// registered callback receives one [`PartialScore`] per creature that is still
+/// active, so a caller (e.g. NEAT-AI#3264's cascading fitness ranking) can
+/// decide — without reimplementing the fused scoring loop — whether a creature
+/// is already so far behind that scoring it over the rest of the corpus is
+/// wasted work.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PartialScore {
+    /// Stable index of the creature within the loaded directory (sorted file
+    /// order). Use this value in [`EarlyExit::AbortCreatures`] to abort it.
+    pub creature_index: usize,
+    /// Creature id (the `.json` file stem), matching the key in the returned
+    /// [`ScoreResult`] map.
+    pub key: String,
+    /// Mean error over the records scored **so far** (running cost sum divided
+    /// by [`records_scored`](PartialScore::records_scored)). Converges to the
+    /// creature's final `error` as the sweep completes.
+    pub partial_error: f64,
+    /// How many training records this creature has been scored against so far.
+    pub records_scored: usize,
+}
+
+/// Directive the early-exit callback returns after each scored chunk
+/// (Issue #308).
+///
+/// The full-score path is preserved by returning [`EarlyExit::Continue`] every
+/// time: with only `Continue` decisions every creature is scored over the whole
+/// corpus and the results are bit-identical to [`score_from_creature_dir`].
+// `#[allow(dead_code)]`: the self-contained `main.rs` module tree recompiles
+// this file for the binary, where these variants are never constructed; they
+// are part of the library API consumed by benches/tests (same rationale as
+// `training_pass_probe`).
+#[allow(dead_code)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EarlyExit {
+    /// Keep scoring every still-active creature.
+    Continue,
+    /// Stop scoring the listed creature indices for the remainder of the
+    /// corpus. Each aborted creature freezes at its current partial score,
+    /// which becomes its final reported `error` (over its partial
+    /// `record_count`). Unknown indices are ignored.
+    AbortCreatures(Vec<usize>),
+    /// Stop the corpus sweep entirely. Every still-active creature freezes at
+    /// its current partial score. Use when no remaining creature is worth
+    /// scoring further.
+    AbortAll,
+}
+
+/// Early-exit callback trait object: invoked after each scored chunk with the
+/// running per-creature [`PartialScore`]s, returning the [`EarlyExit`] directive
+/// (Issue #308). Aliased to keep the internal `score_from_creature_dir_cpu`
+/// signature readable (`clippy::type_complexity`).
+type EarlyExitCallback<'a> = dyn FnMut(&[PartialScore]) -> EarlyExit + 'a;
+
+// Internal sentinel error used to unwind cleanly out of `for_each_read_chunk`
+// on `EarlyExit::AbortAll`. It is caught immediately after the sweep and never
+// surfaced to callers — a distinct NUL-prefixed marker that no genuine I/O or
+// cost error can collide with.
+const EARLY_EXIT_ABORT_ALL_SENTINEL: &str = "\u{0}neat-scorer-early-exit-abort-all";
+
 /// Score every creature in `creatures_dir` against the `.bin` training records
 /// under `data_path`, returning per-creature [`ScoreResult`]s keyed by creature
 /// id.
@@ -231,6 +295,10 @@ fn workers_per_creature(n_creatures: usize, activation_threads: usize) -> Vec<us
 /// `cost` is the resolved loss function dispatched through
 /// [`accumulate_cost_sum`] inside the per-chunk hot loop. Returns `Err` with a
 /// human-readable message on I/O, shape, or cost-resolution failure.
+///
+/// This is the full-score path: every creature is scored over the entire
+/// corpus. For the early-exit variant see
+/// [`score_from_creature_dir_with_early_exit`].
 ///
 /// # Examples
 ///
@@ -258,6 +326,95 @@ pub fn score_from_creature_dir(
     // Issue #121 — resolved cost selector; dispatched through
     // [`accumulate_cost_sum`] inside the per-chunk hot loop.
     cost: CostKind,
+) -> Result<BTreeMap<String, ScoreResult>, String> {
+    // No callback registered → behaviour and scores are identical to before the
+    // early-exit surface landed (Issue #308).
+    score_from_creature_dir_cpu(creatures_dir, data_path, gpu_backend, cost, None)
+}
+
+/// Issue #308 — directory-mode batch scoring with a per-chunk early-exit hook.
+///
+/// Same single-pass I/O envelope and scores as [`score_from_creature_dir`], but
+/// after every scored chunk `on_chunk` is called with one [`PartialScore`] per
+/// still-active creature. Its [`EarlyExit`] return controls the rest of the
+/// sweep:
+///
+/// * [`EarlyExit::Continue`] — keep scoring every active creature.
+/// * [`EarlyExit::AbortCreatures`] — stop scoring the given creatures; each
+///   freezes at its current partial score (its final `error` over its partial
+///   `record_count`). Skipping them removes their activation cost from every
+///   remaining chunk — the source of the wall-clock saving.
+/// * [`EarlyExit::AbortAll`] — stop the sweep immediately; every active
+///   creature freezes at its current partial score.
+///
+/// Returning [`EarlyExit::Continue`] on every call yields results bit-identical
+/// to [`score_from_creature_dir`] (the full-score parity contract).
+///
+/// The callback fires once per scored chunk (a whole-record slice teased out of
+/// the streamed reads), not once per record, so its overhead is amortised over
+/// a large batch of records.
+///
+/// # Examples
+///
+/// ```no_run
+/// use std::path::Path;
+/// use rust_scorer::cost::CostKind;
+/// use rust_scorer::gpu::GpuBackendLabel;
+/// use rust_scorer::multi_score::{score_from_creature_dir_with_early_exit, EarlyExit};
+///
+/// let scores = score_from_creature_dir_with_early_exit(
+///     Path::new("creatures/"),
+///     Path::new("training_data/"),
+///     GpuBackendLabel::CpuFallback,
+///     CostKind::Mse,
+///     |partials| {
+///         // Abort any creature whose running error is already 10x the best.
+///         let best = partials.iter().map(|p| p.partial_error).fold(f64::INFINITY, f64::min);
+///         let losers: Vec<usize> = partials
+///             .iter()
+///             .filter(|p| p.partial_error > best * 10.0)
+///             .map(|p| p.creature_index)
+///             .collect();
+///         if losers.is_empty() { EarlyExit::Continue } else { EarlyExit::AbortCreatures(losers) }
+///     },
+/// )
+/// .unwrap();
+/// println!("scored {} creatures", scores.len());
+/// ```
+// `#[allow(dead_code)]`: library API used by benches/tests; the binary's
+// self-contained module tree recompiles this file and never calls it.
+#[allow(dead_code)]
+pub fn score_from_creature_dir_with_early_exit<F>(
+    creatures_dir: &Path,
+    data_path: &Path,
+    gpu_backend: GpuBackendLabel,
+    cost: CostKind,
+    mut on_chunk: F,
+) -> Result<BTreeMap<String, ScoreResult>, String>
+where
+    F: FnMut(&[PartialScore]) -> EarlyExit,
+{
+    score_from_creature_dir_cpu(
+        creatures_dir,
+        data_path,
+        gpu_backend,
+        cost,
+        Some(&mut on_chunk),
+    )
+}
+
+/// Shared CPU directory-mode implementation behind [`score_from_creature_dir`]
+/// (no callback) and [`score_from_creature_dir_with_early_exit`] (Issue #308).
+///
+/// When `on_chunk` is `None` the early-exit bookkeeping collapses to a no-op:
+/// every creature stays active for the whole corpus and the numeric result is
+/// identical to the pre-#308 full-score path.
+fn score_from_creature_dir_cpu(
+    creatures_dir: &Path,
+    data_path: &Path,
+    gpu_backend: GpuBackendLabel,
+    cost: CostKind,
+    mut on_chunk: Option<&mut EarlyExitCallback<'_>>,
 ) -> Result<BTreeMap<String, ScoreResult>, String> {
     let started = Instant::now();
     let loaded = load_creatures_from_dir(creatures_dir)?;
@@ -361,11 +518,20 @@ pub fn score_from_creature_dir(
         )?;
     }
 
+    let n_creatures = loaded.len();
     let mut pending: Vec<u8> = Vec::new();
     let mut head: usize = 0;
     let mut unpack_floats: Vec<f32> = Vec::new();
     let mut total_records = 0_usize;
-    let mut total_mse = vec![0.0_f64; loaded.len()];
+    let mut total_mse = vec![0.0_f64; n_creatures];
+    // Issue #308 — per-creature early-exit bookkeeping. `active[ci]` gates
+    // whether creature `ci` is still scored; `records_scored[ci]` is how many
+    // records it has been scored against (its final `record_count`). With no
+    // callback every creature stays active for the whole corpus, so
+    // `records_scored[ci] == total_records` and the result is unchanged.
+    let mut active = vec![true; n_creatures];
+    let mut records_scored = vec![0_usize; n_creatures];
+    let mut abort_all = false;
     // Reused per-chunk buffers — populated inside `score_chunk`.
     let mut work_ranges: Vec<Option<Range<usize>>> = vec![None; total_workers];
     let mut worker_sums: Vec<f64> = vec![0.0; total_workers];
@@ -384,8 +550,13 @@ pub fn score_from_creature_dir(
             *slot = None;
         }
 
-        // Fill work_ranges per creature.
+        // Fill work_ranges per creature. Issue #308: skip creatures the caller
+        // has aborted — their worker slots stay `None`, so no activation runs
+        // for them this chunk. That skipped activation is the wall-clock saving.
         for (ci, &nominal_w) in workers_per.iter().enumerate() {
+            if !active[ci] {
+                continue;
+            }
             let off = worker_offsets[ci];
             let actual_w = nominal_w.min(n_records).max(1);
             if actual_w == 1 {
@@ -427,9 +598,55 @@ pub fn score_from_creature_dir(
             })?;
 
         // Reduce per-worker sums into per-creature totals (sequential —
-        // total_workers ≤ activation_threads, so this is cheap).
+        // total_workers ≤ activation_threads, so this is cheap). Inactive
+        // creatures had `None` ranges → their worker sums are `0.0`, so this
+        // leaves their frozen totals untouched.
         for (worker_idx, &s) in worker_sums.iter().enumerate() {
             total_mse[worker_creature_idx[worker_idx]] += s;
+        }
+
+        // Issue #308: this chunk's records count only towards creatures that
+        // were actually scored (active) this chunk.
+        for (ci, scored) in records_scored.iter_mut().enumerate() {
+            if active[ci] {
+                *scored += n_records;
+            }
+        }
+
+        // Issue #308: hand the caller a running snapshot and apply its
+        // early-exit decision. Skipped entirely when no callback is registered,
+        // so the full-score path pays nothing.
+        if let Some(cb) = on_chunk.as_deref_mut() {
+            let partials: Vec<PartialScore> = (0..n_creatures)
+                .filter(|&ci| active[ci])
+                .map(|ci| PartialScore {
+                    creature_index: ci,
+                    key: loaded[ci].key.clone(),
+                    // `records_scored[ci] >= n_records >= 1` here: the callback
+                    // only ever sees a creature after it has scored ≥1 record.
+                    partial_error: total_mse[ci] / records_scored[ci] as f64,
+                    records_scored: records_scored[ci],
+                })
+                .collect();
+            match cb(&partials) {
+                EarlyExit::Continue => {}
+                EarlyExit::AbortCreatures(indices) => {
+                    for i in indices {
+                        if i < n_creatures {
+                            active[i] = false;
+                        }
+                    }
+                }
+                EarlyExit::AbortAll => {
+                    for a in active.iter_mut() {
+                        *a = false;
+                    }
+                    abort_all = true;
+                    // Unwind out of `for_each_read_chunk` so the sweep stops
+                    // reading immediately; caught right after the sweep.
+                    return Err(EARLY_EXIT_ABORT_ALL_SENTINEL.to_string());
+                }
+            }
         }
 
         Ok(())
@@ -439,7 +656,7 @@ pub fn score_from_creature_dir(
     // creature in the batch. Record it so `single_pass_assertion` fails loudly
     // if a future change reintroduces per-creature re-reads.
     training_pass_probe::record_sweep();
-    for_each_read_chunk(&bin_files, fused_read_buf_len, |chunk| {
+    let sweep = for_each_read_chunk(&bin_files, fused_read_buf_len, |chunk| {
         run_io_loop(
             chunk,
             &mut pending,
@@ -448,9 +665,21 @@ pub fn score_from_creature_dir(
             record_bytes,
             &mut score_chunk,
         )
-    })?;
+    });
+    // Issue #308: `EarlyExit::AbortAll` unwinds via a private sentinel error —
+    // a clean early stop, not a failure. `for_each_read_chunk` wraps the inner
+    // message with file/offset context, so match by substring (the NUL-prefixed
+    // marker cannot collide with a genuine I/O or cost error). Any other error
+    // is a real fault and propagates.
+    match sweep {
+        Ok(()) => {}
+        Err(e) if abort_all && e.contains(EARLY_EXIT_ABORT_ALL_SENTINEL) => {}
+        Err(e) => return Err(e),
+    }
 
-    if head != pending.len() {
+    // A mid-corpus abort legitimately leaves an unread trailing fragment, so
+    // only enforce whole-record consumption when the sweep ran to completion.
+    if !abort_all && head != pending.len() {
         return Err(format!(
             "Trailing {} bytes (incomplete record) after reading all training files",
             pending.len() - head
@@ -462,8 +691,18 @@ pub fn score_from_creature_dir(
 
     let elapsed = started.elapsed().as_secs_f64();
     let mut results = BTreeMap::new();
-    for (loaded_creature, mse_sum) in loaded.iter().zip(total_mse.iter()) {
-        let avg_error = *mse_sum / total_records as f64;
+    for (ci, loaded_creature) in loaded.iter().enumerate() {
+        let scored = records_scored[ci];
+        if scored == 0 {
+            // Defensive: the callback only ever sees a creature after ≥1 record,
+            // so a zero here would mean an internal accounting bug — fail loud
+            // rather than divide by zero (Issue #3234).
+            return Err(format!(
+                "Creature '{}' was scored against zero records",
+                loaded_creature.path.display()
+            ));
+        }
+        let avg_error = total_mse[ci] / scored as f64;
         // Issue #289: the scoring API now returns the typed `ScoringError`;
         // flatten to this module's `String` error contract at the boundary.
         let components =
@@ -488,7 +727,7 @@ pub fn score_from_creature_dir(
                 score,
                 error: avg_error,
                 complexity_penalty,
-                record_count: total_records,
+                record_count: scored,
                 hidden_neurons,
                 synapse_count,
                 forward_only: true,
