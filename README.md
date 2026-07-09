@@ -225,7 +225,7 @@ first-class: an unhostable set never creates a GPU device, the CPU pipeline
 scores it, and the process emits valid JSON with `gpuBackend: "cpu-fallback"`
 and exits 0. `--gpu on` still hard-errors on an unhostable set.
 
-#### Squash coverage on the GPU (Issue #305)
+#### Squash coverage on the GPU (Issues #305, #312)
 
 Both kernels' `activate()` inlines **every point-wise activation**
 (`SquashType` discriminants `0..=31` — IDENTITY, RELU, …, SELU, GELU, SINE,
@@ -233,17 +233,29 @@ ABSOLUTE, BENT_IDENTITY, Cube, HARD_TANH, ISRU), matching the CPU
 `apply_squash` followed by the `apply_limit_range` clamp. Before #305 only
 IDENTITY / RELU / LOGISTIC / TANH were inlined, so a production creature
 mixing the wider set fell back to CPU on **~95.8 %** of its neurons
-(Scorer#299). The remaining unsupported squashes are the six **aggregate**
-functions (`32..=37`: MINIMUM / MAXIMUM / IF / HYPOT / HYPOTv2 / MEAN): they
-combine the individual weighted inputs rather than their sum, so they cannot
-ride the kernel's sum-then-squash path and still force a CPU fallback.
-**Constant neurons** are also rejected by the pre-flight: the CPU returns a
-clamped bias for them and ignores their synapses, which the sum-then-squash
-kernel cannot reproduce, so a creature carrying one (the real GRQ creature has
-three) falls back to CPU rather than being silently mis-scored.
+(Scorer#299).
+
+Issue #312 extended both kernels past the point-wise set to the three
+**aggregate** squashes **MINIMUM (32) / MAXIMUM (33) / IF (34)**. These combine
+the individual weighted inputs rather than their sum, so the per-neuron
+accumulation branches on squash category: point-wise neurons take the
+`bias + Σ w·act` then `activate()` path, while an aggregate neuron reduces its
+synapses directly — `min`/`max` of `w·act` (`+ bias`), or, for IF, bucketing
+each `w·act` by the synapse's **type** (condition / positive / negative) and
+selecting the positive or negative sum on the condition sign. This matches
+`neat_core::batch_scoring::neuron_activation_scalar` exactly, so `SynapseGpu`
+now carries a `synapse_type` field. **Constant neurons** are hosted too
+(flagged by `NeuronGpu.is_constant`): the kernel returns their clamped bias and
+ignores their synapses. Together these make the real GRQ-cluster creature
+(aggregates + three constant neurons) fully GPU-hostable. The remaining three
+aggregates **HYPOT / HYPOTv2 / MEAN (35..=37)** are still unhosted and force a
+clean CPU fallback via `squash_supported`.
 
 CPU↔GPU parity across all 32 point-wise squashes is asserted by
-`cpu_vs_gpu_pointwise_squash_coverage` in
+`cpu_vs_gpu_pointwise_squash_coverage`, and across the aggregate + constant
+forms by `cpu_vs_gpu_minimum_aggregate` / `cpu_vs_gpu_maximum_aggregate` /
+`cpu_vs_gpu_if_aggregate` / `cpu_vs_gpu_mixed_aggregates_and_constant_neuron`,
+all in
 [`tests/gpu_multi_score_parity.rs`](rust_scorer/tests/gpu_multi_score_parity.rs).
 Whether directory-mode GPU should *default* on for a given production creature
 is a separate, benchmark-gated decision (see the "production GPU" section in

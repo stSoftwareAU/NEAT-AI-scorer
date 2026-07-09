@@ -28,8 +28,10 @@
 // kernel.
 //
 // Squash encoding matches `forward_mse_batched.wgsl`: point-wise activations
-// 0..=31 are inlined (Issue #305); aggregate squashes (32..=37) are rejected on
-// the host and fall back to CPU.
+// 0..=31 are inlined (Issue #305); the aggregate squashes MINIMUM (32) /
+// MAXIMUM (33) / IF (34) are hosted too (Issue #312), reducing the individual
+// weighted inputs rather than summing them; HYPOT/HYPOTv2/MEAN (35..=37) remain
+// host-rejected. Constant neurons return a clamped bias (Issue #312).
 
 const WG_SIZE: u32 = 64u;
 
@@ -50,11 +52,15 @@ struct NeuronGpu {
     squash_type: u32,
     start_synapse: u32,
     num_synapses: u32,
+    // Non-zero for a constant neuron (Issue #312).
+    is_constant: u32,
 }
 
 struct SynapseGpu {
     weight: f32,
     from_index: u32,
+    // `SynapseType` discriminant for the IF aggregate (Issue #312).
+    synapse_type: u32,
 }
 
 struct CreatureMeta {
@@ -91,6 +97,13 @@ const MISH_MIN: f32 = -0.309;
 const SOFTPLUS_MIN: f32 = 1e-15;
 const SOFTPLUS_MAX: f32 = 100.0;
 const SELU_MIN: f32 = -(SELU_ALPHA * SELU_LAMBDA);
+
+// Aggregate squash + synapse-type discriminants hosted since Issue #312.
+const SQUASH_MINIMUM: u32 = 32u;
+const SQUASH_MAXIMUM: u32 = 33u;
+const SQUASH_IF: u32 = 34u;
+const SYN_CONDITION: u32 = 1u;
+const SYN_NEGATIVE: u32 = 2u;
 
 // Numerically stable softplus `ln(1 + e^x)` — never overflows for large x, so
 // it matches the CPU f64 result where a naive f32 `exp(x)` would saturate.
@@ -187,13 +200,19 @@ fn range_of(t: u32) -> vec2<f32> {
     }
 }
 
-// Full activation: raw squash then range-limit (NaN -> 0), matching the CPU
-// `apply_squash` + `apply_limit_range` pipeline (Issue #305).
-fn activate(t: u32, x: f32) -> f32 {
-    let raw = raw_squash(t, x);
+// Range-limit a raw activation (NaN -> 0, infinities clamped), mirroring
+// `neat_core::range::apply_limit_range`. Shared by the point-wise `activate`
+// and the aggregate reductions (Issue #312).
+fn limit_range(t: u32, raw: f32) -> f32 {
     if raw != raw { return 0.0; }
     let r = range_of(t);
     return clamp(raw, r.x, r.y);
+}
+
+// Full point-wise activation: raw squash then range-limit, matching the CPU
+// `apply_squash` + `apply_limit_range` pipeline (Issue #305).
+fn activate(t: u32, x: f32) -> f32 {
+    return limit_range(t, raw_squash(t, x));
 }
 
 var<workgroup> wg_partial: array<f32, WG_SIZE>;
@@ -236,12 +255,56 @@ fn forward_mse_scratch(
             // Forward pass over non-input neurons in topological order.
             for (var n: u32 = 0u; n < cr.num_non_inputs; n = n + 1u) {
                 let neuron = neurons[cr.neuron_offset + n];
-                var z: f32 = neuron.bias;
-                for (var s: u32 = 0u; s < neuron.num_synapses; s = s + 1u) {
-                    let syn = synapses[cr.synapse_offset + neuron.start_synapse + s];
-                    z = z + syn.weight * scratch[base + syn.from_index];
+                let syn_base = cr.synapse_offset + neuron.start_synapse;
+                var a: f32;
+                if (neuron.is_constant != 0u) {
+                    a = limit_range(0u, neuron.bias); // IDENTITY range
+                } else if (neuron.squash_type == SQUASH_MINIMUM) {
+                    let inf = bitcast<f32>(0x7f800000u);
+                    var m: f32 = inf;
+                    for (var s: u32 = 0u; s < neuron.num_synapses; s = s + 1u) {
+                        let syn = synapses[syn_base + s];
+                        let val = scratch[base + syn.from_index] * syn.weight;
+                        if (val < m) { m = val; }
+                    }
+                    let raw = select(m + neuron.bias, neuron.bias, m == inf);
+                    a = limit_range(neuron.squash_type, raw);
+                } else if (neuron.squash_type == SQUASH_MAXIMUM) {
+                    let ninf = bitcast<f32>(0xff800000u);
+                    var m: f32 = ninf;
+                    for (var s: u32 = 0u; s < neuron.num_synapses; s = s + 1u) {
+                        let syn = synapses[syn_base + s];
+                        let val = scratch[base + syn.from_index] * syn.weight;
+                        if (val > m) { m = val; }
+                    }
+                    let raw = select(m + neuron.bias, neuron.bias, m == ninf);
+                    a = limit_range(neuron.squash_type, raw);
+                } else if (neuron.squash_type == SQUASH_IF) {
+                    var cond: f32 = 0.0;
+                    var pos: f32 = 0.0;
+                    var neg: f32 = 0.0;
+                    for (var s: u32 = 0u; s < neuron.num_synapses; s = s + 1u) {
+                        let syn = synapses[syn_base + s];
+                        let val = scratch[base + syn.from_index] * syn.weight;
+                        if (syn.synapse_type == SYN_CONDITION) {
+                            cond = cond + val;
+                        } else if (syn.synapse_type == SYN_NEGATIVE) {
+                            neg = neg + val;
+                        } else {
+                            pos = pos + val;
+                        }
+                    }
+                    let raw = select(neg + neuron.bias, pos + neuron.bias, cond > 0.0);
+                    a = limit_range(neuron.squash_type, raw);
+                } else {
+                    var z: f32 = neuron.bias;
+                    for (var s: u32 = 0u; s < neuron.num_synapses; s = s + 1u) {
+                        let syn = synapses[syn_base + s];
+                        z = z + syn.weight * scratch[base + syn.from_index];
+                    }
+                    a = activate(neuron.squash_type, z);
                 }
-                scratch[base + header.num_inputs + n] = activate(neuron.squash_type, z);
+                scratch[base + header.num_inputs + n] = a;
             }
 
             // Per-record MSE = mean over outputs of (target - predicted)^2.

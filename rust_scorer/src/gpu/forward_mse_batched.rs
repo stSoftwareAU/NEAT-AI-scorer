@@ -70,11 +70,22 @@ pub const DEFAULT_SCRATCH_BUDGET_BYTES: u64 = 512 * 1024 * 1024;
 /// Discriminants `0..=31` are the element-wise activations
 /// (`neat_core::squash::SquashType::Identity` through `Isru`) — the shader's
 /// `activate()` implements every one, matching `apply_squash` + the
-/// `apply_limit_range` clamp. Discriminants `32..=37` are the *aggregate*
-/// squashes (MINIMUM/MAXIMUM/IF/HYPOT/HYPOTv2/MEAN): they combine the
-/// individual weighted inputs rather than their sum, so they cannot ride the
-/// kernel's sum-then-squash path and force a CPU fallback.
+/// `apply_limit_range` clamp.
 const MAX_POINTWISE_SQUASH: u8 = 31;
+
+/// Highest squash discriminant the kernels host, inclusive of the aggregate
+/// reductions added by Issue #312.
+///
+/// `32..=34` are the aggregate squashes MINIMUM/MAXIMUM/IF: they combine the
+/// individual weighted inputs (min / max / synapse-type branch) rather than
+/// their sum, and the kernels now reduce them inline to match
+/// `neat_core::batch_scoring::neuron_activation_scalar`. The remaining
+/// aggregates HYPOT/HYPOTv2/MEAN (`35..=37`) are not yet hosted and still force
+/// a CPU fallback.
+///
+/// Derived from [`MAX_POINTWISE_SQUASH`] plus the three inline aggregate
+/// reductions (MINIMUM/MAXIMUM/IF) so the boundary stays self-documenting.
+const MAX_SUPPORTED_SQUASH: u8 = MAX_POINTWISE_SQUASH + 3;
 
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable, Debug)]
@@ -97,6 +108,11 @@ pub struct NeuronGpu {
     squash_type: u32,
     start_synapse: u32,
     num_synapses: u32,
+    /// Non-zero for a constant neuron: the kernel returns a clamped bias and
+    /// ignores this neuron's synapses, matching the CPU `is_constant` branch
+    /// (Issue #312). Adds a 4th `u32` — the std430 array stride stays sound
+    /// (all-scalar struct, 20-byte stride, no interior padding).
+    is_constant: u32,
 }
 
 /// GPU-side mirror of a compiled synapse (`#[repr(C)]`, uploaded as an SSBO element).
@@ -105,6 +121,10 @@ pub struct NeuronGpu {
 pub struct SynapseGpu {
     weight: f32,
     from_index: u32,
+    /// `neat_core::synapse_type::SynapseType` discriminant, consumed by the IF
+    /// aggregate to bucket inputs into condition/positive/negative (Issue #312).
+    /// The 12-byte all-scalar struct keeps the std430 stride sound.
+    synapse_type: u32,
 }
 
 /// GPU-side mirror of a compiled creature's buffer layout (`#[repr(C)]`, uploaded as an SSBO element).
@@ -138,9 +158,9 @@ pub struct BatchedNetworkData {
 pub enum GpuPrepareError {
     /// One or more creatures use a squash function the shader does not
     /// implement. Since Issue #305 the shader inlines every point-wise
-    /// activation (discriminants 0..=31); this fires only for the aggregate
-    /// squashes (32..=37: MINIMUM/MAXIMUM/IF/HYPOT/HYPOTv2/MEAN), which combine
-    /// the individual weighted inputs and so cannot use the sum-then-squash path.
+    /// activation (0..=31), and Issue #312 added the aggregate reductions
+    /// MINIMUM/MAXIMUM/IF (32..=34); this now fires only for the remaining
+    /// aggregates HYPOT/HYPOTv2/MEAN (35..=37).
     UnsupportedSquash(u8),
     /// A creature claims more than [`MAX_NEURONS_ABSOLUTE`] neurons — far
     /// beyond any real evolved creature, so it is rejected rather than sized
@@ -156,16 +176,6 @@ pub enum GpuPrepareError {
     /// Every creature must share the same `(num_inputs, num_outputs)` shape
     /// so the same record format feeds every dispatch.
     MismatchedShape,
-    /// One or more creatures contain a constant neuron. The CPU path returns a
-    /// clamped bias for constant neurons and ignores their synapses; the
-    /// sum-then-squash GPU kernel cannot reproduce that, so such creatures fall
-    /// back to CPU rather than being silently mis-scored (Issue #305). The real
-    /// GRQ-cluster creature carries 3 constant neurons, so this guard is load-
-    /// bearing for correctness once its other blockers (aggregates) are hosted.
-    ConstantNeuron {
-        /// Index of the offending creature within the batch.
-        creature_idx: usize,
-    },
 }
 
 impl std::fmt::Display for GpuPrepareError {
@@ -185,10 +195,6 @@ impl std::fmt::Display for GpuPrepareError {
             Self::MismatchedShape => {
                 f.write_str("all creatures must share the same (num_inputs, num_outputs) shape")
             }
-            Self::ConstantNeuron { creature_idx } => write!(
-                f,
-                "creature {creature_idx} contains a constant neuron, which the GPU kernel cannot host"
-            ),
         }
     }
 }
@@ -197,8 +203,10 @@ impl std::error::Error for GpuPrepareError {}
 
 fn squash_supported(t: u8) -> bool {
     // Every point-wise activation (0..=31) is inlined by the shader's
-    // `activate()`; the aggregate squashes (32..=37) are not (Issue #305).
-    t <= MAX_POINTWISE_SQUASH
+    // `activate()` (Issue #305); the aggregate squashes MINIMUM/MAXIMUM/IF
+    // (32..=34) are reduced inline (Issue #312). HYPOT/HYPOTv2/MEAN (35..=37)
+    // are still unhosted and force a CPU fallback.
+    t <= MAX_SUPPORTED_SQUASH
 }
 
 /// Serialise a slice of compiled networks into the flat GPU-side buffers.
@@ -240,10 +248,12 @@ pub fn build_batched_network_data(
         let num_non_inputs = net.neurons.len() as u32;
 
         for n in &net.neurons {
-            if n.is_constant {
-                return Err(GpuPrepareError::ConstantNeuron { creature_idx });
-            }
-            if !squash_supported(n.squash_type) {
+            // Constant neurons are hosted since Issue #312 (clamped bias,
+            // synapses ignored), so they no longer force a CPU fallback. A
+            // constant neuron's squash discriminant is irrelevant on the GPU —
+            // the `is_constant` flag short-circuits before the squash branch —
+            // so skip the squash-support check for it.
+            if !n.is_constant && !squash_supported(n.squash_type) {
                 return Err(GpuPrepareError::UnsupportedSquash(n.squash_type));
             }
             neurons.push(NeuronGpu {
@@ -251,6 +261,7 @@ pub fn build_batched_network_data(
                 squash_type: u32::from(n.squash_type),
                 start_synapse: n.start_synapse,
                 num_synapses: u32::from(n.num_synapses),
+                is_constant: u32::from(n.is_constant),
             });
         }
         for s in &net.synapses {
@@ -259,6 +270,9 @@ pub fn build_batched_network_data(
                 // neat-core #177 narrowed `SynapseData::from_index` to `u16`;
                 // the GPU/WGSL layout keeps `from_index` as `u32`, so widen here.
                 from_index: u32::from(s.from_index),
+                // Widen the `SynapseType` discriminant for the IF aggregate
+                // (Issue #312).
+                synapse_type: u32::from(s.synapse_type),
             });
         }
 
@@ -991,18 +1005,17 @@ mod tests {
 
     #[test]
     fn build_batched_network_data_rejects_unsupported_squash() {
-        // Build a creature with an unsupported aggregate squash (MEAN = 37).
-        // We can't easily construct one through the public JSON path because
-        // `parse_squash_name` may reject — so build a fake CompiledNetwork by
-        // mutating squash_type after compilation.
+        // Build a creature with a still-unhosted aggregate squash (MEAN = 37).
+        // MINIMUM/MAXIMUM/IF (32..=34) are hosted since Issue #312, so pick one
+        // of the remaining aggregates to exercise the rejection path.
         let mut net = synthetic_creature(1, 1, 1);
         if let Some(n) = net.neurons.first_mut() {
-            n.squash_type = 32; // MINIMUM — not supported by the shader.
+            n.squash_type = 37; // MEAN — not yet hosted by the shader.
         }
         let err =
             build_batched_network_data(&[net], 1, 1).expect_err("unsupported squash rejected");
         match err {
-            GpuPrepareError::UnsupportedSquash(t) => assert_eq!(t, 32),
+            GpuPrepareError::UnsupportedSquash(t) => assert_eq!(t, 37),
             other => panic!("expected UnsupportedSquash, got {other:?}"),
         }
     }
@@ -1023,18 +1036,37 @@ mod tests {
         }
     }
 
-    /// Issue #305: the aggregate squashes (32..=37) are *not* point-wise — they
-    /// combine the individual weighted inputs rather than their sum — so they
-    /// stay unsupported and force a CPU fallback.
+    /// Issue #312: the aggregate squashes MINIMUM/MAXIMUM/IF (32..=34) are now
+    /// reduced inline by the kernels, so `build_batched_network_data` accepts a
+    /// creature using any of them and serialises its discriminant unchanged.
     #[test]
-    fn build_batched_network_data_rejects_aggregate_squashes() {
-        for t in 32u8..=37u8 {
+    fn build_batched_network_data_accepts_min_max_if_aggregates() {
+        for t in 32u8..=34u8 {
+            let mut net = synthetic_creature(1, 1, 1);
+            if let Some(n) = net.neurons.first_mut() {
+                n.squash_type = t;
+            }
+            let data = build_batched_network_data(&[net], 1, 1)
+                .unwrap_or_else(|e| panic!("aggregate squash {t} must be GPU-supported: {e:?}"));
+            assert_eq!(
+                data.neurons[0].squash_type,
+                u32::from(t),
+                "aggregate discriminant {t} must serialise unchanged"
+            );
+        }
+    }
+
+    /// Issue #312: HYPOT/HYPOTv2/MEAN (35..=37) are not yet hosted, so they stay
+    /// unsupported and force a CPU fallback.
+    #[test]
+    fn build_batched_network_data_rejects_remaining_aggregate_squashes() {
+        for t in 35u8..=37u8 {
             let mut net = synthetic_creature(1, 1, 1);
             if let Some(n) = net.neurons.first_mut() {
                 n.squash_type = t;
             }
             let err = build_batched_network_data(&[net], 1, 1)
-                .expect_err("aggregate squash must be rejected");
+                .expect_err("remaining aggregate squash must be rejected");
             match err {
                 GpuPrepareError::UnsupportedSquash(got) => assert_eq!(got, t),
                 other => panic!("expected UnsupportedSquash({t}), got {other:?}"),
@@ -1042,22 +1074,48 @@ mod tests {
         }
     }
 
-    /// Issue #305: constant neurons return a clamped bias on the CPU and ignore
-    /// their synapses; the sum-then-squash kernel cannot reproduce that, so a
-    /// creature containing one (the real GRQ creature has 3) must fall back to
-    /// CPU rather than be silently mis-scored — even when its squash is a
-    /// point-wise discriminant the shader would otherwise host.
+    /// Issue #312: constant neurons return a clamped bias and ignore their
+    /// synapses on the GPU (the real GRQ creature has 3), so a creature
+    /// containing one is now GPU-hostable and its `is_constant` flag is
+    /// serialised for the kernel. Its squash discriminant is irrelevant — the
+    /// flag short-circuits the squash branch — so even an otherwise-unhosted
+    /// aggregate discriminant on a constant neuron must not force a fallback.
     #[test]
-    fn build_batched_network_data_rejects_constant_neuron() {
+    fn build_batched_network_data_accepts_constant_neuron() {
         let mut net = synthetic_creature(1, 1, 1);
         if let Some(n) = net.neurons.first_mut() {
             n.is_constant = true;
+            n.squash_type = 37; // MEAN — unhosted, but ignored for constants.
         }
-        let err = build_batched_network_data(&[net], 1, 1).expect_err("constant neuron rejected");
-        match err {
-            GpuPrepareError::ConstantNeuron { creature_idx } => assert_eq!(creature_idx, 0),
-            other => panic!("expected ConstantNeuron, got {other:?}"),
+        let data = build_batched_network_data(&[net], 1, 1)
+            .expect("a constant neuron is GPU-hostable since Issue #312");
+        assert_eq!(
+            data.neurons[0].is_constant, 1,
+            "the constant flag must be serialised for the kernel"
+        );
+    }
+
+    /// Issue #312: the IF aggregate needs each synapse's type on the GPU, so the
+    /// `SynapseType` discriminant must be widened losslessly into `SynapseGpu`.
+    #[test]
+    fn build_batched_network_data_populates_synapse_type() {
+        let mut net = synthetic_creature(1, 1, 1);
+        // Tag the compiled synapses with distinct types and assert they survive
+        // the u8 -> u32 widening at the upload boundary.
+        for (i, s) in net.synapses.iter_mut().enumerate() {
+            s.synapse_type = (i % 4) as u8;
         }
+        let expected: Vec<u32> = net
+            .synapses
+            .iter()
+            .map(|s| u32::from(s.synapse_type))
+            .collect();
+        let data = build_batched_network_data(&[net], 1, 1).expect("supported creature");
+        let actual: Vec<u32> = data.synapses.iter().map(|s| s.synapse_type).collect();
+        assert_eq!(
+            actual, expected,
+            "synapse_type must widen u8 -> u32 unchanged"
+        );
     }
 
     /// Issue #182 changed this behaviour: creatures above the 256 private-array
