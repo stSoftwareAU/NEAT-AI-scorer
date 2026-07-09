@@ -225,6 +225,33 @@ first-class: an unhostable set never creates a GPU device, the CPU pipeline
 scores it, and the process emits valid JSON with `gpuBackend: "cpu-fallback"`
 and exits 0. `--gpu on` still hard-errors on an unhostable set.
 
+#### Squash coverage on the GPU (Issue #305)
+
+Both kernels' `activate()` inlines **every point-wise activation**
+(`SquashType` discriminants `0..=31` — IDENTITY, RELU, …, SELU, GELU, SINE,
+ABSOLUTE, BENT_IDENTITY, Cube, HARD_TANH, ISRU), matching the CPU
+`apply_squash` followed by the `apply_limit_range` clamp. Before #305 only
+IDENTITY / RELU / LOGISTIC / TANH were inlined, so a production creature
+mixing the wider set fell back to CPU on **~95.8 %** of its neurons
+(Scorer#299). The remaining unsupported squashes are the six **aggregate**
+functions (`32..=37`: MINIMUM / MAXIMUM / IF / HYPOT / HYPOTv2 / MEAN): they
+combine the individual weighted inputs rather than their sum, so they cannot
+ride the kernel's sum-then-squash path and still force a CPU fallback.
+**Constant neurons** are also rejected by the pre-flight: the CPU returns a
+clamped bias for them and ignores their synapses, which the sum-then-squash
+kernel cannot reproduce, so a creature carrying one (the real GRQ creature has
+three) falls back to CPU rather than being silently mis-scored.
+
+CPU↔GPU parity across all 32 point-wise squashes is asserted by
+`cpu_vs_gpu_pointwise_squash_coverage` in
+[`tests/gpu_multi_score_parity.rs`](rust_scorer/tests/gpu_multi_score_parity.rs).
+Whether directory-mode GPU should *default* on for a given production creature
+is a separate, benchmark-gated decision (see the "production GPU" section in
+[`docs/performance-baseline.md`](docs/performance-baseline.md)); coverage
+landing here does not by itself flip that default — the pre-existing
+`auto_should_use_gpu` per-path decision (#82/#83) is unchanged, and the CPU
+path is untouched.
+
 ### Cost function selector (Issues #120, #121)
 
 The `--cost <NAME>` flag selects which built-in loss function the scorer
@@ -707,7 +734,7 @@ message live in `scripts/auto-format.sh` and are covered by
 A standalone Cargo Security Audit workflow (`.github/workflows/cargo-audit.yml`,
 Issue #64) mirrors the `cargo audit` step in the reusable `security.yml` but
 adds a weekly cron schedule (`0 6 * * 1`) plus `workflow_dispatch`. The
-schedule catches advisories published _after_ the last PR — the lockfile
+schedule catches advisories published *after* the last PR — the lockfile
 does not change but the RustSec advisory database does. The workflow is
 validated by `scripts/check-cargo-audit-workflow.sh` (invoked from
 `quality.sh`) and covered end-to-end by
@@ -724,7 +751,7 @@ without a Rust toolchain. The job installs `cargo-cyclonedx`, runs
 `cargo cyclonedx --format json --all`, and uploads the resulting `*.cdx.json`
 files via `actions/upload-artifact`. It runs on pull requests, pushes to
 `Develop`, and `workflow_dispatch`. This workflow only emits the inventory
-artefact (the supply-chain _posture_ gap); active advisories remain owned by
+artefact (the supply-chain *posture* gap); active advisories remain owned by
 `cargo-audit.yml` / `security.yml`. The workflow is validated by
 `scripts/check-sbom-workflow.sh` (invoked from `quality.sh`) and covered
 end-to-end by `tests/scripts/sbom_workflow.bats`.

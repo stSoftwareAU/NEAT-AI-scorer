@@ -27,8 +27,9 @@
 // (within the #81/#82 tolerance) to both the CPU path and the small-creature
 // kernel.
 //
-// Squash encoding matches `forward_mse_batched.wgsl`:
-//   0 = IDENTITY, 1 = RELU, 6 = LOGISTIC, 7 = TANH
+// Squash encoding matches `forward_mse_batched.wgsl`: point-wise activations
+// 0..=31 are inlined (Issue #305); aggregate squashes (32..=37) are rejected on
+// the host and fall back to CPU.
 
 const WG_SIZE: u32 = 64u;
 
@@ -72,19 +73,127 @@ struct CreatureMeta {
 // Per-thread activation scratch, length = num_creatures * G_x * WG_SIZE * max_neurons.
 @group(0) @binding(6) var<storage, read_write> scratch: array<f32>;
 
-fn squash(t: u32, x: f32) -> f32 {
-    // Clamp before the transcendental so large pre-activations cannot overflow
-    // Metal's `tanh`/`exp` to inf → NaN (Issue #182). tanh/logistic are fully
-    // saturated by |x| = 30 in f32, so clamping matches the CPU libm result.
-    let c = clamp(x, -30.0, 30.0);
-    if (t == 7u) {
-        return tanh(c);
-    } else if (t == 6u) {
-        return 1.0 / (1.0 + exp(-c));
-    } else if (t == 1u) {
-        if (x > 0.0) { return x; } else { return 0.0; }
+// Constants mirror `neat_core::squash` / `neat_core::range` (Issue #305).
+const SELU_ALPHA: f32 = 1.6732632;
+const SELU_LAMBDA: f32 = 1.050701;
+const GELU_COEFF: f32 = 0.044715;
+const SQRT_2_OVER_PI: f32 = 0.7978846;
+const LEAKY_RELU_ALPHA: f32 = 0.01;
+const JS_MAX_SAFE_INTEGER: f32 = 9007199254740992.0;
+// 0.99 minus 1 ulp — matches the CPU Softsign clamp (`f32::from_bits(..)-1`).
+const SOFTSIGN_SQUASH_CLAMP: f32 = 0.98999995;
+const SOFTSIGN_LIMIT: f32 = 0.99;
+const FRAC_PI_2: f32 = 1.5707964;
+const F32_LARGE: f32 = 3.4028235e38;
+const GELU_MIN: f32 = -0.17;
+const SWISH_MIN: f32 = -0.278;
+const MISH_MIN: f32 = -0.309;
+const SOFTPLUS_MIN: f32 = 1e-15;
+const SOFTPLUS_MAX: f32 = 100.0;
+const SELU_MIN: f32 = -(SELU_ALPHA * SELU_LAMBDA);
+
+// Numerically stable softplus `ln(1 + e^x)` — never overflows for large x, so
+// it matches the CPU f64 result where a naive f32 `exp(x)` would saturate.
+fn softplus_stable(x: f32) -> f32 {
+    return max(x, 0.0) + log(1.0 + exp(-abs(x)));
+}
+
+// Raw point-wise activation for discriminants 0..=31, mirroring
+// `neat_core::squash::apply_squash` (the f32 CPU path). Transcendental inputs
+// are clamped so Metal's `exp`/`tanh` cannot overflow to inf → NaN. Unknown /
+// aggregate discriminants (filtered out on the host) fall through to IDENTITY.
+fn raw_squash(t: u32, x: f32) -> f32 {
+    switch t {
+        case 0u: { return x; }                               // IDENTITY
+        case 1u: { return max(x, 0.0); }                     // RELU
+        case 2u: { return clamp(x, 0.0, 6.0); }              // RELU6
+        case 3u: { return select(LEAKY_RELU_ALPHA * x, x, x >= 0.0); } // LEAKY_RELU
+        case 4u: {                                           // SELU
+            let sx = min(x, 709.0);
+            let fx = select(SELU_ALPHA * exp(sx) - SELU_ALPHA, sx, sx > 0.0);
+            return SELU_LAMBDA * fx;
+        }
+        case 5u: { return select(exp(x) - 1.0, x, x > 0.0); } // ELU
+        case 6u: { return 1.0 / (1.0 + exp(-clamp(x, -30.0, 30.0))); } // LOGISTIC
+        case 7u: { return tanh(clamp(x, -30.0, 30.0)); }     // TANH
+        case 8u: { return clamp(x, -1.0, 1.0); }             // HARD_TANH
+        case 9u: {                                           // SOFTSIGN
+            let y = x / (1.0 + abs(x));
+            return clamp(y, -SOFTSIGN_SQUASH_CLAMP, SOFTSIGN_SQUASH_CLAMP);
+        }
+        case 10u: {                                          // SOFTPLUS
+            if x >= 709.0 { return SOFTPLUS_MAX; }
+            return softplus_stable(x);
+        }
+        case 11u: { return x / (1.0 + exp(-clamp(x, -30.0, 30.0))); } // SWISH
+        case 12u: { return x * tanh(softplus_stable(x)); }   // MISH
+        case 13u: {                                          // GELU (tanh approx)
+            let inner = clamp(SQRT_2_OVER_PI * (x + GELU_COEFF * x * x * x), -30.0, 30.0);
+            return 0.5 * x * (1.0 + tanh(inner));
+        }
+        case 14u: { return sin(x); }                         // SINE
+        case 15u: { return cos(x); }                         // COSINE
+        case 16u: {                                          // TAN (clamped)
+            let tv = tan(x);
+            if tv != tv { return 0.0; }
+            return clamp(tv, -1000.0, 1000.0);
+        }
+        case 17u: { return atan(x); }                        // ARCTAN
+        case 18u: { return exp(-x * x); }                    // GAUSSIAN
+        case 19u: { return (sqrt(x * x + 1.0) - 1.0) * 0.5 + x; } // BENT_IDENTITY
+        case 20u: { return 2.0 / (1.0 + exp(-clamp(x, -30.0, 30.0))) - 1.0; } // BIPOLAR_SIGMOID
+        case 21u: { return select(-1.0, 1.0, x > 0.0); }     // BIPOLAR
+        case 22u: { return select(0.0, 1.0, x > 0.0); }      // STEP
+        case 23u: { return 1.0 - x; }                        // COMPLEMENT
+        case 24u: { return abs(x); }                         // ABSOLUTE
+        case 25u: { return min(x * x, 1.0e6); }              // SQUARE (clamped)
+        case 26u: { return clamp(x * x * x, -1.0e6, 1.0e6); } // CUBE (clamped)
+        case 27u: { return select(0.0, sqrt(x), x >= 0.0); } // SQRT
+        case 28u: {                                          // STD_INVERSE
+            if abs(x) < 1.0e-10 { return select(-1.0e10, 1.0e10, x >= 0.0); }
+            return 1.0 / x;
+        }
+        case 29u: {                                          // EXPONENTIAL (clamped)
+            if x >= 36.0 { return JS_MAX_SAFE_INTEGER; }
+            return exp(x);
+        }
+        case 30u: {                                          // LOG_SIGMOID
+            if x <= -709.0 { return -JS_MAX_SAFE_INTEGER; }
+            return -softplus_stable(-x);
+        }
+        case 31u: { return x / sqrt(1.0 + x * x); }          // ISRU
+        default: { return x; }
     }
-    return x;
+}
+
+// Output range (low, high) per squash, mirroring
+// `neat_core::range::apply_get_range`.
+fn range_of(t: u32) -> vec2<f32> {
+    switch t {
+        case 1u, 24u, 25u, 27u, 29u: { return vec2<f32>(0.0, F32_LARGE); }
+        case 6u, 18u, 22u: { return vec2<f32>(0.0, 1.0); }
+        case 7u, 8u, 14u, 15u, 20u, 21u, 31u: { return vec2<f32>(-1.0, 1.0); }
+        case 2u: { return vec2<f32>(0.0, 6.0); }
+        case 9u: { return vec2<f32>(-SOFTSIGN_LIMIT, SOFTSIGN_LIMIT); }
+        case 10u: { return vec2<f32>(SOFTPLUS_MIN, SOFTPLUS_MAX); }
+        case 17u: { return vec2<f32>(-FRAC_PI_2, FRAC_PI_2); }
+        case 5u: { return vec2<f32>(-1.0, F32_LARGE); }
+        case 4u: { return vec2<f32>(SELU_MIN, F32_LARGE); }
+        case 30u: { return vec2<f32>(-F32_LARGE, 0.0); }
+        case 11u: { return vec2<f32>(SWISH_MIN, F32_LARGE); }
+        case 12u: { return vec2<f32>(MISH_MIN, F32_LARGE); }
+        case 13u: { return vec2<f32>(GELU_MIN, F32_LARGE); }
+        default: { return vec2<f32>(-F32_LARGE, F32_LARGE); }
+    }
+}
+
+// Full activation: raw squash then range-limit (NaN -> 0), matching the CPU
+// `apply_squash` + `apply_limit_range` pipeline (Issue #305).
+fn activate(t: u32, x: f32) -> f32 {
+    let raw = raw_squash(t, x);
+    if raw != raw { return 0.0; }
+    let r = range_of(t);
+    return clamp(raw, r.x, r.y);
 }
 
 var<workgroup> wg_partial: array<f32, WG_SIZE>;
@@ -132,7 +241,7 @@ fn forward_mse_scratch(
                     let syn = synapses[cr.synapse_offset + neuron.start_synapse + s];
                     z = z + syn.weight * scratch[base + syn.from_index];
                 }
-                scratch[base + header.num_inputs + n] = squash(neuron.squash_type, z);
+                scratch[base + header.num_inputs + n] = activate(neuron.squash_type, z);
             }
 
             // Per-record MSE = mean over outputs of (target - predicted)^2.

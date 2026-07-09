@@ -87,12 +87,45 @@ fn bench_hidden() -> usize {
     env_usize("BENCH_SCORING_HIDDEN", DEFAULT_HIDDEN)
 }
 
+/// Representative production squash mix used when
+/// `BENCH_SCORING_HIDDEN_SQUASH=MIXED` — the GPU blockers from Scorer#299 that
+/// Issue #305 unblocked, plus the base set. Names match `parse_squash_name`.
+const MIXED_SQUASHES: &[&str] = &[
+    "TANH",
+    "LOGISTIC",
+    "RELU",
+    "GELU",
+    "SELU",
+    "SINE",
+    "ABSOLUTE",
+    "BENT_IDENTITY",
+    "Cube",
+    "HARD_TANH",
+];
+
+/// Hidden-layer squash for the synthetic creature (Issue #305).
+///
+/// `BENCH_SCORING_HIDDEN_SQUASH` selects the activation so the GPU-vs-CPU
+/// directory A/B can exercise the production squash set the shader now hosts.
+/// The default `TANH` preserves historical baselines; `MIXED` cycles
+/// [`MIXED_SQUASHES`] across the hidden neurons to mimic a real GRQ creature.
+fn bench_hidden_squash(h: usize) -> String {
+    match std::env::var("BENCH_SCORING_HIDDEN_SQUASH").ok().as_deref() {
+        None | Some("") | Some("TANH") => "TANH".to_string(),
+        Some("MIXED") => MIXED_SQUASHES[h % MIXED_SQUASHES.len()].to_string(),
+        // A literal squash name applied to every hidden neuron. An unknown name
+        // fails the creature parse loudly downstream, which is the intent.
+        Some(name) => name.to_string(),
+    }
+}
+
 /// Build a forward-only synthetic creature JSON wired as a small dense MLP.
 fn synthetic_creature_json(num_inputs: usize, num_outputs: usize, hidden: usize) -> String {
     let mut neurons: Vec<String> = Vec::with_capacity(hidden + num_outputs);
     for h in 0..hidden {
+        let squash = bench_hidden_squash(h);
         neurons.push(format!(
-            r#"{{"type":"hidden","uuid":"hidden-{h}","bias":0.05,"squash":"TANH"}}"#
+            r#"{{"type":"hidden","uuid":"hidden-{h}","bias":0.05,"squash":"{squash}"}}"#
         ));
     }
     for o in 0..num_outputs {

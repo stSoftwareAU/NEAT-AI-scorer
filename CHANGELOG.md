@@ -17,24 +17,24 @@ section to the released version with its date.
 
 ### Added
 
-- **Early-exit / partial-score API for directory-mode batch scoring
-  (Issue #308).** New library entrypoint
-  `multi_score::score_from_creature_dir_with_early_exit` mirrors
-  `score_from_creature_dir` but invokes a caller-supplied callback after each
-  scored chunk with a `PartialScore` snapshot (running mean error + records
-  scored) per still-active creature. The callback returns an `EarlyExit`
-  directive — `Continue`, `AbortCreatures(indices)` (freeze those creatures at
-  their partial score for the rest of the corpus), or `AbortAll` (stop the
-  sweep). Aborted creatures skip all remaining activation work, which is the
-  wall-clock saving. This unblocks NEAT-AI#3264's cascading / early-abort
-  fitness ranking without reimplementing the fused scoring loop in TypeScript.
-  **Full-score parity:** with no callback (or a callback that always returns
-  `Continue`) scores are bit-identical to the old path — verified by
-  `tests/early_exit_tdd.rs`. **Benchmark (Issue #308 gate,
-  `BENCH_SCORING_BYTES=32 MiB`, synthetic 8→8→2 population, aborting 50 % of
-  creatures after the first chunk):** directory-mode median wall-clock drops
-  **40.4 %** at N=50 (2.02 s → 1.20 s) and **45.1 %** at N=200 (4.77 s →
-  2.62 s) — far above the ≥5 % merge gate. Single-creature path unchanged.
+- **Expand GPU squash coverage to every point-wise activation (Issue #305).**
+  The `forward_mse_batched` / `forward_mse_scratch` WGSL kernels now inline all
+  32 point-wise squashes (`SquashType` 0..=31 — SELU, GELU, SINE, ABSOLUTE,
+  BENT_IDENTITY, Cube, HARD_TANH, …), matching the CPU `apply_squash` +
+  `apply_limit_range` pipeline, instead of only IDENTITY/RELU/LOGISTIC/TANH. A
+  production creature mixing the wider set is now GPU-hostable rather than
+  falling back to CPU on ~95.8 % of its neurons (Scorer#299). The six aggregate
+  squashes (32..=37: MINIMUM/MAXIMUM/IF/HYPOT/HYPOTv2/MEAN) combine the
+  individual weighted inputs rather than their sum, so they stay CPU-only.
+  Constant neurons are also rejected by the pre-flight
+  (`GpuPrepareError::ConstantNeuron`) — the CPU returns a clamped bias and
+  ignores their synapses, which the kernel cannot reproduce, so a creature
+  carrying one (the GRQ creature has 3) falls back to CPU rather than being
+  silently mis-scored. CPU↔GPU parity across all 32 point-wise squashes is asserted on Apple M4 /
+  Metal by `cpu_vs_gpu_pointwise_squash_coverage`. The CPU path and the
+  `auto_should_use_gpu` per-path default are unchanged; a new optional
+  `BENCH_SCORING_HIDDEN_SQUASH` bench env var drives the GPU-vs-CPU A/B on the
+  production squash mix.
 
 ### Changed
 

@@ -25,12 +25,68 @@ the runs with [`scripts/run-benches.sh`](../scripts/run-benches.sh) or
 | `BENCH_SCORING_INPUTS` | `8` | inputs per record |
 | `BENCH_SCORING_OUTPUTS` | `2` | outputs per record |
 | `BENCH_SCORING_HIDDEN` | `8` | hidden neurons in the synthetic creature |
+| `BENCH_SCORING_HIDDEN_SQUASH` | `TANH` | hidden-layer activation (Issue #305). `MIXED` cycles a production squash set (GELU/SELU/SINE/ABSOLUTE/BENT_IDENTITY/Cube/HARD_TANH/…) so the GPU-vs-CPU A/B exercises the coverage the shader now hosts; a literal name applies one squash to every hidden neuron. |
 
 The realistic perf target is the **50–200 MB** range called out in the issue.
 Defaults are kept conservative so `cargo bench` finishes in a few minutes on
 typical dev hardware; sweep upwards via `BENCH_SCORING_BYTES` for the full
 target. **Always re-run the baseline at the same `BENCH_SCORING_BYTES`** — the
 absolute numbers below are fixture-size-specific.
+
+## Production GPU coverage — 9 July 2026 (Issue #305)
+
+Cross-links [NEAT-AI#3256](https://github.com/stSoftwareAU/NEAT-AI/issues/3256)
+(production evolution wall-clock).
+
+**Hostable?** **Yes (point-wise squashes).** Before #305 the GPU kernels
+inlined only IDENTITY / RELU / LOGISTIC / TANH, so a production GRQ creature
+mixing ~34 squash types fell back to CPU on **~95.8 %** of its neurons
+(Scorer#299, negative). Both kernels' `activate()` now inline **every
+point-wise activation** (`SquashType` 0..=31), matching the CPU `apply_squash`
++ `apply_limit_range` pipeline. The six **aggregate** squashes (32..=37) stay
+CPU-only. A production creature built purely from point-wise squashes is
+therefore fully GPU-hostable; one that also uses an aggregate still falls back
+cleanly.
+
+**Parity:** `cpu_vs_gpu_pointwise_squash_coverage`
+([`tests/gpu_multi_score_parity.rs`](../rust_scorer/tests/gpu_multi_score_parity.rs))
+asserts CPU↔GPU MSE agreement across all 32 point-wise squashes on Apple M4 /
+Metal (relative error < 1e-3).
+
+**CPU vs GPU medians — synthetic mixed-squash directory A/B.** The real GRQ
+`network.json` was unreachable in this environment
+(`GRQ-cluster/main/network.json` → HTTP 404), so the A/B uses a synthetic
+directory creature whose hidden layer cycles the production squash mix
+(`BENCH_SCORING_HIDDEN_SQUASH=MIXED`). Host: Apple M4 (10 cores), 24 GB, macOS;
+fixture `BENCH_SCORING_BYTES=16777216` (16 MiB), `BENCH_SCORING_HIDDEN=32`.
+
+| Group (N creatures) | CPU median | GPU median | GPU vs CPU |
+|---|---|---|---|
+| `…creature_dir/creatures/10` | 0.283 s | 0.100 s | **−64.7 %** (2.83× faster) |
+| `…creature_dir/creatures/50` | 1.163 s | 0.326 s | **−72.0 %** (3.57× faster) |
+
+On this shape the GPU wins comfortably: the mixed squash set is
+transcendental-heavy, so scalar CPU libm dominates per-neuron cost while the
+GPU evaluates every `(creature, record)` activation in parallel. This is
+indicative (synthetic) — the real GRQ decision must still run the production
+A/B — but it confirms the coverage both **unblocks** the GPU path for
+mixed-squash creatures and does **not** regress CPU (the CPU path is unchanged).
+
+**Decision (the "default to GPU on GRQ" call):** *pending production data.* The
+mergeable deliverable here is the **coverage** (the creature becomes hostable)
+and CPU↔GPU parity — the CPU path is untouched, so this does not regress CPU and
+merges on its own merits per the issue. Flipping the `auto` default for the real
+GRQ creature requires the production `network.json` + a multi-GiB corpus run of
+the `production_multi_creature` A/B (issue's benchmark gate), which a host with
+GRQ-cluster access must run. `auto_should_use_gpu` (#82/#83) is unchanged by
+this PR.
+
+Reproduce the synthetic A/B:
+
+```bash
+BENCH_SCORING_HIDDEN_SQUASH=MIXED BENCH_SCORING_HIDDEN=32 BENCH_SCORING_BYTES=16777216 \
+  cargo bench -p rust_scorer --bench scoring -- creature_dir
+```
 
 ## Baseline — 25 April 2026
 
@@ -90,7 +146,7 @@ Flamegraphs committed under [`docs/evidence/`](evidence/):
 
 ### Single-creature fused path — top 5 (leaf / self time)
 
-_Idle scheduler/wait samples excluded._ Numbers show percent of total
+*Idle scheduler/wait samples excluded.* Numbers show percent of total
 samples (2,255) and percent of **active CPU samples** (749). Because each
 iteration of the forward-only path is small, Rayon workers spend ~67 % of
 wall-clock time sleeping on `swtch_pri` / `__psynch_mutexwait`; those are
@@ -106,7 +162,7 @@ listed under the unscheduled-parallelism finding below.
 
 ### Multi-creature directory mode (50 creatures) — top 5 (leaf / self time)
 
-_Idle scheduler/wait samples excluded._ Numbers show percent of total
+*Idle scheduler/wait samples excluded.* Numbers show percent of total
 samples (10,868) and percent of active samples (6,196).
 
 | # | Function | Total % | Active % | Where it comes from | Addressed by |
@@ -200,7 +256,7 @@ The older 2 GiB / 500 MB flamegraphs from Issue #37 are kept at
 
 #### Single-creature fused path — top 5 (leaf / self time)
 
-_Idle scheduler/wait samples excluded._ Numbers show percent of total samples
+*Idle scheduler/wait samples excluded.* Numbers show percent of total samples
 (1,001) and percent of **active CPU samples** (≈ 207 — total minus
 `swtch_pri` 577, `dyld` startup 214, mutex/cv waits ≈ 3). Wall-clock sleep on
 `swtch_pri` / `__psynch_mutexwait` is 57.6 % at this corpus size, down from
@@ -217,7 +273,7 @@ in [Cross-scenario findings](#cross-scenario-findings) holds at 200 MB.
 
 #### Multi-creature directory mode (50 creatures) — top 5 (leaf / self time)
 
-_Idle scheduler/wait samples excluded._ Numbers show percent of total samples
+*Idle scheduler/wait samples excluded.* Numbers show percent of total samples
 (8,123) and percent of active samples (≈ 3,584 — total minus `swtch_pri`
 4,525 and mutex/cv waits ≈ 14). `swtch_pri` is 55.7 % of wall-clock, similar
 to the 500 MB / 50-creature reading.
@@ -267,7 +323,7 @@ their original fixture sizes.
 |---|---|---|---|---|
 | `score_from_json_fused/forward_only` (CPU) | 89.871 ms | 2.07 GiB/s | — | — |
 | `score_from_json_fused/forward_only` (CPU+PGO) | ≈ 81.8 ms ¹ | ≈ 2.27 GiB/s | **−9.0 %** | — |
-| GPU single-creature kernel | _no kernel ships_ | n/a | n/a | n/a |
+| GPU single-creature kernel | *no kernel ships* | n/a | n/a | n/a |
 
 ¹ Extrapolated from Issue #43 PGO evidence at 300 MB
 (`447.6 ms → 407.7 ms`, **−8.9 %** delta) re-applied to the 200 MB CPU
@@ -302,7 +358,7 @@ Two evidence sets are recorded:
 | `score_from_creature_dir/creatures/50` (CPU release) | 2.3423 s | 4.9439 s | 38.6 MiB/s |
 | `score_from_creature_dir/creatures/50` (CPU+PGO, est.) | ≈ 2.152 s ⁴ | ≈ 4.543 s ⁴ | — |
 | `gpu_score_from_creature_dir/creatures/50` (GPU pipelined) | 2.176 s | 2.5193 s | 75.7 MiB/s |
-| `gpu_score_from_creature_dir/creatures/50` (GPU sync, `inflight=1`) | 2.147 s | _not in this run_ | — |
+| `gpu_score_from_creature_dir/creatures/50` (GPU sync, `inflight=1`) | 2.147 s | *not in this run* | — |
 
 Relative comparisons (loaded host, fresh re-run):
 
@@ -542,9 +598,9 @@ The synthetic captures (`single-creature.svg`, `multi-creature.svg`,
 
 #### Single-creature fused path — top self-time frames
 
-_Active % excludes scheduler/startup samples. `_dyld_start` (18 % active) is
+*Active % excludes scheduler/startup samples. `_dyld_start` (18 % active) is
 one-shot CLI process launch under `sample`, not steady-state, and is excluded
-from the ranking below._ Active sample base ≈ 1,640.
+from the ranking below.* Active sample base ≈ 1,640.
 
 | # | Function | Total % | Active % | Where it comes from | Owner / route |
 |---|---|---|---|---|---|
@@ -556,7 +612,7 @@ from the ranking below._ Active sample base ≈ 1,640.
 
 #### Multi-creature directory mode (4 creatures) — top self-time frames
 
-_Active sample base ≈ 1,644._ `--gpu auto` cleanly fell back to CPU (the
+*Active sample base ≈ 1,644.* `--gpu auto` cleanly fell back to CPU (the
 production squash mix is unhostable by the MSE-only GPU kernel — discriminant 10),
 so this is the CPU directory path.
 
