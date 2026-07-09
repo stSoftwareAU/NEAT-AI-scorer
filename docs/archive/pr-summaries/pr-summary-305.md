@@ -17,7 +17,11 @@ remain CPU-only and continue to trigger a clean fallback.
 
 The CPU scoring path is **untouched**; the host `squash_supported()` gate widens
 from `{0,1,6,7}` to `0..=31`, and the pre-flight now reports a point-wise
-production creature as GPU-hostable.
+production creature as GPU-hostable. The pre-flight also now **rejects constant
+neurons** (`GpuPrepareError::ConstantNeuron`): the CPU returns a clamped bias for
+them and ignores their synapses, which the sum-then-squash kernel cannot
+reproduce — so a creature carrying one (the real GRQ creature has 3) falls back
+to CPU rather than being silently mis-scored.
 
 Whether directory-mode GPU should *default* on for the real GRQ creature is a
 separate, benchmark-gated decision. The pre-existing per-path
@@ -101,6 +105,9 @@ flowchart LR
     `0..=31` discriminant is accepted (no CPU fallback).
   - `build_batched_network_data_rejects_aggregate_squashes` (new) — every
     `32..=37` aggregate still yields `UnsupportedSquash`.
+  - `build_batched_network_data_rejects_constant_neuron` (new) — a constant
+    neuron yields `GpuPrepareError::ConstantNeuron` (CPU fallback), guarding
+    against silently mis-scoring the 3 constant neurons in the GRQ creature.
 - **`rust_scorer/tests/gpu_preflight_tdd.rs`**
   - `preflight_returns_typed_error_for_unsupported_squash` — updated from
     GAUSSIAN (now hostable) to MEAN (an aggregate, still unsupported). Business

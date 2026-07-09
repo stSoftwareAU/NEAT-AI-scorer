@@ -156,6 +156,16 @@ pub enum GpuPrepareError {
     /// Every creature must share the same `(num_inputs, num_outputs)` shape
     /// so the same record format feeds every dispatch.
     MismatchedShape,
+    /// One or more creatures contain a constant neuron. The CPU path returns a
+    /// clamped bias for constant neurons and ignores their synapses; the
+    /// sum-then-squash GPU kernel cannot reproduce that, so such creatures fall
+    /// back to CPU rather than being silently mis-scored (Issue #305). The real
+    /// GRQ-cluster creature carries 3 constant neurons, so this guard is load-
+    /// bearing for correctness once its other blockers (aggregates) are hosted.
+    ConstantNeuron {
+        /// Index of the offending creature within the batch.
+        creature_idx: usize,
+    },
 }
 
 impl std::fmt::Display for GpuPrepareError {
@@ -175,6 +185,10 @@ impl std::fmt::Display for GpuPrepareError {
             Self::MismatchedShape => {
                 f.write_str("all creatures must share the same (num_inputs, num_outputs) shape")
             }
+            Self::ConstantNeuron { creature_idx } => write!(
+                f,
+                "creature {creature_idx} contains a constant neuron, which the GPU kernel cannot host"
+            ),
         }
     }
 }
@@ -226,6 +240,9 @@ pub fn build_batched_network_data(
         let num_non_inputs = net.neurons.len() as u32;
 
         for n in &net.neurons {
+            if n.is_constant {
+                return Err(GpuPrepareError::ConstantNeuron { creature_idx });
+            }
             if !squash_supported(n.squash_type) {
                 return Err(GpuPrepareError::UnsupportedSquash(n.squash_type));
             }
@@ -1022,6 +1039,24 @@ mod tests {
                 GpuPrepareError::UnsupportedSquash(got) => assert_eq!(got, t),
                 other => panic!("expected UnsupportedSquash({t}), got {other:?}"),
             }
+        }
+    }
+
+    /// Issue #305: constant neurons return a clamped bias on the CPU and ignore
+    /// their synapses; the sum-then-squash kernel cannot reproduce that, so a
+    /// creature containing one (the real GRQ creature has 3) must fall back to
+    /// CPU rather than be silently mis-scored — even when its squash is a
+    /// point-wise discriminant the shader would otherwise host.
+    #[test]
+    fn build_batched_network_data_rejects_constant_neuron() {
+        let mut net = synthetic_creature(1, 1, 1);
+        if let Some(n) = net.neurons.first_mut() {
+            n.is_constant = true;
+        }
+        let err = build_batched_network_data(&[net], 1, 1).expect_err("constant neuron rejected");
+        match err {
+            GpuPrepareError::ConstantNeuron { creature_idx } => assert_eq!(creature_idx, 0),
+            other => panic!("expected ConstantNeuron, got {other:?}"),
         }
     }
 

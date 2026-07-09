@@ -237,6 +237,10 @@ mixing the wider set fell back to CPU on **~95.8 %** of its neurons
 functions (`32..=37`: MINIMUM / MAXIMUM / IF / HYPOT / HYPOTv2 / MEAN): they
 combine the individual weighted inputs rather than their sum, so they cannot
 ride the kernel's sum-then-squash path and still force a CPU fallback.
+**Constant neurons** are also rejected by the pre-flight: the CPU returns a
+clamped bias for them and ignores their synapses, which the sum-then-squash
+kernel cannot reproduce, so a creature carrying one (the real GRQ creature has
+three) falls back to CPU rather than being silently mis-scored.
 
 CPU↔GPU parity across all 32 point-wise squashes is asserted by
 `cpu_vs_gpu_pointwise_squash_coverage` in
