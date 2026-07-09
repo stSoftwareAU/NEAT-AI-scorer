@@ -15,7 +15,7 @@ use std::path::{Path, PathBuf};
 use rust_scorer::cost::CostKind;
 use rust_scorer::gpu::GpuBackendLabel;
 use rust_scorer::multi_score::{score_from_creature_dir, score_from_creature_dir_sampled};
-use rust_scorer::sample::SampleSpec;
+use rust_scorer::sampling::SampleSpec;
 
 const INPUTS: usize = 1;
 const OUTPUTS: usize = 1;
@@ -81,7 +81,7 @@ fn half_rate_scores_stratified_subsample() {
         &data,
         GpuBackendLabel::CpuFallback,
         CostKind::Mse,
-        SampleSpec::new(0.5, 0).unwrap(),
+        &SampleSpec::new(0.5, 0).unwrap(),
     )
     .expect("sampled score");
 
@@ -125,7 +125,7 @@ fn rate_one_matches_full_corpus() {
         &data,
         GpuBackendLabel::CpuFallback,
         CostKind::Mse,
-        SampleSpec::new(1.0, 0).unwrap(),
+        &SampleSpec::new(1.0, 0).unwrap(),
     )
     .expect("rate-one score");
 
