@@ -734,7 +734,7 @@ message live in `scripts/auto-format.sh` and are covered by
 A standalone Cargo Security Audit workflow (`.github/workflows/cargo-audit.yml`,
 Issue #64) mirrors the `cargo audit` step in the reusable `security.yml` but
 adds a weekly cron schedule (`0 6 * * 1`) plus `workflow_dispatch`. The
-schedule catches advisories published _after_ the last PR — the lockfile
+schedule catches advisories published *after* the last PR — the lockfile
 does not change but the RustSec advisory database does. The workflow is
 validated by `scripts/check-cargo-audit-workflow.sh` (invoked from
 `quality.sh`) and covered end-to-end by
@@ -751,7 +751,7 @@ without a Rust toolchain. The job installs `cargo-cyclonedx`, runs
 `cargo cyclonedx --format json --all`, and uploads the resulting `*.cdx.json`
 files via `actions/upload-artifact`. It runs on pull requests, pushes to
 `Develop`, and `workflow_dispatch`. This workflow only emits the inventory
-artefact (the supply-chain _posture_ gap); active advisories remain owned by
+artefact (the supply-chain *posture* gap); active advisories remain owned by
 `cargo-audit.yml` / `security.yml`. The workflow is validated by
 `scripts/check-sbom-workflow.sh` (invoked from `quality.sh`) and covered
 end-to-end by `tests/scripts/sbom_workflow.bats`.

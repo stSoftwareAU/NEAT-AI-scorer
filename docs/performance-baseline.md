@@ -146,7 +146,7 @@ Flamegraphs committed under [`docs/evidence/`](evidence/):
 
 ### Single-creature fused path — top 5 (leaf / self time)
 
-_Idle scheduler/wait samples excluded._ Numbers show percent of total
+*Idle scheduler/wait samples excluded.* Numbers show percent of total
 samples (2,255) and percent of **active CPU samples** (749). Because each
 iteration of the forward-only path is small, Rayon workers spend ~67 % of
 wall-clock time sleeping on `swtch_pri` / `__psynch_mutexwait`; those are
@@ -162,7 +162,7 @@ listed under the unscheduled-parallelism finding below.
 
 ### Multi-creature directory mode (50 creatures) — top 5 (leaf / self time)
 
-_Idle scheduler/wait samples excluded._ Numbers show percent of total
+*Idle scheduler/wait samples excluded.* Numbers show percent of total
 samples (10,868) and percent of active samples (6,196).
 
 | # | Function | Total % | Active % | Where it comes from | Addressed by |
@@ -256,7 +256,7 @@ The older 2 GiB / 500 MB flamegraphs from Issue #37 are kept at
 
 #### Single-creature fused path — top 5 (leaf / self time)
 
-_Idle scheduler/wait samples excluded._ Numbers show percent of total samples
+*Idle scheduler/wait samples excluded.* Numbers show percent of total samples
 (1,001) and percent of **active CPU samples** (≈ 207 — total minus
 `swtch_pri` 577, `dyld` startup 214, mutex/cv waits ≈ 3). Wall-clock sleep on
 `swtch_pri` / `__psynch_mutexwait` is 57.6 % at this corpus size, down from
@@ -273,7 +273,7 @@ in [Cross-scenario findings](#cross-scenario-findings) holds at 200 MB.
 
 #### Multi-creature directory mode (50 creatures) — top 5 (leaf / self time)
 
-_Idle scheduler/wait samples excluded._ Numbers show percent of total samples
+*Idle scheduler/wait samples excluded.* Numbers show percent of total samples
 (8,123) and percent of active samples (≈ 3,584 — total minus `swtch_pri`
 4,525 and mutex/cv waits ≈ 14). `swtch_pri` is 55.7 % of wall-clock, similar
 to the 500 MB / 50-creature reading.
@@ -323,7 +323,7 @@ their original fixture sizes.
 |---|---|---|---|---|
 | `score_from_json_fused/forward_only` (CPU) | 89.871 ms | 2.07 GiB/s | — | — |
 | `score_from_json_fused/forward_only` (CPU+PGO) | ≈ 81.8 ms ¹ | ≈ 2.27 GiB/s | **−9.0 %** | — |
-| GPU single-creature kernel | _no kernel ships_ | n/a | n/a | n/a |
+| GPU single-creature kernel | *no kernel ships* | n/a | n/a | n/a |
 
 ¹ Extrapolated from Issue #43 PGO evidence at 300 MB
 (`447.6 ms → 407.7 ms`, **−8.9 %** delta) re-applied to the 200 MB CPU
@@ -358,7 +358,7 @@ Two evidence sets are recorded:
 | `score_from_creature_dir/creatures/50` (CPU release) | 2.3423 s | 4.9439 s | 38.6 MiB/s |
 | `score_from_creature_dir/creatures/50` (CPU+PGO, est.) | ≈ 2.152 s ⁴ | ≈ 4.543 s ⁴ | — |
 | `gpu_score_from_creature_dir/creatures/50` (GPU pipelined) | 2.176 s | 2.5193 s | 75.7 MiB/s |
-| `gpu_score_from_creature_dir/creatures/50` (GPU sync, `inflight=1`) | 2.147 s | _not in this run_ | — |
+| `gpu_score_from_creature_dir/creatures/50` (GPU sync, `inflight=1`) | 2.147 s | *not in this run* | — |
 
 Relative comparisons (loaded host, fresh re-run):
 
@@ -598,9 +598,9 @@ The synthetic captures (`single-creature.svg`, `multi-creature.svg`,
 
 #### Single-creature fused path — top self-time frames
 
-_Active % excludes scheduler/startup samples. `_dyld_start` (18 % active) is
+*Active % excludes scheduler/startup samples. `_dyld_start` (18 % active) is
 one-shot CLI process launch under `sample`, not steady-state, and is excluded
-from the ranking below._ Active sample base ≈ 1,640.
+from the ranking below.* Active sample base ≈ 1,640.
 
 | # | Function | Total % | Active % | Where it comes from | Owner / route |
 |---|---|---|---|---|---|
@@ -612,7 +612,7 @@ from the ranking below._ Active sample base ≈ 1,640.
 
 #### Multi-creature directory mode (4 creatures) — top self-time frames
 
-_Active sample base ≈ 1,644._ `--gpu auto` cleanly fell back to CPU (the
+*Active sample base ≈ 1,644.* `--gpu auto` cleanly fell back to CPU (the
 production squash mix is unhostable by the MSE-only GPU kernel — discriminant 10),
 so this is the CPU directory path.
 

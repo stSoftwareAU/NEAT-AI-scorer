@@ -45,7 +45,7 @@ Backend/CLI change — no web UI. Verified on **Apple M4 / Metal 4** hardware.
 point-wise squashes, scores it on both the CPU (`mse_sum_batch_packed`) and the
 GPU kernel, and asserts per-creature MSE agreement:
 
-```
+```text
 running 7 tests
 test cpu_vs_gpu_pointwise_squash_coverage ... ok
 test cpu_vs_gpu_n10_creatures_within_relative_tolerance ... ok
