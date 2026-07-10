@@ -563,6 +563,7 @@ impl BatchedRunner {
 
     /// Stable WGSL entry-point name of the kernel this runner drives, for the
     /// `gpuKernel` JSON field (Issue #182).
+    #[allow(dead_code)] // superseded by [`DirectoryGpuRunners::kernel_label`] for directory mode.
     pub fn kernel_label(&self) -> &'static str {
         match self.kernel {
             KernelKind::Private => "forward_mse_batched",
@@ -835,6 +836,143 @@ impl BatchedRunner {
             self.max_neurons,
             self.scratch_budget_bytes,
         )
+    }
+}
+
+/// Topology of a directory-mode creature pool for kernel routing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DirectoryGpuTopology {
+    /// Every creature fits the fast private-array kernel.
+    AllPrivate,
+    /// At least one creature exceeds [`MAX_NEURONS_PER_CREATURE`] and none fit
+    /// the private kernel alone.
+    ScratchOnly,
+    /// Both private-fit and scratch-required creatures — dual-kernel path.
+    Mixed,
+}
+
+/// Classify a compiled creature pool for GPU kernel selection.
+pub fn directory_gpu_topology(networks: &[CompiledNetwork]) -> DirectoryGpuTopology {
+    let mut has_private = false;
+    let mut has_scratch = false;
+    for net in networks {
+        if u32::try_from(net.num_neurons).unwrap_or(u32::MAX) > MAX_NEURONS_PER_CREATURE {
+            has_scratch = true;
+        } else {
+            has_private = true;
+        }
+    }
+    match (has_private, has_scratch) {
+        (true, true) => DirectoryGpuTopology::Mixed,
+        (false, true) => DirectoryGpuTopology::ScratchOnly,
+        (true, false) | (false, false) => DirectoryGpuTopology::AllPrivate,
+    }
+}
+
+/// Directory-mode GPU runners — may hold private and/or scratch kernels when the
+/// creature pool is mixed so small creatures avoid the scratch-kernel tax.
+pub struct DirectoryGpuRunners {
+    private: Option<BatchedRunner>,
+    private_orig: Vec<usize>,
+    scratch: Option<BatchedRunner>,
+    scratch_orig: Vec<usize>,
+    creature_count: usize,
+}
+
+impl DirectoryGpuRunners {
+    /// Build zero, one, or two runners from a heterogeneous creature pool.
+    pub fn new(
+        ctx: Arc<GpuContext>,
+        networks: &[CompiledNetwork],
+        num_inputs: usize,
+        num_outputs: usize,
+    ) -> Result<Self, GpuPrepareError> {
+        let creature_count = networks.len();
+        let mut private_nets: Vec<CompiledNetwork> = Vec::new();
+        let mut private_orig: Vec<usize> = Vec::new();
+        let mut scratch_nets: Vec<CompiledNetwork> = Vec::new();
+        let mut scratch_orig: Vec<usize> = Vec::new();
+
+        for (i, net) in networks.iter().enumerate() {
+            if u32::try_from(net.num_neurons).unwrap_or(u32::MAX) > MAX_NEURONS_PER_CREATURE {
+                scratch_orig.push(i);
+                scratch_nets.push(net.clone());
+            } else {
+                private_orig.push(i);
+                private_nets.push(net.clone());
+            }
+        }
+
+        let private = if private_orig.is_empty() {
+            None
+        } else {
+            Some(BatchedRunner::new(
+                ctx.clone(),
+                &private_nets,
+                num_inputs,
+                num_outputs,
+            )?)
+        };
+        let scratch = if scratch_orig.is_empty() {
+            None
+        } else {
+            Some(BatchedRunner::new(
+                ctx,
+                &scratch_nets,
+                num_inputs,
+                num_outputs,
+            )?)
+        };
+
+        Ok(Self {
+            private,
+            private_orig,
+            scratch,
+            scratch_orig,
+            creature_count,
+        })
+    }
+
+    /// Score one packed chunk; returns one MSE-sum partial per original creature.
+    pub fn score_chunk(&mut self, floats: &[f32], n_records: usize) -> Result<Vec<f64>, String> {
+        let mut totals = vec![0.0_f64; self.creature_count];
+        if let Some(ref mut runner) = self.private {
+            let partial = runner.score_chunk(floats, n_records)?;
+            for (slot, &orig) in self.private_orig.iter().enumerate() {
+                totals[orig] += partial[slot];
+            }
+        }
+        if let Some(ref mut runner) = self.scratch {
+            let partial = runner.score_chunk(floats, n_records)?;
+            for (slot, &orig) in self.scratch_orig.iter().enumerate() {
+                totals[orig] += partial[slot];
+            }
+        }
+        Ok(totals)
+    }
+
+    /// Combined dispatch count across all active runners.
+    pub fn dispatch_count(&self) -> usize {
+        self.private.as_ref().map(|r| r.dispatch_count).unwrap_or(0)
+            + self.scratch.as_ref().map(|r| r.dispatch_count).unwrap_or(0)
+    }
+
+    /// Stable label for the `gpuKernel` JSON field.
+    pub fn kernel_label(&self) -> String {
+        match self.topology() {
+            DirectoryGpuTopology::Mixed => "forward_mse_batched+forward_mse_scratch".to_string(),
+            DirectoryGpuTopology::ScratchOnly => "forward_mse_scratch".to_string(),
+            DirectoryGpuTopology::AllPrivate => "forward_mse_batched".to_string(),
+        }
+    }
+
+    /// Topology of this runner set.
+    pub fn topology(&self) -> DirectoryGpuTopology {
+        match (&self.private, &self.scratch) {
+            (Some(_), Some(_)) => DirectoryGpuTopology::Mixed,
+            (None, Some(_)) => DirectoryGpuTopology::ScratchOnly,
+            (Some(_), None) | (None, None) => DirectoryGpuTopology::AllPrivate,
+        }
     }
 }
 

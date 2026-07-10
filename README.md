@@ -121,7 +121,7 @@ flag wins over the `NEAT_SCORER_GPU` environment variable.
 
 | Mode    | Behaviour                                                                                                       | `gpuBackend` value                                  |
 |---------|-----------------------------------------------------------------------------------------------------------------|-----------------------------------------------------|
-| `auto`  | **Default since Issue #83.** Use GPU on paths where bench evidence supports it (directory mode at the issue-target corpus); silently fall back to CPU otherwise. | `"metal"` / `"vulkan"` / `"dx12"` / `"gl"` / `"cpu-fallback"` |
+| `auto`  | **Default since Issue #83.** Use GPU on directory paths with **AllPrivate** topology (≤256 total neurons per creature); fall back to CPU for scratch/mixed GRQ-scale pools (#317), non-MSE costs, missing adapters, or failed pre-flight. Prints one stderr note when declining GPU for topology. | `"metal"` / `"vulkan"` / `"dx12"` / `"gl"` / `"cpu-fallback"` |
 | `on`    | Require a compatible GPU; exit non-zero with a clear message when none is found (no silent fallback). Forces the GPU path even where bench evidence does not support it. | `"metal"` / `"vulkan"` / `"dx12"` / `"gl"`          |
 | `off`   | Skip GPU detection entirely; run the CPU pipeline.                                                             | `"cpu-fallback"`                                    |
 
@@ -140,7 +140,9 @@ flowchart TD
     CLI[--gpu / NEAT_SCORER_GPU] --> Mode{GpuMode}
     Mode -->|Off| CPU[CPU pipeline]
     Mode -->|Auto + single creature<br/>#81 negative| CPU
-    Mode -->|Auto + directory| Preflight{CPU pre-flight #180<br/>set hostable?<br/>MSE · shape · squash}
+    Mode -->|Auto + directory| Topo{Topology probe #317<br/>AllPrivate?}
+    Topo -->|Mixed / ScratchOnly| CPU
+    Topo -->|AllPrivate| Preflight{CPU pre-flight #180<br/>set hostable?<br/>MSE · shape · squash}
     Mode -->|On| Adapter[wgpu adapter<br/>selection]
     Preflight -->|no — never makes a GPU device| CPU
     Preflight -->|yes| Adapter
@@ -157,7 +159,11 @@ squash, a shape mismatch, or — guarding against corruption — an absurd
 neuron count) routes straight to the CPU pipeline without ever spinning up —
 or tearing down — a GPU context, so the fallback always returns valid JSON
 and exits cleanly. Since Issue #182 the 256-neuron cap is no longer a reason
-to fall back (see below).
+to fall back (see below). Issue #317 adds a **topology probe** before GPU
+device creation: GRQ-scale creatures (total neurons >256, including inputs)
+classify as **ScratchOnly** and `Auto` stays on CPU — full-corpus M4 A/B
+showed CPU ~3× faster than scratch GPU even with dual-kernel dispatch and
+32 MiB read chunks. `--gpu on` still runs the scratch kernel for debug.
 
 ### GPU acceleration (Issue #83)
 
@@ -173,8 +179,8 @@ requires editing that function plus the matching row in the docs table
 | Path                               | GPU vs CPU+PGO @ 200 MB | `Auto` default | Source       |
 |------------------------------------|-------------------------|----------------|--------------|
 | `score_from_json_fused` (single)   | GPU loses               | **CPU**        | Issue #81 (negative result) |
-| `score_from_creature_dir` (N=50)   | **GPU −32.4 %** (Metal) | **GPU**        | Issue #82 PR summary |
-| `score_from_creature_dir` (N=10)   | GPU loses (low N)       | GPU (per-path) | Issue #82 |
+| `score_from_creature_dir` (N=50, AllPrivate) | **GPU −32.4 %** (Metal) | **GPU**        | Issue #82 PR summary |
+| `score_from_creature_dir` (N=63, GRQ scratch) | **CPU ~3× faster** (full corpus) | **CPU** | Issue #317 |
 
 `Auto` selects per **path** (single vs directory), not per N — at N=10 the
 per-dispatch overhead dominates, but at the issue-target corpus the
@@ -191,8 +197,9 @@ Headline numbers (Apple Silicon M-series, 200 MB corpus, from
 | `gpu_score_from_creature_dir/creatures/50` (GPU)   | 2.176 s | 87.7 MiB/s  |
 | `gpu_pipelining_toggle/inflight/2` (pipelined)     | 2.153 s | 88.6 MiB/s  |
 
-The JSON output adds `gpuKernel` (`forward_mse_batched`, or
-`forward_mse_scratch` for creatures above the 256-neuron cap — Issue #182) plus
+The JSON output adds `gpuKernel` (`forward_mse_batched`,
+`forward_mse_scratch`, or `forward_mse_batched+forward_mse_scratch` for mixed
+pools — Issue #317) plus
 `gpuInflightChunks` and `gpuDispatchCount` diagnostic counters when the
 GPU directory path runs.
 

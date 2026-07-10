@@ -34,7 +34,7 @@ use neat_core::training_data::{TrainingDataConfig, TrainingDataIterator, find_bi
 use std::sync::Arc;
 
 use crate::cost::CostKind;
-use crate::gpu::{GpuBackendLabel, GpuMode, ScoringPath, auto_should_use_gpu};
+use crate::gpu::{GpuBackendLabel, GpuMode, ScoringPath};
 use crate::multi_score::{score_from_creature_dir_gpu_sampled, score_from_creature_dir_sampled};
 use crate::read_tuning::{training_read_backend_label, training_read_target_bytes_from_env};
 use crate::sampling::{SampleSpec, parse_sample_rate};
@@ -246,19 +246,9 @@ fn run(cli: &Cli) -> Result<RunOutput, String> {
         },
     };
 
-    // Issue #83 — codified ship/skip decision. `auto_should_use_gpu` is the
-    // single source of truth for which paths default to GPU under Auto mode;
-    // `On` bypasses it (the user explicitly demanded GPU even where bench
-    // evidence does not support it), `Off` skipped GPU detection above.
-    // Issue #121 extends the predicate with the resolved cost so non-MSE
-    // costs under `--gpu auto` route to the CPU path.
-    let want_gpu_for_path = |path: ScoringPath| -> bool {
-        match mode {
-            GpuMode::Off => false,
-            GpuMode::On => true,
-            GpuMode::Auto => auto_should_use_gpu(path, cli.cost),
-        }
-    };
+    // Issue #83 — codified ship/skip decision under Auto for the single-creature
+    // path only; directory mode uses topology-aware [`auto_should_use_gpu_directory`].
+    // `On` bypasses heuristics; `Off` skipped GPU detection above.
 
     if cli.creature_stdin {
         let (creature_json, data_path) = resolve_inputs(cli)?;
@@ -295,11 +285,24 @@ fn run(cli: &Cli) -> Result<RunOutput, String> {
         {
             eprintln!("{note}");
         }
+        if let Some(note) = gpu::auto_topology_fallback_note(
+            mode,
+            ScoringPath::CreatureDirectory,
+            cli.cost,
+            creature_path.as_ref(),
+        ) {
+            eprintln!("{note}");
+        }
         // Directory mode: per Issue #82+#83 use the GPU multi-creature
         // batched kernel when (a) an adapter is available and (b) the mode
-        // wants GPU for this path (`Auto` ⇒ yes, `On` ⇒ yes, `Off` ⇒ no).
+        // wants GPU for this path (`Auto` ⇒ topology-aware, `On` ⇒ yes, `Off` ⇒ no).
         // `inflight_chunks: 2` enables CPU↔GPU pipelining.
-        if want_gpu_for_path(ScoringPath::CreatureDirectory) {
+        let want_gpu_for_directory = match mode {
+            GpuMode::Off => false,
+            GpuMode::On => true,
+            GpuMode::Auto => gpu::auto_should_use_gpu_directory(creature_path.as_ref(), cli.cost),
+        };
+        if want_gpu_for_directory {
             // Resolve the GPU context for this directory. Under `--gpu on` it
             // was selected up-front. Under `--gpu auto` (Issue #180) selection
             // is deferred behind a CPU-only pre-flight: a creature set above

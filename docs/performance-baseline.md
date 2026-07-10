@@ -154,6 +154,85 @@ BENCH_PROD_CREATURE=/path/to/GRQ-cluster/network.json \
   cargo bench -p rust_scorer --bench scoring -- production_gpu_vs_cpu
 ```
 
+## Production GPU full-corpus Auto tuning — 10 July 2026 (Issue #317)
+
+Cross-links production `learn.sh` (omits `--gpu` → default `Auto`) and
+[NEAT-AI#3256](https://github.com/stSoftwareAU/NEAT-AI/issues/3256).
+
+**Host:** Apple M4 (10 cores), 24 GB, macOS; release `rust_scorer`.
+**Creatures:** 63 staged GRQ production JSON (2461 inputs, ~1666 hidden,
+scratch-sized total neuron count). **Corpus:** `.trainData-binary_115` at
+**100 % data** (no `--sample-rate`).
+
+**Phase 1 speedups landed in this repo:**
+
+| Change | Effect |
+|---|---|
+| Dual-kernel directory GPU (`forward_mse_batched` + `forward_mse_scratch` in one I/O pass) | Helps mixed small+large pools; **no GRQ win** — every production creature exceeds the 256-neuron private cap because inputs count toward total neurons |
+| Auto read buffer (`read_tuning::default_training_read_bytes`) | When `NEAT_SCORER_READ_BYTES` is unset and records ≥ 8000 B, default **32 MiB** (was 2 MiB); `readBufLen` ≈ 33.5 MiB, GPU dispatch count drops on large corpora |
+| Topology-aware `auto_should_use_gpu_directory` | `Auto` uses GPU only for **AllPrivate** pools; **Mixed** and **ScratchOnly** (GRQ production) stay on CPU |
+
+**Full-rate A/B (2 largest `.bin` files, ~37 k records, N=63):**
+
+| Mode | Wall | `gpuBackend` | Notes |
+|---|---|---|---|
+| `--gpu off` | **3.15 s** | `cpu-fallback` | CPU floor |
+| `--gpu on` | 10.29 s | `metal` | `forward_mse_scratch`, 12 dispatches |
+| omit / `--gpu auto` | **3.39 s** | `cpu-fallback` | stderr topology note; matches CPU winner |
+
+**Full-corpus confirmation (521 bins, 2 250 226 records, Apple M4):**
+
+| Pool `N` | Mode | Wall | `readBufLen` | `gpuBackend` |
+|---|---|---|---|---|
+| 50 | omit / `auto` | **164.9 s** | 33 552 136 | `cpu-fallback` |
+| 50 | `--gpu off` | 167.3 s | 33 552 136 | `cpu-fallback` |
+| 63 | omit / `auto` | 199.5 s | 33 552 136 | `cpu-fallback` |
+| 63 | `--gpu off` | **179.0 s** | 33 552 136 | `cpu-fallback` |
+
+Both population sizes pick CPU under `auto` with the topology stderr note.
+
+**Triple-check sweep — 10 July 2026 (M4, 24 GiB, exhaustive).** Re-ran
+CPU / `auto` / `--gpu on` across N=3…63, scratch budgets 512 MiB–4 GiB,
+2-bin subset and full 521-bin corpus. Raw TSV:
+`/tmp/neat-gpu-triple-check-results.tsv` on the bench host (or reproduce
+with the script in the PR #317 branch notes).
+
+| Phase | N | CPU | Best GPU | GPU vs CPU |
+|---|---|---|---|---|
+| 2-bin subset | 3 | **0.39 s** | 0.71 s (2048 MiB) | 1.8× slower |
+| 2-bin subset | 10 | **1.02 s** | 2.30 s | 2.3× slower |
+| 2-bin subset | 50 | **2.13 s** | 6.45 s (4096 MiB) | 3.0× slower |
+| 2-bin subset | 63 | **2.56 s** | 7.96 s (2048 MiB) | 3.1× slower |
+| Full corpus | 50 | **166 s** | *segfault* (exit 139) | cannot complete |
+| Full corpus | 63 | **157 s** | *segfault* (exit 139) | cannot complete |
+
+Larger `NEAT_SCORER_GPU_SCRATCH_BYTES` improves subset GPU by ~20 % but never
+beats CPU. Subset times linearly project full-corpus CPU (2.56 s × 2250226/36989
+≈ 156 s, measured 157 s). Directory-mode `--gpu on` segfaults during GPU init
+for N≥3 on the full corpus — production `learn.sh` omits `--gpu` and never
+hits that path.
+
+**Decision:** GPU remains **~3× slower** than CPU on GRQ-scale full-corpus
+scoring even after dual-kernel + 32 MiB reads. **`Auto` / omit → CPU** for
+scratch-only and mixed topologies; **`--gpu on`** still forces GPU for debug
+(subset only on current Metal builds). All-private synthetic pools at N=50 /
+200 MB (#82) remain GPU under `Auto`. **Do not re-benchmark GPU for GRQ
+production** unless creature topology or kernel architecture changes materially.
+
+Reproduce the subset A/B:
+
+```bash
+cargo build -p rust_scorer --release
+# stage creatures + copy 2 largest bins, then:
+target/release/rust_scorer --gpu off  /tmp/neat-prod-creatures /tmp/neat-bench-data
+target/release/rust_scorer --gpu on   /tmp/neat-prod-creatures /tmp/neat-bench-data
+target/release/rust_scorer            /tmp/neat-prod-creatures /tmp/neat-bench-data
+```
+
+**Supersedes** the #312 "pending population-size threshold" note for the
+production `learn.sh` path: full-corpus evidence on M4 shows CPU wins at
+N=63, so the heuristic is topology-based rather than N-threshold.
+
 ## Baseline — 25 April 2026
 
 | Field | Value |

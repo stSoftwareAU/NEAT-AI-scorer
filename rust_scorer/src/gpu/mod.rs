@@ -40,6 +40,7 @@
 
 pub mod forward_mse_batched;
 
+use forward_mse_batched::DirectoryGpuTopology;
 use std::str::FromStr;
 
 /// Opt-in GPU selection mode parsed from `--gpu` (CLI) and the
@@ -244,9 +245,63 @@ pub fn auto_should_use_gpu(path: ScoringPath, cost: crate::cost::CostKind) -> bo
     match path {
         // #81 — negative result. CPU+PGO wins on the single-creature path.
         ScoringPath::SingleCreature => false,
-        // #82 — N=50 / 200 MB corpus on Apple Silicon Metal:
-        //   GPU 2.176 s vs CPU+PGO ≈ 2.96 s ⇒ ≈ 27 % faster (≥ 3 % bar met).
+        // #82 — synthetic all-private pools at N=50 / 200 MB beat CPU+PGO.
+        // GRQ production pools with scratch-sized creatures are handled by
+        // [`auto_should_use_gpu_directory`] once the creature dir is known.
         ScoringPath::CreatureDirectory => true,
+    }
+}
+
+/// Whether [`GpuMode::Auto`] should pick GPU for a specific creature directory.
+///
+/// Uses a cheap CPU-only topology probe so mixed/scratch-required GRQ pools
+/// that lose to CPU on M4/M5 full-corpus runs stay on the fused CPU path
+/// without creating a `wgpu` device (Issue #317).
+pub fn auto_should_use_gpu_directory(
+    creatures_dir: &std::path::Path,
+    cost: crate::cost::CostKind,
+) -> bool {
+    if !auto_should_use_gpu(ScoringPath::CreatureDirectory, cost) {
+        return false;
+    }
+    match crate::multi_score::gpu_directory_topology_for_dir(creatures_dir) {
+        Some(DirectoryGpuTopology::AllPrivate) => true,
+        // M4/M5 production A/B: even with dual-kernel + 32 MiB reads, mixed
+        // and scratch-only GRQ pools remain slower than CPU on full corpus.
+        Some(DirectoryGpuTopology::Mixed | DirectoryGpuTopology::ScratchOnly) => false,
+        // Load/compile deferred — attempt GPU; scoring path surfaces errors.
+        None => true,
+    }
+}
+
+/// Issue #317: stderr note when `--gpu auto` skips GPU for a topology that
+/// benchmarks slower than CPU on Apple Silicon production workloads.
+pub fn auto_topology_fallback_note(
+    mode: GpuMode,
+    path: ScoringPath,
+    cost: crate::cost::CostKind,
+    creatures_dir: &std::path::Path,
+) -> Option<String> {
+    if !matches!(mode, GpuMode::Auto)
+        || path != ScoringPath::CreatureDirectory
+        || !cost.gpu_supported()
+    {
+        return None;
+    }
+    match crate::multi_score::gpu_directory_topology_for_dir(creatures_dir) {
+        Some(DirectoryGpuTopology::Mixed) => Some(
+            "[gpu] auto fallback to CPU directory mode: mixed creature pool \
+             (private + scratch kernels) is faster on CPU for GRQ-scale full-corpus scoring; \
+             rerun with --gpu off to skip GPU detection"
+                .to_string(),
+        ),
+        Some(DirectoryGpuTopology::ScratchOnly) => Some(
+            "[gpu] auto fallback to CPU directory mode: scratch-kernel creatures \
+             are faster on CPU for GRQ-scale full-corpus scoring; \
+             rerun with --gpu off to skip GPU detection"
+                .to_string(),
+        ),
+        _ => None,
     }
 }
 
@@ -482,13 +537,52 @@ mod tests {
     }
 
     #[test]
-    fn auto_should_use_gpu_directory_uses_gpu() {
-        // Issue #82 — multi-creature batched dispatch at N=50 / 200 MB beat
-        // CPU+PGO by ≥ 30 % on Apple Silicon Metal, well above the 3 % bar.
+    fn auto_should_use_gpu_directory_uses_gpu_for_all_private() {
+        // Issue #82 — synthetic all-private pools at N=50 / 200 MB beat CPU+PGO.
         assert!(auto_should_use_gpu(
             ScoringPath::CreatureDirectory,
             crate::cost::CostKind::Mse
         ));
+    }
+
+    #[test]
+    fn auto_should_use_gpu_directory_declines_scratch_topology() {
+        use crate::multi_score::gpu_directory_topology_for_dir;
+        use neat_core::creature::{compile_creature, parse_creature_json};
+
+        let json = r#"{"input":2461,"output":1,"forwardOnly":true,"neurons":[{"type":"hidden","uuid":"h0","bias":0.0,"squash":"IDENTITY"},{"type":"output","uuid":"o0","bias":0.0,"squash":"IDENTITY"}],"synapses":[{"fromUUID":"input-0","toUUID":"h0","weight":1.0},{"fromUUID":"h0","toUUID":"o0","weight":1.0}]}"#;
+        let creature = parse_creature_json(json).expect("parse");
+        let net = compile_creature(&creature).expect("compile");
+        let topo = crate::gpu::forward_mse_batched::directory_gpu_topology(&[net]);
+        assert_eq!(topo, DirectoryGpuTopology::ScratchOnly);
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let dir = tmp.path().join("creatures");
+        std::fs::create_dir(&dir).expect("mkdir");
+        std::fs::write(dir.join("c.json"), json).expect("write");
+        let probed = gpu_directory_topology_for_dir(&dir).expect("topology");
+        assert_eq!(probed, DirectoryGpuTopology::ScratchOnly);
+        assert!(!auto_should_use_gpu_directory(
+            &dir,
+            crate::cost::CostKind::Mse
+        ));
+    }
+
+    #[test]
+    fn auto_topology_fallback_note_for_scratch_only() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let dir = tmp.path().join("creatures");
+        std::fs::create_dir(&dir).expect("mkdir");
+        let json = r#"{"input":300,"output":1,"forwardOnly":true,"neurons":[{"type":"output","uuid":"o0","bias":0.0,"squash":"IDENTITY"}],"synapses":[{"fromUUID":"input-0","toUUID":"o0","weight":1.0}]}"#;
+        std::fs::write(dir.join("c.json"), json).expect("write");
+        let note = auto_topology_fallback_note(
+            GpuMode::Auto,
+            ScoringPath::CreatureDirectory,
+            crate::cost::CostKind::Mse,
+            &dir,
+        )
+        .expect("note");
+        assert!(note.contains("scratch-kernel"));
     }
 
     /// Issue #121: Auto must keep the directory path on CPU when the
