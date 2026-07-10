@@ -851,6 +851,21 @@ pub enum DirectoryGpuTopology {
     Mixed,
 }
 
+/// Clamp requested pipelined in-flight dispatches for directory-mode GPU scoring.
+///
+/// `inflight_chunks == 2` overlaps host unpack with GPU readback on a worker
+/// thread. For scratch/mixed pools (large SSBO activations, GRQ-scale
+/// `32 MiB` reads), that combination has been observed to **SIGSEGV on Metal**
+/// when a streamed chunk spans a `.bin` file boundary (Issue #319). Keep those
+/// pools on the synchronous path (`1`); all-private synthetic benches may still
+/// request `2`.
+pub fn effective_directory_gpu_inflight(topology: DirectoryGpuTopology, requested: usize) -> usize {
+    match topology {
+        DirectoryGpuTopology::AllPrivate => requested,
+        DirectoryGpuTopology::ScratchOnly | DirectoryGpuTopology::Mixed => 1,
+    }
+}
+
 /// Classify a compiled creature pool for GPU kernel selection.
 pub fn directory_gpu_topology(networks: &[CompiledNetwork]) -> DirectoryGpuTopology {
     let mut has_private = false;
@@ -1294,6 +1309,22 @@ mod tests {
         assert!(
             scratch_bytes <= budget,
             "scratch ({scratch_bytes} bytes) must fit the {budget}-byte budget",
+        );
+    }
+
+    #[test]
+    fn effective_directory_gpu_inflight_clamps_scratch_pools() {
+        assert_eq!(
+            effective_directory_gpu_inflight(DirectoryGpuTopology::AllPrivate, 2),
+            2
+        );
+        assert_eq!(
+            effective_directory_gpu_inflight(DirectoryGpuTopology::ScratchOnly, 2),
+            1
+        );
+        assert_eq!(
+            effective_directory_gpu_inflight(DirectoryGpuTopology::Mixed, 2),
+            1
         );
     }
 

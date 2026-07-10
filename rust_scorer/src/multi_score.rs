@@ -38,6 +38,7 @@ use rayon::prelude::*;
 use crate::cost::{CostKind, accumulate_cost_sum};
 use crate::gpu::forward_mse_batched::{
     DirectoryGpuRunners, GpuPrepareError, build_batched_network_data,
+    effective_directory_gpu_inflight,
 };
 use crate::gpu::{GpuBackendLabel, GpuContext};
 use crate::read_tuning::{training_read_backend_label, training_read_target_bytes_from_env};
@@ -894,7 +895,9 @@ pub fn gpu_directory_topology_for_dir(
 ///   before reading the next one.
 /// * `2` — pipelined; chunk `N+1`'s host unpack overlaps chunk `N`'s GPU
 ///   compute via a worker thread fed by a bounded channel. Higher values are
-///   accepted but capped to `2` so device memory stays bounded.
+///   accepted but capped to `2` so device memory stays bounded. Scratch/mixed
+///   pools are forced to `1` — pipelining those kernels at GRQ-scale read
+///   sizes can SIGSEGV on Metal across `.bin` file boundaries (Issue #319).
 ///
 /// Returns the same per-creature `BTreeMap<String, ScoreResult>` as the CPU
 /// path, with `gpuKernel` (`forward_mse_batched` for creatures within the 256
@@ -1061,7 +1064,8 @@ fn score_from_creature_dir_gpu_impl(
             }
         };
 
-    let inflight_chunks = inflight_chunks.clamp(1, 2);
+    let inflight_chunks =
+        effective_directory_gpu_inflight(runners.topology(), inflight_chunks).clamp(1, 2);
     let mut total_records = 0_usize;
     let mut total_mse = vec![0.0_f64; loaded.len()];
     let mut pending: Vec<u8> = Vec::new();
