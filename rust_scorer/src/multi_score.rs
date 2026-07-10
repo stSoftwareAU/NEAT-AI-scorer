@@ -36,7 +36,9 @@ use neat_core::training_data::{TrainingDataConfig, find_bin_files};
 use rayon::prelude::*;
 
 use crate::cost::{CostKind, accumulate_cost_sum};
-use crate::gpu::forward_mse_batched::{BatchedRunner, GpuPrepareError, build_batched_network_data};
+use crate::gpu::forward_mse_batched::{
+    DirectoryGpuRunners, GpuPrepareError, build_batched_network_data,
+};
 use crate::gpu::{GpuBackendLabel, GpuContext};
 use crate::read_tuning::{training_read_backend_label, training_read_target_bytes_from_env};
 use crate::sampling::SampleSpec;
@@ -855,6 +857,28 @@ pub fn gpu_directory_compatible(creatures_dir: &Path) -> Result<(), GpuPrepareEr
     build_batched_network_data(&networks, num_inputs, num_outputs).map(|_| ())
 }
 
+/// CPU-only pre-flight topology probe for `--gpu auto` (Issue #317).
+///
+/// Returns `None` when creatures cannot be loaded/compiled — defer to the
+/// scoring path for the precise error. Otherwise classifies the pool so
+/// [`crate::gpu::auto_should_use_gpu_directory`] can skip GPU on topologies
+/// that lose to CPU on Apple Silicon production workloads.
+pub fn gpu_directory_topology_for_dir(
+    creatures_dir: &Path,
+) -> Option<crate::gpu::forward_mse_batched::DirectoryGpuTopology> {
+    let loaded = load_creatures_from_dir(creatures_dir).ok()?;
+    if loaded.is_empty() {
+        return None;
+    }
+    let mut networks: Vec<CompiledNetwork> = Vec::with_capacity(loaded.len());
+    for c in &loaded {
+        networks.push(compile_creature(&c.creature).ok()?);
+    }
+    Some(crate::gpu::forward_mse_batched::directory_gpu_topology(
+        &networks,
+    ))
+}
+
 /// Issue #82 — GPU-backed multi-creature scoring path.
 ///
 /// Same I/O envelope as [`score_from_creature_dir`]: load every `*.json`
@@ -1023,17 +1047,19 @@ fn score_from_creature_dir_gpu_impl(
     }
     let compile_time_secs = compile_started.elapsed().as_secs_f64();
 
-    // Build the GPU runner up-front; if any creature is incompatible with the
+    // Build the GPU runner(s) up-front; if any creature is incompatible with the
     // shader (unsupported squash, too many neurons, shape mismatch) we fall
-    // back to the CPU path so callers still get a result.
-    let mut runner = match BatchedRunner::new(ctx.clone(), &networks, num_inputs, num_outputs) {
-        Ok(r) => r,
-        Err(e) => {
-            return Err(format!(
-                "GPU runner cannot host this creature set ({e}); rerun with --gpu off"
-            ));
-        }
-    };
+    // back to the CPU path so callers still get a result. Mixed pools route
+    // small creatures to the private kernel and large ones to scratch (#317).
+    let mut runners =
+        match DirectoryGpuRunners::new(ctx.clone(), &networks, num_inputs, num_outputs) {
+            Ok(r) => r,
+            Err(e) => {
+                return Err(format!(
+                    "GPU runner cannot host this creature set ({e}); rerun with --gpu off"
+                ));
+            }
+        };
 
     let inflight_chunks = inflight_chunks.clamp(1, 2);
     let mut total_records = 0_usize;
@@ -1054,7 +1080,7 @@ fn score_from_creature_dir_gpu_impl(
                 return Err("Internal float unpack length mismatch".to_string());
             }
             total_records += n_records;
-            let sums = runner.score_chunk(floats, n_records)?;
+            let sums = runners.score_chunk(floats, n_records)?;
             for (i, s) in sums.iter().enumerate() {
                 total_mse[i] += s;
             }
@@ -1081,7 +1107,7 @@ fn score_from_creature_dir_gpu_impl(
         use std::sync::mpsc;
         use std::thread;
 
-        // Move runner into worker thread; results come back through `result_rx`.
+        // Move runners into worker thread; results come back through `result_rx`.
         // Consumed unpack buffers return through `recycle_rx` so the I/O thread
         // can reuse them instead of cloning each chunk (Issue #202).
         let n_creatures = loaded.len();
@@ -1094,16 +1120,16 @@ fn score_from_creature_dir_gpu_impl(
                 if floats.len() != n_records * values_per_record {
                     let _ =
                         result_tx.send(Err("Internal float unpack length mismatch".to_string()));
-                    return runner;
+                    return runners;
                 }
-                let sums = match runner.score_chunk(&floats, n_records) {
+                let sums = match runners.score_chunk(&floats, n_records) {
                     Ok(sums) => sums,
                     Err(e) => {
                         // Readback failed (e.g. device loss). Surface the error
                         // so the `--gpu auto` caller can fall back to the CPU
                         // instead of panicking mid-run (Issue #273).
                         let _ = result_tx.send(Err(e));
-                        return runner;
+                        return runners;
                     }
                 };
                 if result_tx.send(Ok((n_records, sums))).is_err() {
@@ -1113,7 +1139,7 @@ fn score_from_creature_dir_gpu_impl(
                 // means the I/O thread has gone away, so drop the buffer.
                 let _ = recycle_tx.send(floats);
             }
-            runner
+            runners
         });
 
         let mut pending_results: usize = 0;
@@ -1178,9 +1204,9 @@ fn score_from_creature_dir_gpu_impl(
             drain_one(&mut total_records, &mut total_mse, &mut pending_results)?;
         }
         let _ = work_tx.send(None);
-        let recovered_runner = worker.join().map_err(|_| "GPU worker thread panicked")?;
+        let recovered_runners = worker.join().map_err(|_| "GPU worker thread panicked")?;
         // Move dispatch_count back so we can report it in the JSON.
-        runner = recovered_runner;
+        runners = recovered_runners;
         // Quiet "unused" warnings in release builds.
         let _ = n_creatures;
     }
@@ -1196,10 +1222,8 @@ fn score_from_creature_dir_gpu_impl(
     }
 
     let elapsed = started.elapsed().as_secs_f64();
-    let dispatch_count = runner.dispatch_count;
-    // Report the kernel that actually ran — `forward_mse_batched` for small
-    // creatures, `forward_mse_scratch` for those above the 256 cap (Issue #182).
-    let gpu_kernel_label = runner.kernel_label();
+    let dispatch_count = runners.dispatch_count();
+    let gpu_kernel_label = runners.kernel_label();
     let mut results = BTreeMap::new();
     for (loaded_creature, mse_sum) in loaded.iter().zip(total_mse.iter()) {
         let avg_error = *mse_sum / total_records as f64;
@@ -1239,7 +1263,7 @@ fn score_from_creature_dir_gpu_impl(
                 max_activation_batch_records: None,
                 time_taken_secs: elapsed,
                 compile_time_secs: Some(compile_time_secs),
-                gpu_kernel: Some(gpu_kernel_label.to_string()),
+                gpu_kernel: Some(gpu_kernel_label.clone()),
                 gpu_inflight_chunks: Some(inflight_chunks),
                 gpu_dispatch_count: Some(dispatch_count),
                 cost_name: cost.as_str().to_string(),

@@ -54,12 +54,9 @@ fn large_creature(input: usize, output: usize, hidden: usize) -> String {
     )
 }
 
-/// Issue #180 / #182: `--gpu auto` (the default) over a directory whose creature
-/// exceeds the 256-neuron private-array cap must complete *cleanly* — valid JSON
-/// on stdout, exit 0. Before #180 the production regression aborted instead
-/// (`exit 158` / `INVALID_JSON`). After #182, such creatures no longer force a
-/// CPU fallback on hosts with a compatible GPU — they route to the
-/// `forward_mse_scratch` kernel instead.
+/// Issue #180 / #182 / #317: `--gpu auto` over scratch-sized creatures must
+/// complete cleanly. Issue #317 routes GRQ-scale / above-cap pools to CPU under
+/// Auto (faster on M4/M5 full corpus); `--gpu on` still uses the scratch kernel.
 #[test]
 fn gpu_auto_directory_above_private_cap_scores_cleanly() {
     let bin = env!("CARGO_BIN_EXE_rust_scorer");
@@ -96,9 +93,16 @@ fn gpu_auto_directory_above_private_cap_scores_cleanly() {
         .and_then(|v| v.as_str())
         .expect("gpuBackend must be present");
     match gpu_backend {
-        // CPU-only CI (no wgpu adapter) — pre-flight passes but auto falls back.
-        "cpu-fallback" => {}
-        // GPU host — Issue #182 routes above-cap creatures to the scratch kernel.
+        // Issue #317 — Auto prefers CPU for scratch-only topologies on Apple Silicon.
+        "cpu-fallback" => {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            assert!(
+                stderr.contains("[gpu] auto fallback to CPU directory mode")
+                    && stderr.contains("scratch-kernel"),
+                "scratch-only Auto must note CPU fallback, got: {stderr}",
+            );
+        }
+        // GPU host with `--gpu on` (not exercised here) would use scratch.
         _ => assert_eq!(
             entry.get("gpuKernel").and_then(|v| v.as_str()),
             Some("forward_mse_scratch"),
@@ -378,6 +382,51 @@ fn directory_mode_auto_non_mse_cost_notes_cpu_fallback() {
     assert!(
         !mse_stderr.contains("cost MSE is not GPU-supported"),
         "MSE must not print the cost CPU-fallback note, got: {mse_stderr}",
+    );
+}
+
+/// Issue #317: GRQ-scale input width (>256 total neurons) forces scratch topology;
+/// `--gpu auto` (default) must stay on CPU and print the topology fallback note.
+#[test]
+fn directory_mode_auto_grq_scale_topology_uses_cpu() {
+    let bin = env!("CARGO_BIN_EXE_rust_scorer");
+    let tmp = tempfile::tempdir().expect("create tempdir");
+    let creatures_dir = tmp.path().join("creatures");
+    let data_dir = tmp.path().join("data");
+    std::fs::create_dir(&creatures_dir).expect("create creatures dir");
+    std::fs::create_dir(&data_dir).expect("create data dir");
+
+    // 2461 inputs + 1 hidden + 1 output — same total-neuron scale as production GRQ.
+    std::fs::write(
+        creatures_dir.join("grq-scale.json"),
+        large_creature(2461, 1, 1),
+    )
+    .expect("write creature");
+    write_training_data(&data_dir, &[(vec![0.0; 2461], vec![0.5])]);
+
+    let output = Command::new(bin)
+        .arg(&creatures_dir)
+        .arg(&data_dir)
+        .output()
+        .expect("spawn scorer (default auto)");
+    assert!(
+        output.status.success(),
+        "auto GRQ-scale run must succeed, stderr:\n{}",
+        String::from_utf8_lossy(&output.stderr),
+    );
+    let parsed: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("stdout must be JSON");
+    let entry = parsed.get("grq-scale").expect("missing key");
+    assert_eq!(
+        entry.get("gpuBackend").and_then(|v| v.as_str()),
+        Some("cpu-fallback"),
+        "GRQ-scale Auto must use CPU",
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("[gpu] auto fallback to CPU directory mode")
+            && stderr.contains("scratch-kernel"),
+        "expected topology fallback note, got: {stderr}",
     );
 }
 
