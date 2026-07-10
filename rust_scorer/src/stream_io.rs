@@ -17,8 +17,9 @@ pub(crate) const PENDING_COMPACT_HEAD_BYTES: usize = 512 * 1024;
 /// `unpack_f32s_le` uses `set_len`; reserve up-front so capacity is sufficient.
 #[inline]
 pub(crate) fn reserve_unpack_capacity(buf: &mut Vec<f32>, n: usize) {
+    let need = n.saturating_sub(buf.len());
     if buf.capacity() < n {
-        buf.reserve(n - buf.capacity());
+        buf.reserve(need);
     }
 }
 

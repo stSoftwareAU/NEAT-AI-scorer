@@ -206,11 +206,22 @@ with the script in the PR #317 branch notes).
 | Full corpus | 50 | **166 s** | *segfault* (exit 139) | cannot complete |
 | Full corpus | 63 | **157 s** | *segfault* (exit 139) | cannot complete |
 
+**Issue #319 (fixed):** the full-corpus segfault was **not** scratch SSBO OOM at
+init — it reproduced with N=1 on two `.bin` shards when
+`NEAT_SCORER_READ_BYTES=32 MiB` (GRQ auto default) and the directory GPU path
+used **`inflight_chunks=2`** (pipelined worker thread). Smaller reads (2–16 MiB)
+and synchronous dispatches (`inflight=1`) completed. Root cause: overlapping host
+unpack with scratch-kernel `map_async` readback across a streamed **file
+boundary** on Metal (e.g. `A-2007.bin` → `A-2008.bin`). Fix: clamp scratch/mixed
+pools to `inflight=1` inside `score_from_creature_dir_gpu`; all-private benches
+may still request `2`. Regression:
+`rust_scorer/tests/gpu_pipelined_scratch_multi_bin.rs`.
+
 Larger `NEAT_SCORER_GPU_SCRATCH_BYTES` improves subset GPU by ~20 % but never
 beats CPU. Subset times linearly project full-corpus CPU (2.56 s × 2250226/36989
-≈ 156 s, measured 157 s). Directory-mode `--gpu on` segfaults during GPU init
-for N≥3 on the full corpus — production `learn.sh` omits `--gpu` and never
-hits that path.
+≈ 156 s, measured 157 s). Before #319, directory-mode `--gpu on` segfaulted on
+full corpus at N≥1 with the 32 MiB auto read default; production `learn.sh`
+omits `--gpu` and never hits that path.
 
 **Decision:** GPU remains **~3× slower** than CPU on GRQ-scale full-corpus
 scoring even after dual-kernel + 32 MiB reads. **`Auto` / omit → CPU** for
