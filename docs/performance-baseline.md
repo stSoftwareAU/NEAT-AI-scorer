@@ -884,6 +884,44 @@ for b in 2097152 8388608 16777216 33554432 67108864; do
 done
 ```
 
+## Production GPU dispatch overhead — 12 July 2026 (Issue #322)
+
+Experiment 2 of [#322](https://github.com/stSoftwareAU/NEAT-AI-scorer/issues/322)
+(parent [#318](https://github.com/stSoftwareAU/NEAT-AI-scorer/issues/318)):
+**bind-group reuse**. `BatchedRunner::score_chunk` previously called
+`device.create_bind_group` — plus a fresh `bind_entries` `Vec` — on *every*
+dispatch. The immutable per-creature SSBOs never change, so the bind group only
+goes stale when a growable buffer (`records`/`partials`/`scratch`) is reallocated
+or the scratch binding is resized. The runner now caches the bind group and
+rebuilds it only on that signature change.
+
+**Harness:** [`gpu_pipeline_alloc_bench`](../rust_scorer/src/bin/gpu_pipeline_alloc_bench.rs)
+(8 creatures, 100 000 records, `READ_BYTES=2560` → deliberately dispatch-heavy so
+the per-dispatch fixed cost dominates). Host: **Apple M4 Pro** (Mac16,11),
+macOS, Metal backend. Median of 3 runs.
+
+| Metric | Baseline (create per dispatch) | Bind-group reuse | Δ |
+|---|---|---|---|
+| `gpu_dispatch_count` | 1563 | 1563 | — |
+| allocations (scored) | 117 277 | 86 037 | **−31 240 (−26.6 %)** |
+| `elapsed_secs` | 10.80 | 10.15 | **~−6.0 %** |
+
+**Interpretation.** ~20 heap allocations per dispatch removed (one `bind_entries`
+`Vec` plus the wgpu-internal bind-group allocations), and ~6 % wall-clock on this
+dispatch-bound synthetic path. The saving is per-dispatch, so absolute wall-time
+impact scales with dispatch count — larger on many-chunk runs, smaller on the
+few-chunk full corpus. **Correctness is unchanged:** the reused bind group serves
+identical results (`gpu_bind_group_reuse::reused_bind_group_preserves_cpu_parity`
+plus the existing CPU↔GPU parity suite).
+
+**Scope note.** This does **not** flip `--gpu auto` routing — production GRQ
+topology is `ScratchOnly`, which still selects CPU per #317/#319. It reduces
+dispatch overhead on every GPU run (`--gpu on`, and the all-private `auto` path).
+The remaining #322 experiments (1: 64 MiB read default; 3: async readback beyond
+`inflight=2`, blocked by the #319 Metal SIGSEGV; 4: Metal-native micro-benchmark)
+need the full 521-bin GRQ corpus / are non-shipping spikes and are tracked in a
+follow-up.
+
 1. Run `./scripts/run-benches.sh` (default fixture) and record the median +
    std-dev proxy for each benchmark.
 2. For an issue-target run, set `BENCH_SCORING_BYTES=200000000` (200 MB) and

@@ -307,6 +307,33 @@ pub enum KernelKind {
     Scratch,
 }
 
+/// Identity of the buffers a bind group references (Issue #322).
+///
+/// A `wgpu::BindGroup` stays valid for reuse across dispatches as long as every
+/// buffer it binds is the same allocation and any explicitly-sized binding keeps
+/// the same size. The immutable per-creature SSBOs (`header`, `neurons`,
+/// `synapses`, `creatures`) never change, so only three things can invalidate a
+/// cached bind group: the growable `records`/`partials`/`scratch` buffers being
+/// reallocated, or the scratch binding being resized. A monotonic generation
+/// counter per growable buffer (bumped on each reallocation) plus the bound
+/// scratch size captures exactly that — so a matching signature means the cached
+/// bind group is still correct.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct BindGroupSig {
+    records_gen: u64,
+    partials_gen: u64,
+    scratch_gen: u64,
+    scratch_bytes: u64,
+}
+
+/// Whether a cached bind group with signature `cached` must be rebuilt to serve
+/// a dispatch whose current buffer signature is `current` (Issue #322).
+///
+/// Pure so the reuse decision is unit-testable on CPU-only CI without a live GPU.
+fn bind_group_needs_rebuild(cached: Option<BindGroupSig>, current: BindGroupSig) -> bool {
+    cached != Some(current)
+}
+
 /// Reusable GPU pipeline + per-creature buffers for the batched kernel.
 ///
 /// One [`BatchedRunner`] is built once per scoring run. It owns the immutable
@@ -339,8 +366,23 @@ pub struct BatchedRunner {
     readback_buf: Option<(wgpu::Buffer, u64)>,
     /// Activation scratch SSBO for [`KernelKind::Scratch`]; grows lazily.
     scratch_buf: Option<(wgpu::Buffer, u64)>,
+    /// Cached bind group reused across dispatches while its buffers are
+    /// unchanged (Issue #322). Rebuilt only when a growable buffer is
+    /// reallocated or the scratch binding is resized.
+    bind_group: Option<wgpu::BindGroup>,
+    /// Signature of the buffers `bind_group` references, for reuse validation.
+    bind_group_sig: Option<BindGroupSig>,
+    /// Reallocation generation counters for the growable buffers — bumped each
+    /// time the corresponding buffer is grown so a cached bind group referencing
+    /// the old allocation is invalidated (Issue #322).
+    records_gen: u64,
+    partials_gen: u64,
+    scratch_gen: u64,
     /// Diagnostic counter — incremented per [`Self::score_chunk`] call.
     pub dispatch_count: usize,
+    /// Diagnostic counter — incremented each time the bind group is (re)built
+    /// rather than reused (Issue #322). Reused for the bind-group-reuse test.
+    pub bind_group_builds: usize,
 }
 
 impl BatchedRunner {
@@ -551,7 +593,13 @@ impl BatchedRunner {
             partials_buf: None,
             readback_buf: None,
             scratch_buf: None,
+            bind_group: None,
+            bind_group_sig: None,
+            records_gen: 0,
+            partials_gen: 0,
+            scratch_gen: 0,
             dispatch_count: 0,
+            bind_group_builds: 0,
         }
     }
 
@@ -666,47 +714,70 @@ impl BatchedRunner {
             None
         };
 
-        let mut bind_entries = vec![
-            wgpu::BindGroupEntry {
-                binding: 0,
-                resource: self.header_buf.as_entire_binding(),
-            },
-            wgpu::BindGroupEntry {
-                binding: 1,
-                resource: records_buf.as_entire_binding(),
-            },
-            wgpu::BindGroupEntry {
-                binding: 2,
-                resource: self.neurons_buf.as_entire_binding(),
-            },
-            wgpu::BindGroupEntry {
-                binding: 3,
-                resource: self.synapses_buf.as_entire_binding(),
-            },
-            wgpu::BindGroupEntry {
-                binding: 4,
-                resource: self.creatures_buf.as_entire_binding(),
-            },
-            wgpu::BindGroupEntry {
-                binding: 5,
-                resource: partials_buf.as_entire_binding(),
-            },
-        ];
-        if let Some((scratch_buf, scratch_bytes)) = scratch_binding.as_ref() {
-            bind_entries.push(wgpu::BindGroupEntry {
-                binding: 6,
-                resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
-                    buffer: scratch_buf,
-                    offset: 0,
-                    size: Some(std::num::NonZeroU64::new(*scratch_bytes).expect("scratch >= 64")),
-                }),
+        // Issue #322 — reuse the bind group across dispatches. It only becomes
+        // stale when a growable buffer is reallocated (tracked by the `*_gen`
+        // counters) or the scratch binding is resized, so rebuild solely on a
+        // signature change. This drops one `create_bind_group` + entries `Vec`
+        // allocation off every steady-state dispatch.
+        let scratch_bytes_bound = scratch_binding.as_ref().map(|(_, b)| *b).unwrap_or(0);
+        let sig = BindGroupSig {
+            records_gen: self.records_gen,
+            partials_gen: self.partials_gen,
+            scratch_gen: self.scratch_gen,
+            scratch_bytes: scratch_bytes_bound,
+        };
+        if bind_group_needs_rebuild(self.bind_group_sig, sig) {
+            let mut bind_entries = vec![
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: self.header_buf.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: records_buf.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: self.neurons_buf.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: self.synapses_buf.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: self.creatures_buf.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 5,
+                    resource: partials_buf.as_entire_binding(),
+                },
+            ];
+            if let Some((scratch_buf, scratch_bytes)) = scratch_binding.as_ref() {
+                bind_entries.push(wgpu::BindGroupEntry {
+                    binding: 6,
+                    resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                        buffer: scratch_buf,
+                        offset: 0,
+                        size: Some(
+                            std::num::NonZeroU64::new(*scratch_bytes).expect("scratch >= 64"),
+                        ),
+                    }),
+                });
+            }
+            let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("forward_mse bind group"),
+                layout: &self.bind_group_layout,
+                entries: &bind_entries,
             });
+            self.bind_group = Some(bind_group);
+            self.bind_group_sig = Some(sig);
+            self.bind_group_builds += 1;
         }
-        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("forward_mse bind group"),
-            layout: &self.bind_group_layout,
-            entries: &bind_entries,
-        });
+        let bind_group = self
+            .bind_group
+            .as_ref()
+            .expect("bind group built above when the signature changed");
 
         let mut encoder =
             device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
@@ -716,7 +787,7 @@ impl BatchedRunner {
                 timestamp_writes: None,
             });
             cpass.set_pipeline(&self.pipeline);
-            cpass.set_bind_group(0, &bind_group, &[]);
+            cpass.set_bind_group(0, bind_group, &[]);
             cpass.dispatch_workgroups(num_workgroups_x, self.num_creatures, 1);
         }
         encoder.copy_buffer_to_buffer(&partials_buf, 0, &readback_buf, 0, partials_len);
@@ -768,6 +839,8 @@ impl BatchedRunner {
                 mapped_at_creation: false,
             });
             self.records_buf = Some((buf, cap));
+            // A new allocation invalidates any cached bind group (Issue #322).
+            self.records_gen += 1;
         }
     }
 
@@ -786,6 +859,8 @@ impl BatchedRunner {
                 mapped_at_creation: false,
             });
             self.partials_buf = Some((buf, cap));
+            // A new allocation invalidates any cached bind group (Issue #322).
+            self.partials_gen += 1;
         }
     }
 
@@ -822,6 +897,8 @@ impl BatchedRunner {
                 mapped_at_creation: false,
             });
             self.scratch_buf = Some((buf, cap));
+            // A new allocation invalidates any cached bind group (Issue #322).
+            self.scratch_gen += 1;
         }
     }
 
@@ -1346,6 +1423,66 @@ mod tests {
 
     // Issue #273 — GPU readback (`map_async`) failure must surface as an `Err`
     // string the `--gpu auto` caller can absorb, not panic the process.
+
+    // Issue #322 — the bind group is reused across dispatches; the pure
+    // `bind_group_needs_rebuild` decision must fire only when a bound buffer's
+    // generation changes or the scratch binding is resized.
+
+    #[test]
+    fn bind_group_rebuilds_when_no_group_cached_yet() {
+        let sig = BindGroupSig {
+            records_gen: 1,
+            partials_gen: 1,
+            scratch_gen: 0,
+            scratch_bytes: 0,
+        };
+        // No cached signature (first dispatch) always needs a build.
+        assert!(bind_group_needs_rebuild(None, sig));
+    }
+
+    #[test]
+    fn bind_group_reused_when_signature_unchanged() {
+        let sig = BindGroupSig {
+            records_gen: 3,
+            partials_gen: 2,
+            scratch_gen: 0,
+            scratch_bytes: 0,
+        };
+        // Identical signature (steady-state private dispatch) reuses the group.
+        assert!(!bind_group_needs_rebuild(Some(sig), sig));
+    }
+
+    #[test]
+    fn bind_group_rebuilds_when_records_buffer_grows() {
+        let cached = BindGroupSig {
+            records_gen: 1,
+            partials_gen: 1,
+            scratch_gen: 0,
+            scratch_bytes: 0,
+        };
+        // The records buffer was reallocated (generation bumped) → rebuild.
+        let current = BindGroupSig {
+            records_gen: 2,
+            ..cached
+        };
+        assert!(bind_group_needs_rebuild(Some(cached), current));
+    }
+
+    #[test]
+    fn bind_group_rebuilds_when_scratch_binding_resized() {
+        let cached = BindGroupSig {
+            records_gen: 1,
+            partials_gen: 1,
+            scratch_gen: 1,
+            scratch_bytes: 4096,
+        };
+        // Same scratch allocation, but a smaller final chunk binds fewer bytes.
+        let current = BindGroupSig {
+            scratch_bytes: 2048,
+            ..cached
+        };
+        assert!(bind_group_needs_rebuild(Some(cached), current));
+    }
 
     #[test]
     fn map_readback_result_ok_on_successful_map() {
