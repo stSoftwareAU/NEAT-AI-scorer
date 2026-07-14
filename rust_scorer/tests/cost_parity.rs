@@ -446,9 +446,10 @@ fn parity_categorical_error_matches_ts_reference() {
 ///
 /// RMSE reuses MSE's squared-error accumulation, so the raw dispatch sums are
 /// identical; the only difference is the host-side `sqrt` applied by
-/// `CostKind::finalise_mean`. This test reproduces the exact CPU finalisation
-/// arithmetic (`sum / record_count`, then `finalise_mean`) and asserts the
-/// finalised RMSE error equals the square root of the finalised MSE error.
+/// `CostKind::finalise_mean` (which divides the sum by the record count and,
+/// for RMSE, takes the square root). This test drives the exact CPU finalisation
+/// path and asserts the finalised RMSE error equals the square root of the
+/// finalised MSE error.
 #[test]
 fn parity_rmse_equals_sqrt_of_mse() {
     let pairs: &[(f32, f32)] = &[
@@ -463,7 +464,6 @@ fn parity_rmse_equals_sqrt_of_mse() {
         (3.0, 0.0),
     ];
     let records = pack_pairs(pairs);
-    let record_count = pairs.len() as f64;
 
     // Raw squared-error sums must be identical (RMSE reuses the MSE helper).
     let mut net_mse = identity_1_in_1_out();
@@ -477,9 +477,10 @@ fn parity_rmse_equals_sqrt_of_mse() {
         "RMSE must accumulate the same squared-error sum as MSE (mse={mse_sum}, rmse={rmse_sum})"
     );
 
-    // Finalise exactly as the CPU sites do: mean, then the shared finaliser.
-    let mse_error = CostKind::Mse.finalise_mean(mse_sum / record_count);
-    let rmse_error = CostKind::Rmse.finalise_mean(rmse_sum / record_count);
+    // Finalise exactly as the CPU sites do: the shared finaliser divides by the
+    // record count (and takes the host-side `sqrt` for RMSE).
+    let mse_error = CostKind::Mse.finalise_mean(mse_sum, pairs.len());
+    let rmse_error = CostKind::Rmse.finalise_mean(rmse_sum, pairs.len());
     assert!(
         (rmse_error - mse_error.sqrt()).abs() < EPS_SMOOTH,
         "finalised RMSE must equal sqrt(MSE): rmse={rmse_error}, sqrt(mse)={}",
@@ -510,7 +511,7 @@ fn parity_rmse_ranks_creatures_same_order_as_mse() {
         let mut net = identity_1_in_1_out();
         let sum = accumulate_cost_sum(cost, &mut net, &records, 1, 1, true)
             .expect("dispatch must succeed");
-        cost.finalise_mean(sum / pairs.len() as f64)
+        cost.finalise_mean(sum, pairs.len())
     };
 
     // Rank each cost's errors ascending and compare the resulting name order.
