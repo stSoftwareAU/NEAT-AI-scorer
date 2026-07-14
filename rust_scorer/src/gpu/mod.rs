@@ -546,6 +546,17 @@ mod tests {
     }
 
     #[test]
+    fn auto_should_use_gpu_directory_uses_gpu_for_rmse() {
+        // Issue #339 — RMSE reuses the MSE kernel, so `auto` must treat it
+        // exactly like MSE and pick GPU on the directory path (never fall to
+        // CPU purely because the cost is RMSE).
+        assert!(auto_should_use_gpu(
+            ScoringPath::CreatureDirectory,
+            crate::cost::CostKind::Rmse
+        ));
+    }
+
+    #[test]
     fn auto_should_use_gpu_directory_declines_scratch_topology() {
         use crate::multi_score::gpu_directory_topology_for_dir;
         use neat_core::creature::{compile_creature, parse_creature_json};
@@ -641,6 +652,21 @@ mod tests {
                 GpuMode::Auto,
                 ScoringPath::CreatureDirectory,
                 crate::cost::CostKind::Mse
+            ),
+            None
+        );
+    }
+
+    /// Issue #339: RMSE is GPU-supported, so — like MSE — it must not emit the
+    /// "cost is not GPU-supported" CPU-fallback note. A regression that dropped
+    /// RMSE back to CPU would surface here as an unexpected `Some(note)`.
+    #[test]
+    fn auto_cost_fallback_note_absent_for_rmse_directory() {
+        assert_eq!(
+            auto_cost_fallback_note(
+                GpuMode::Auto,
+                ScoringPath::CreatureDirectory,
+                crate::cost::CostKind::Rmse
             ),
             None
         );

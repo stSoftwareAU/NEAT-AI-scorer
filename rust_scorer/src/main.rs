@@ -94,15 +94,18 @@ struct Cli {
     ///
     /// Dispatch is wired (#121, #134): the fused forward-only path and
     /// the per-record recurrent path both call `accumulate_cost_sum`,
-    /// so every one of `MSE`, `MAE`, `MAPE`, `MSLE`, `HINGE`,
+    /// so every one of `MSE`, `RMSE`, `MAE`, `MAPE`, `MSLE`, `HINGE`,
     /// `CROSS_ENTROPY` and `CATEGORICAL_ERROR` computes the requested
     /// loss — the last one unblocked in #134 after the upstream
     /// `categorical_error_sum_batch_packed` helper landed via
     /// `NEAT-AI-core#88`.
     ///
-    /// GPU constraint: the `forward_mse_batched` kernel is **MSE-only**.
-    /// Non-MSE costs under `--gpu auto` silently fall back to the CPU
-    /// pipeline; under `--gpu on` they hard-error before any scoring runs.
+    /// GPU constraint: the `forward_mse_batched` kernel is **MSE-only** —
+    /// there is no separate RMSE kernel. `RMSE` reuses it (Issue #339),
+    /// adding only a host-side `sqrt` at finalisation, so both `MSE` and
+    /// `RMSE` run on the GPU at full MSE speed. The other costs under
+    /// `--gpu auto` silently fall back to the CPU pipeline; under `--gpu on`
+    /// they hard-error before any scoring runs.
     ///
     /// See the README "Cost function selector" section for per-cost
     /// usage examples.
@@ -210,12 +213,13 @@ fn run(cli: &Cli) -> Result<RunOutput, String> {
         None => SampleSpec::full(),
     };
 
-    // Issue #121: `--gpu on --cost X != MSE` is a hard error — the GPU kernel
-    // only knows how to compute MSE today, so silently downgrading would
-    // produce a wrong scoring result. Check this before adapter selection so
-    // the error always mentions the unsupported cost, even on machines without
-    // a GPU. `--gpu auto` (the default) falls back to CPU instead; `--gpu off`
-    // never touches the GPU and is fine.
+    // Issue #121/#339: `--gpu on` with a cost the kernel cannot serve is a hard
+    // error — the GPU kernel computes squared-error sums, so MSE and RMSE are
+    // supported (RMSE via a host-side `sqrt`) but every other cost would be a
+    // wrong scoring result if silently downgraded. Check this before adapter
+    // selection so the error always mentions the unsupported cost, even on
+    // machines without a GPU. `--gpu auto` (the default) falls back to CPU
+    // instead; `--gpu off` never touches the GPU and is fine.
     if matches!(mode, GpuMode::On) && !cli.cost.gpu_supported() {
         return Err(format!(
             "GPU kernel not implemented for cost {}: forward_mse_batched only handles MSE \
@@ -511,7 +515,9 @@ fn score_from_json(
             (total_error, record_count, 0_usize, 0_usize)
         };
 
-    let avg_error = total_error / record_count as f64;
+    // Issue #339: route through the shared finaliser so RMSE gets its host-side
+    // `sqrt` here, identically to the two directory-mode sites in `multi_score`.
+    let avg_error = cost.finalise_mean(total_error, record_count);
 
     // Issue #289: the scoring API now returns the typed `ScoringError`; flatten
     // to the binary's `String` error contract at the boundary.
@@ -1249,6 +1255,50 @@ mod tests {
             ])
             .unwrap_or_else(|e| panic!("clap rejected --cost {name}: {e}"));
             assert_eq!(parsed.cost, expected);
+        }
+    }
+
+    /// Issue #339/#340: `--cost RMSE` must parse to `CostKind::Rmse`. RMSE is
+    /// now a first-class upstream `BUILT_IN_COST_NAMES` value (synced under
+    /// Issue #340, `stSoftwareAU/NEAT-AI#3341`); it is asserted separately from
+    /// the "every built-in" contract test above because that test still tracks
+    /// the historical seven-name clap contract.
+    #[test]
+    fn test_cli_parses_rmse() {
+        use clap::Parser;
+        let parsed = Cli::try_parse_from([
+            "rust_scorer",
+            "--cost",
+            "RMSE",
+            "/tmp/creature.json",
+            "/tmp/data",
+        ])
+        .expect("clap must accept --cost RMSE");
+        assert_eq!(parsed.cost, CostKind::Rmse);
+    }
+
+    /// Issue #339: `--gpu on --cost RMSE` must clear the up-front guard that
+    /// hard-errors non-GPU-supported costs. The guard at the top of `run`
+    /// fires only when `!cli.cost.gpu_supported()`; RMSE is GPU-supported (it
+    /// reuses the MSE kernel), so it clears the guard exactly like MSE while
+    /// the CPU-only costs still trip it.
+    #[test]
+    fn test_gpu_on_accepts_mse_and_rmse_only() {
+        assert!(CostKind::Mse.gpu_supported());
+        assert!(CostKind::Rmse.gpu_supported());
+        for cost in [
+            CostKind::Mae,
+            CostKind::Mape,
+            CostKind::Msle,
+            CostKind::Hinge,
+            CostKind::CrossEntropy,
+            CostKind::CategoricalError,
+        ] {
+            assert!(
+                !cost.gpu_supported(),
+                "{} must still trip the --gpu on guard",
+                cost.as_str()
+            );
         }
     }
 

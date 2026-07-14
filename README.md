@@ -121,7 +121,7 @@ flag wins over the `NEAT_SCORER_GPU` environment variable.
 
 | Mode    | Behaviour                                                                                                       | `gpuBackend` value                                  |
 |---------|-----------------------------------------------------------------------------------------------------------------|-----------------------------------------------------|
-| `auto`  | **Default since Issue #83.** Use GPU on directory paths with **AllPrivate** topology (≤256 total neurons per creature); fall back to CPU for scratch/mixed GRQ-scale pools (#317), non-MSE costs, missing adapters, or failed pre-flight. Prints one stderr note when declining GPU for topology. | `"metal"` / `"vulkan"` / `"dx12"` / `"gl"` / `"cpu-fallback"` |
+| `auto`  | **Default since Issue #83.** Use GPU on directory paths with **AllPrivate** topology (≤256 total neurons per creature); fall back to CPU for scratch/mixed GRQ-scale pools (#317), GPU-unsupported costs (any cost other than MSE/RMSE), missing adapters, or failed pre-flight. Prints one stderr note when declining GPU for topology. | `"metal"` / `"vulkan"` / `"dx12"` / `"gl"` / `"cpu-fallback"` |
 | `on`    | Require a compatible GPU; exit non-zero with a clear message when none is found (no silent fallback). Forces the GPU path even where bench evidence does not support it. | `"metal"` / `"vulkan"` / `"dx12"` / `"gl"`          |
 | `off`   | Skip GPU detection entirely; run the CPU pipeline.                                                             | `"cpu-fallback"`                                    |
 
@@ -282,6 +282,7 @@ so callers can pass `NeatOptions.costName` through unchanged.
 | Value               | Meaning                              | Dispatch helper (`neat_core::loss`) | GPU?           |
 |---------------------|--------------------------------------|--------------------------------------|----------------|
 | `MSE` (**default**) | Mean Squared Error                   | `mse_sum_batch_packed`               | **Yes**        |
+| `RMSE`              | Root Mean Squared Error (`sqrt(mean(squared error))`) — ranks identically to MSE, reports same-unit magnitudes | `mse_sum_batch_packed` + host `sqrt` | **Yes** (MSE kernel) |
 | `MAE`               | Mean Absolute Error                  | `mae_sum_batch_packed`               | No (CPU)       |
 | `MAPE`              | Mean Absolute Percentage Error       | `mape_sum_batch_packed`              | No (CPU)       |
 | `MSLE`              | Mean Squared Logarithmic Error       | `msle_sum_batch_packed`              | No (CPU)       |
@@ -295,10 +296,18 @@ environment-variable override — KISS, the CLI flag is the only knob.
 The resolved cost name is echoed back as the `costName` JSON field on
 every `ScoreResult`.
 
+`RMSE` (Issue #337) reuses the MSE squared-error accumulation unchanged on
+**both** the CPU and GPU paths and differs only by a single host-side `sqrt`
+applied at finalisation (via the shared `CostKind::finalise_mean` helper). It
+therefore ranks creatures identically to `MSE` while reporting interpretable,
+same-unit magnitudes, and — because it adds no new kernel and no per-record work
+— carries **no performance difference versus `MSE`** on either backend.
+
 #### Per-cost examples
 
 ```text
 rust_scorer --cost MSE               <creature.json> <training_data_dir>  # default; unchanged behaviour
+rust_scorer --cost RMSE              <creature.json> <training_data_dir>  # sqrt(mean squared error); reuses MSE kernel (CPU+GPU), same-unit magnitudes, no perf cost
 rust_scorer --cost MAE               <creature.json> <training_data_dir>  # absolute-error regression
 rust_scorer --cost MAPE              <creature.json> <training_data_dir>  # percentage-error regression
 rust_scorer --cost MSLE              <creature.json> <training_data_dir>  # log-scale regression
@@ -308,19 +317,22 @@ rust_scorer --cost CATEGORICAL_ERROR <creature.json> <training_data_dir>  # mult
 rust_scorer --cost FOO               <creature.json> <training_data_dir>  # exits non-zero — unknown cost
 ```
 
-#### GPU constraint — MSE-only kernel
+#### GPU constraint — the `forward_mse_batched` kernel serves MSE and RMSE
 
-The `forward_mse_batched` GPU kernel currently computes **MSE only**.
-Any non-MSE `--cost` selection forces the CPU pipeline:
+The `forward_mse_batched` GPU kernel computes the **squared-error sum** that
+both `MSE` and `RMSE` need — `RMSE` (Issue #337) shares that kernel unchanged
+and only adds a host-side `sqrt` at finalisation, so both are GPU-supported at
+identical speed. Every **other** (non-MSE, non-RMSE) `--cost` selection forces
+the CPU pipeline:
 
-- Under `--gpu auto` (the default since Issue #83) a non-MSE cost
+- Under `--gpu auto` (the default since Issue #83) a GPU-unsupported cost
   routes to the CPU directory/streaming path — the `gpuBackend` field
   on the result reports `"cpu-fallback"` so the caller can see what
   actually ran. On the **directory path** the scorer also prints one
   informational `[gpu] auto fallback ...` line to stderr naming the
   cost as the reason (Issue #205), so the CPU choice is not silent;
-  MSE / GPU-supported costs print nothing extra.
-- Under `--gpu on` a non-MSE cost is a hard error before any scoring
+  MSE / RMSE (GPU-supported costs) print nothing extra.
+- Under `--gpu on` a GPU-unsupported cost is a hard error before any scoring
   runs (no silent downgrade — `--gpu on` is a strict requirement).
 - Under `--gpu off` GPU detection is skipped regardless of `--cost`.
 
@@ -331,8 +343,8 @@ flowchart LR
     Valid -->|yes| CostKind[CostKind enum]
     Valid -->|no| Err[stderr + exit 2]
     CostKind --> Dispatch[accumulate_cost_sum]
-    Dispatch -->|MSE + GPU adapter| GPU[forward_mse_batched]
-    Dispatch -->|non-MSE OR no GPU| CPU[CPU pipeline]
+    Dispatch -->|MSE or RMSE + GPU adapter| GPU[forward_mse_batched]
+    Dispatch -->|other cost OR no GPU| CPU[CPU pipeline]
 ```
 
 ### Record-level sub-sampling — `--sample-rate` (Issue #310)

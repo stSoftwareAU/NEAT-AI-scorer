@@ -1,9 +1,12 @@
 //! Cost-function selector for `rust_scorer` (Issues #120, #121).
 //!
-//! Adds a `--cost <NAME>` CLI flag that accepts the seven NEAT-AI built-in
-//! cost names exactly as they appear in the TypeScript `BUILT_IN_COST_NAMES`
-//! tuple (see `NEAT-AI/src/Costs.ts`). The flag defaults to `MSE`, which
-//! preserves the current scoring behaviour. Issue #121 wires the selector
+//! Adds a `--cost <NAME>` CLI flag that accepts the NEAT-AI built-in cost
+//! names exactly as they appear in the TypeScript `BUILT_IN_COST_NAMES`
+//! tuple (see `NEAT-AI/src/Costs.ts`), including `RMSE` — synced into that
+//! tuple under Issue #340 (`stSoftwareAU/NEAT-AI#3341`) so `costName: "RMSE"`
+//! validates upstream and flows through `NeatOptions.costName` unchanged. The
+//! flag defaults to `MSE`, which preserves the current scoring behaviour.
+//! Issue #121 wires the selector
 //! through to the per-chunk dispatch helper [`accumulate_cost_sum`] so the
 //! fused/streaming CPU paths in `stream_score.rs` and `multi_score.rs`
 //! actually compute the requested loss.
@@ -53,6 +56,12 @@ pub enum CostKind {
     #[default]
     #[value(name = "MSE")]
     Mse,
+    /// Root Mean Squared Error (Issue #339). Reuses the MSE squared-error
+    /// sum unchanged and differs only in a host-side `sqrt` at finalisation
+    /// (see [`CostKind::finalise_mean`]), so it runs on the GPU MSE kernel at
+    /// full MSE speed with no new kernel.
+    #[value(name = "RMSE")]
+    Rmse,
     /// Mean Absolute Error.
     #[value(name = "MAE")]
     Mae,
@@ -88,6 +97,7 @@ impl CostKind {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Mse => "MSE",
+            Self::Rmse => "RMSE",
             Self::Mae => "MAE",
             Self::Mape => "MAPE",
             Self::Msle => "MSLE",
@@ -134,19 +144,54 @@ impl CostKind {
 }
 
 impl CostKind {
-    /// Issue #121: which costs the GPU `forward_mse_batched` kernel can
-    /// service. Only [`CostKind::Mse`] today — every other cost forces a
-    /// CPU fallback (or a hard error under `--gpu on`).
+    /// Issue #121 / #339: which costs the GPU `forward_mse_batched` kernel can
+    /// service. [`CostKind::Mse`] and [`CostKind::Rmse`] today — RMSE reuses
+    /// the MSE squared-error sum unchanged and only adds a host-side `sqrt` at
+    /// finalisation (no new kernel, see [`CostKind::finalise_mean`]). Every
+    /// other cost forces a CPU fallback (or a hard error under `--gpu on`).
     ///
     /// # Examples
     ///
     /// ```
     /// use rust_scorer::cost::CostKind;
     /// assert!(CostKind::Mse.gpu_supported());
+    /// assert!(CostKind::Rmse.gpu_supported());
     /// assert!(!CostKind::Mae.gpu_supported());
     /// ```
     pub const fn gpu_supported(self) -> bool {
-        matches!(self, Self::Mse)
+        matches!(self, Self::Mse | Self::Rmse)
+    }
+
+    /// Finalise an accumulated per-record error sum into the mean loss the
+    /// scorer reports (Issue #339).
+    ///
+    /// Every scoring site accumulates the un-normalised loss sum over records
+    /// (see [`accumulate_cost_sum`]) and then divides by the record count.
+    /// [`CostKind::Rmse`] additionally takes the square root of that mean — it
+    /// reuses the MSE squared-error sum unchanged and differs only in this
+    /// host-side finalisation. Centralising the division (and the optional
+    /// `sqrt`) keeps the three finalisation sites — the single-creature path in
+    /// `main.rs` and the CPU and GPU creature-directory paths in
+    /// `multi_score.rs` — in lock-step so RMSE cannot silently report MSE-scale
+    /// numbers on one path.
+    ///
+    /// `record_count` must be non-zero; every call site rejects a zero-record
+    /// creature before finalising, so this helper does not re-guard the divide.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use rust_scorer::cost::CostKind;
+    /// // MSE reports the plain mean; RMSE reports its square root.
+    /// assert_eq!(CostKind::Mse.finalise_mean(8.0, 2), 4.0);
+    /// assert_eq!(CostKind::Rmse.finalise_mean(8.0, 2), 2.0);
+    /// ```
+    pub fn finalise_mean(self, error_sum: f64, record_count: usize) -> f64 {
+        let mean = error_sum / record_count as f64;
+        match self {
+            Self::Rmse => mean.sqrt(),
+            _ => mean,
+        }
     }
 }
 
@@ -224,7 +269,10 @@ pub fn accumulate_cost_sum(
         ));
     }
     Ok(match kind {
-        CostKind::Mse => {
+        // Issue #339: RMSE reuses the MSE squared-error sum unchanged — the
+        // only difference is the host-side `sqrt` applied in
+        // [`CostKind::finalise_mean`], never here in the per-chunk sum.
+        CostKind::Mse | CostKind::Rmse => {
             loss::mse_sum_batch_packed(network, chunk, input_size, num_outputs, forward_only)
         }
         CostKind::Mae => {
@@ -379,12 +427,17 @@ mod tests {
         }
     }
 
-    /// Issue #121: only MSE is GPU-supported today; every other cost must
-    /// run on CPU. Locks the predicate so a future kernel that supports
-    /// more costs has an obvious one-line update + test failure.
+    /// Issue #121/#339: MSE and RMSE are GPU-supported (RMSE reuses the MSE
+    /// kernel with a host-side `sqrt`); every other cost must run on CPU.
+    /// Locks the predicate so a regression that drops RMSE back to CPU — or
+    /// that accidentally makes another cost GPU-eligible — fails immediately.
     #[test]
-    fn gpu_supported_only_for_mse() {
+    fn gpu_supported_only_for_mse_and_rmse() {
         assert!(CostKind::Mse.gpu_supported());
+        assert!(
+            CostKind::Rmse.gpu_supported(),
+            "RMSE must be GPU-supported: it reuses the MSE kernel (Issue #339)"
+        );
         for v in [
             CostKind::Mae,
             CostKind::Mape,
@@ -397,6 +450,130 @@ mod tests {
                 !v.gpu_supported(),
                 "{} must not be GPU-supported until a new kernel ships",
                 v.as_str()
+            );
+        }
+    }
+
+    /// Issue #339: `finalise_mean` divides the accumulated error sum by the
+    /// record count and applies a `sqrt` for — and only for — RMSE. This is
+    /// the host-side finalisation that turns the shared MSE squared-error sum
+    /// into an RMSE score, so it must be exact for RMSE and a plain mean for
+    /// every other cost.
+    #[test]
+    fn finalise_mean_applies_sqrt_only_for_rmse() {
+        // sum=8 over 2 records → mean 4.0; RMSE = sqrt(4) = 2.0.
+        assert_eq!(CostKind::Mse.finalise_mean(8.0, 2), 4.0);
+        assert_eq!(CostKind::Rmse.finalise_mean(8.0, 2), 2.0);
+        // Every non-RMSE cost reports the plain mean (no sqrt).
+        for v in [
+            CostKind::Mse,
+            CostKind::Mae,
+            CostKind::Mape,
+            CostKind::Msle,
+            CostKind::Hinge,
+            CostKind::CrossEntropy,
+            CostKind::CategoricalError,
+        ] {
+            assert_eq!(
+                v.finalise_mean(9.0, 3),
+                3.0,
+                "{} must report the plain mean without a sqrt",
+                v.as_str()
+            );
+        }
+        // RMSE is exactly the sqrt of the MSE finalisation over the same sum.
+        let sum = 12.5_f64;
+        let count = 5;
+        let mse = CostKind::Mse.finalise_mean(sum, count);
+        let rmse = CostKind::Rmse.finalise_mean(sum, count);
+        assert!((rmse - mse.sqrt()).abs() < 1e-12);
+    }
+
+    /// Issue #339: RMSE must reuse the MSE squared-error sum unchanged — the
+    /// `sqrt` lives only in `finalise_mean`, never in the per-chunk dispatch.
+    /// So `accumulate_cost_sum` for RMSE must equal the MSE sum bit-for-bit.
+    #[test]
+    fn accumulate_cost_sum_rmse_matches_mse_sum() {
+        use neat_core::creature::{compile_creature, parse_creature_json};
+        let json = r#"{"input":1,"output":1,"forwardOnly":true,"neurons":[
+            {"type":"output","uuid":"output-0","bias":0.0,"squash":"IDENTITY"}
+        ],"synapses":[
+            {"fromUUID":"input-0","toUUID":"output-0","weight":1.0}
+        ]}"#;
+        let creature = parse_creature_json(json).unwrap();
+        // |diff| = 1.5 per record so the squared-error sum is non-trivial.
+        let chunk = vec![2.0_f32, 0.5_f32, -1.0_f32, 0.5_f32];
+
+        let mut net_mse = compile_creature(&creature).unwrap();
+        let mse = accumulate_cost_sum(CostKind::Mse, &mut net_mse, &chunk, 1, 1, true).unwrap();
+        let mut net_rmse = compile_creature(&creature).unwrap();
+        let rmse = accumulate_cost_sum(CostKind::Rmse, &mut net_rmse, &chunk, 1, 1, true).unwrap();
+        assert_eq!(
+            mse, rmse,
+            "RMSE must reuse the MSE squared-error sum unchanged (mse={mse}, rmse={rmse})"
+        );
+        assert!(
+            mse > 0.0,
+            "expected a positive squared-error sum, got {mse}"
+        );
+    }
+
+    /// Issue #339/#340: RMSE parses via `from_cli` and renders back as `RMSE`.
+    /// As of Issue #340 (`stSoftwareAU/NEAT-AI#3341`) `RMSE` is a first-class
+    /// upstream `BUILT_IN_COST_NAMES` value; the dedicated
+    /// [`cost_kind_stays_in_sync_with_upstream_built_in_cost_names`] drift test
+    /// pins that both lists carry it.
+    #[test]
+    fn from_cli_accepts_rmse() {
+        assert_eq!(CostKind::from_cli("RMSE").unwrap(), CostKind::Rmse);
+        assert_eq!(CostKind::Rmse.as_str(), "RMSE");
+        // Case-sensitive, like the other names.
+        assert!(CostKind::from_cli("rmse").is_err());
+    }
+
+    /// Issue #340: the rust `CostKind` list is kept in sync with the upstream
+    /// NEAT-AI TypeScript `BUILT_IN_COST_NAMES` tuple (`NEAT-AI/src/Costs.ts`).
+    ///
+    /// `UPSTREAM_BUILT_IN_COST_NAMES` below is a **verbatim mirror** of that
+    /// tuple, in the same order, after RMSE was added upstream under
+    /// `stSoftwareAU/NEAT-AI#3341`. The test fails `cargo test` the moment the
+    /// two lists drift — e.g. if `RMSE` (or any other built-in) is present on
+    /// one side but dropped on the other: every mirrored name must parse via
+    /// [`CostKind::from_cli`] and render back byte-for-byte, so removing the
+    /// matching `CostKind` variant breaks the build.
+    ///
+    /// The rust side is a **superset**: `CATEGORICAL_ERROR` is a scorer/
+    /// neat-core cost that is not in the upstream TS tuple, so this test only
+    /// asserts every upstream name maps to a variant (not the reverse).
+    #[test]
+    fn cost_kind_stays_in_sync_with_upstream_built_in_cost_names() {
+        // Verbatim mirror of `BUILT_IN_COST_NAMES` in `NEAT-AI/src/Costs.ts`.
+        // Keep this ordered exactly like the upstream tuple.
+        const UPSTREAM_BUILT_IN_COST_NAMES: &[&str] = &[
+            "CROSS_ENTROPY",
+            "MSE",
+            "RMSE",
+            "MAE",
+            "MAPE",
+            "MSLE",
+            "HINGE",
+        ];
+
+        // RMSE is the value Issue #340 synced across the boundary — assert it
+        // explicitly so a future edit that drops it from the mirror is loud.
+        assert!(
+            UPSTREAM_BUILT_IN_COST_NAMES.contains(&"RMSE"),
+            "RMSE must be mirrored from the upstream BUILT_IN_COST_NAMES tuple (Issue #340)"
+        );
+
+        for name in UPSTREAM_BUILT_IN_COST_NAMES {
+            let parsed = CostKind::from_cli(name).unwrap_or_else(|e| {
+                panic!("upstream cost '{name}' must map to a CostKind variant: {e}")
+            });
+            assert_eq!(
+                &parsed.as_str(),
+                name,
+                "CostKind::{parsed:?} must render back as the upstream name '{name}'"
             );
         }
     }

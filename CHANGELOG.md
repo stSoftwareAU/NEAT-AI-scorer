@@ -17,6 +17,18 @@ section to the released version with its date.
 
 ### Added
 
+- **`RMSE` cost function — `--cost RMSE` (Issue #337).** Adds Root Mean Squared
+  Error to the `--cost` selector. `RMSE` reuses the existing MSE squared-error
+  accumulation unchanged on **both** the CPU and GPU paths (the
+  `forward_mse_batched` kernel is shared — **no new kernel**) and differs only by
+  a single host-side `sqrt` applied at finalisation via the shared
+  `CostKind::finalise_mean` helper. It therefore ranks creatures identically to
+  `MSE` while reporting interpretable, same-unit magnitudes, and carries **no
+  performance difference versus `MSE`** on either backend. The resolved name is
+  echoed back as the `costName` JSON field, and `--gpu on` accepts `RMSE` (it is
+  GPU-supported, not a hard error). Documented in the README "Cost function
+  selector" section.
+
 - **Record-level `--sample-rate` sub-sampling in the forward-only streaming
   reader (Issue #310, multi-fidelity fitness).** New `--sample-rate <f>`
   (`(0, 1]`, default `1`) and `--sample-phase <u64>` (default `0`) flags make the
