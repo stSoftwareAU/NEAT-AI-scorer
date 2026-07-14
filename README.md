@@ -282,6 +282,7 @@ so callers can pass `NeatOptions.costName` through unchanged.
 | Value               | Meaning                              | Dispatch helper (`neat_core::loss`) | GPU?           |
 |---------------------|--------------------------------------|--------------------------------------|----------------|
 | `MSE` (**default**) | Mean Squared Error                   | `mse_sum_batch_packed`               | **Yes**        |
+| `RMSE`              | Root Mean Squared Error (`sqrt(MSE)`)| `mse_sum_batch_packed` + host `sqrt` | No (CPU)       |
 | `MAE`               | Mean Absolute Error                  | `mae_sum_batch_packed`               | No (CPU)       |
 | `MAPE`              | Mean Absolute Percentage Error       | `mape_sum_batch_packed`              | No (CPU)       |
 | `MSLE`              | Mean Squared Logarithmic Error       | `msle_sum_batch_packed`              | No (CPU)       |
@@ -299,6 +300,7 @@ every `ScoreResult`.
 
 ```text
 rust_scorer --cost MSE               <creature.json> <training_data_dir>  # default; unchanged behaviour
+rust_scorer --cost RMSE              <creature.json> <training_data_dir>  # sqrt(mean squared error); reuses MSE accumulation
 rust_scorer --cost MAE               <creature.json> <training_data_dir>  # absolute-error regression
 rust_scorer --cost MAPE              <creature.json> <training_data_dir>  # percentage-error regression
 rust_scorer --cost MSLE              <creature.json> <training_data_dir>  # log-scale regression
