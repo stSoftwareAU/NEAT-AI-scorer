@@ -94,7 +94,7 @@ struct Cli {
     ///
     /// Dispatch is wired (#121, #134): the fused forward-only path and
     /// the per-record recurrent path both call `accumulate_cost_sum`,
-    /// so every one of `MSE`, `MAE`, `MAPE`, `MSLE`, `HINGE`,
+    /// so every one of `MSE`, `RMSE`, `MAE`, `MAPE`, `MSLE`, `HINGE`,
     /// `CROSS_ENTROPY` and `CATEGORICAL_ERROR` computes the requested
     /// loss — the last one unblocked in #134 after the upstream
     /// `categorical_error_sum_batch_packed` helper landed via
