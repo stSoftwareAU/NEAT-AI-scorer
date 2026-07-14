@@ -744,7 +744,9 @@ fn score_from_creature_dir_cpu(
                 loaded_creature.path.display()
             ));
         }
-        let avg_error = total_mse[ci] / scored as f64;
+        // Issue #339: shared finaliser — RMSE takes a host-side `sqrt` of the
+        // mean here, reusing the MSE squared-error sum unchanged.
+        let avg_error = cost.finalise_mean(total_mse[ci], scored);
         // Issue #289: the scoring API now returns the typed `ScoringError`;
         // flatten to this module's `String` error contract at the boundary.
         let components =
@@ -1230,7 +1232,11 @@ fn score_from_creature_dir_gpu_impl(
     let gpu_kernel_label = runners.kernel_label();
     let mut results = BTreeMap::new();
     for (loaded_creature, mse_sum) in loaded.iter().zip(total_mse.iter()) {
-        let avg_error = *mse_sum / total_records as f64;
+        // Issue #339: the GPU creature-directory finalisation. `mse_sum` is the
+        // squared-error sum the `forward_mse_batched` kernel returns; routing it
+        // through the shared finaliser gives RMSE its host-side `sqrt` on the GPU
+        // path too (no new kernel), matching the CPU path bit-for-bit.
+        let avg_error = cost.finalise_mean(*mse_sum, total_records);
         // Issue #289: the scoring API now returns the typed `ScoringError`;
         // flatten to this module's `String` error contract at the boundary.
         let components =
