@@ -1258,10 +1258,11 @@ mod tests {
         }
     }
 
-    /// Issue #339: `--cost RMSE` must parse to `CostKind::Rmse`. RMSE is a
-    /// scorer-side extension (not yet an upstream `BUILT_IN_COST_NAMES` value —
-    /// that sync is Issue #340), so it is asserted separately from the
-    /// "every built-in" contract test above.
+    /// Issue #339/#340: `--cost RMSE` must parse to `CostKind::Rmse`. RMSE is
+    /// now a first-class upstream `BUILT_IN_COST_NAMES` value (synced under
+    /// Issue #340, `stSoftwareAU/NEAT-AI#3341`); it is asserted separately from
+    /// the "every built-in" contract test above because that test still tracks
+    /// the historical seven-name clap contract.
     #[test]
     fn test_cli_parses_rmse() {
         use clap::Parser;

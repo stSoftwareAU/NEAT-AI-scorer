@@ -1,9 +1,12 @@
 //! Cost-function selector for `rust_scorer` (Issues #120, #121).
 //!
-//! Adds a `--cost <NAME>` CLI flag that accepts the seven NEAT-AI built-in
-//! cost names exactly as they appear in the TypeScript `BUILT_IN_COST_NAMES`
-//! tuple (see `NEAT-AI/src/Costs.ts`). The flag defaults to `MSE`, which
-//! preserves the current scoring behaviour. Issue #121 wires the selector
+//! Adds a `--cost <NAME>` CLI flag that accepts the NEAT-AI built-in cost
+//! names exactly as they appear in the TypeScript `BUILT_IN_COST_NAMES`
+//! tuple (see `NEAT-AI/src/Costs.ts`), including `RMSE` — synced into that
+//! tuple under Issue #340 (`stSoftwareAU/NEAT-AI#3341`) so `costName: "RMSE"`
+//! validates upstream and flows through `NeatOptions.costName` unchanged. The
+//! flag defaults to `MSE`, which preserves the current scoring behaviour.
+//! Issue #121 wires the selector
 //! through to the per-chunk dispatch helper [`accumulate_cost_sum`] so the
 //! fused/streaming CPU paths in `stream_score.rs` and `multi_score.rs`
 //! actually compute the requested loss.
@@ -515,16 +518,64 @@ mod tests {
         );
     }
 
-    /// Issue #339: RMSE parses via `from_cli` and renders back as `RMSE`.
-    /// RMSE is not (yet) an upstream `BUILT_IN_COST_NAMES` value — that sync
-    /// is Issue #340 — so it lives alongside the seven built-ins rather than
-    /// inside the "every built-in" contract tests.
+    /// Issue #339/#340: RMSE parses via `from_cli` and renders back as `RMSE`.
+    /// As of Issue #340 (`stSoftwareAU/NEAT-AI#3341`) `RMSE` is a first-class
+    /// upstream `BUILT_IN_COST_NAMES` value; the dedicated
+    /// [`cost_kind_stays_in_sync_with_upstream_built_in_cost_names`] drift test
+    /// pins that both lists carry it.
     #[test]
     fn from_cli_accepts_rmse() {
         assert_eq!(CostKind::from_cli("RMSE").unwrap(), CostKind::Rmse);
         assert_eq!(CostKind::Rmse.as_str(), "RMSE");
         // Case-sensitive, like the other names.
         assert!(CostKind::from_cli("rmse").is_err());
+    }
+
+    /// Issue #340: the rust `CostKind` list is kept in sync with the upstream
+    /// NEAT-AI TypeScript `BUILT_IN_COST_NAMES` tuple (`NEAT-AI/src/Costs.ts`).
+    ///
+    /// `UPSTREAM_BUILT_IN_COST_NAMES` below is a **verbatim mirror** of that
+    /// tuple, in the same order, after RMSE was added upstream under
+    /// `stSoftwareAU/NEAT-AI#3341`. The test fails `cargo test` the moment the
+    /// two lists drift — e.g. if `RMSE` (or any other built-in) is present on
+    /// one side but dropped on the other: every mirrored name must parse via
+    /// [`CostKind::from_cli`] and render back byte-for-byte, so removing the
+    /// matching `CostKind` variant breaks the build.
+    ///
+    /// The rust side is a **superset**: `CATEGORICAL_ERROR` is a scorer/
+    /// neat-core cost that is not in the upstream TS tuple, so this test only
+    /// asserts every upstream name maps to a variant (not the reverse).
+    #[test]
+    fn cost_kind_stays_in_sync_with_upstream_built_in_cost_names() {
+        // Verbatim mirror of `BUILT_IN_COST_NAMES` in `NEAT-AI/src/Costs.ts`.
+        // Keep this ordered exactly like the upstream tuple.
+        const UPSTREAM_BUILT_IN_COST_NAMES: &[&str] = &[
+            "CROSS_ENTROPY",
+            "MSE",
+            "RMSE",
+            "MAE",
+            "MAPE",
+            "MSLE",
+            "HINGE",
+        ];
+
+        // RMSE is the value Issue #340 synced across the boundary — assert it
+        // explicitly so a future edit that drops it from the mirror is loud.
+        assert!(
+            UPSTREAM_BUILT_IN_COST_NAMES.contains(&"RMSE"),
+            "RMSE must be mirrored from the upstream BUILT_IN_COST_NAMES tuple (Issue #340)"
+        );
+
+        for name in UPSTREAM_BUILT_IN_COST_NAMES {
+            let parsed = CostKind::from_cli(name).unwrap_or_else(|e| {
+                panic!("upstream cost '{name}' must map to a CostKind variant: {e}")
+            });
+            assert_eq!(
+                &parsed.as_str(),
+                name,
+                "CostKind::{parsed:?} must render back as the upstream name '{name}'"
+            );
+        }
     }
 
     /// Issue #134: now that `categorical_error_sum_batch_packed` has
