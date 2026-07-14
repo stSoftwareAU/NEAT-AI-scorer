@@ -1,3 +1,8 @@
+//! Issue #338 — RMSE parity: on identical data the finalised RMSE error equals
+//! `sqrt(MSE)`, and RMSE ranks a fixed set of creatures in the *same order* as
+//! MSE (a monotonic transform preserves selection order). These live alongside
+//! the Issue #122 reference-parity tests below.
+//!
 //! Issue #122 — Numerical parity tests vs the TypeScript reference for all
 //! seven supported cost functions.
 //!
@@ -434,5 +439,101 @@ fn parity_categorical_error_matches_ts_reference() {
     assert_eq!(
         actual, expected_misclassifications,
         "CATEGORICAL_ERROR dispatch must match TS reference: actual={actual}, expected={expected_misclassifications}",
+    );
+}
+
+/// Issue #338 — RMSE parity: finalised `RMSE == sqrt(MSE)` on identical data.
+///
+/// RMSE reuses MSE's squared-error accumulation, so the raw dispatch sums are
+/// identical; the only difference is the host-side `sqrt` applied by
+/// `CostKind::finalise_mean`. This test reproduces the exact CPU finalisation
+/// arithmetic (`sum / record_count`, then `finalise_mean`) and asserts the
+/// finalised RMSE error equals the square root of the finalised MSE error.
+#[test]
+fn parity_rmse_equals_sqrt_of_mse() {
+    let pairs: &[(f32, f32)] = &[
+        (0.5, 0.7),
+        (1.0, 0.0),
+        (-0.25, -0.25),
+        (0.1, 0.2),
+        (-1.0, 1.0),
+        (0.5, 0.5),
+        (2.0, 1.5),
+        (-0.5, 0.0),
+        (3.0, 0.0),
+    ];
+    let records = pack_pairs(pairs);
+    let record_count = pairs.len() as f64;
+
+    // Raw squared-error sums must be identical (RMSE reuses the MSE helper).
+    let mut net_mse = identity_1_in_1_out();
+    let mse_sum = accumulate_cost_sum(CostKind::Mse, &mut net_mse, &records, 1, 1, true)
+        .expect("MSE dispatch must succeed");
+    let mut net_rmse = identity_1_in_1_out();
+    let rmse_sum = accumulate_cost_sum(CostKind::Rmse, &mut net_rmse, &records, 1, 1, true)
+        .expect("RMSE dispatch must succeed");
+    assert!(
+        (mse_sum - rmse_sum).abs() < EPS_SMOOTH,
+        "RMSE must accumulate the same squared-error sum as MSE (mse={mse_sum}, rmse={rmse_sum})"
+    );
+
+    // Finalise exactly as the CPU sites do: mean, then the shared finaliser.
+    let mse_error = CostKind::Mse.finalise_mean(mse_sum / record_count);
+    let rmse_error = CostKind::Rmse.finalise_mean(rmse_sum / record_count);
+    assert!(
+        (rmse_error - mse_error.sqrt()).abs() < EPS_SMOOTH,
+        "finalised RMSE must equal sqrt(MSE): rmse={rmse_error}, sqrt(mse)={}",
+        mse_error.sqrt()
+    );
+}
+
+/// Issue #338 — RMSE selection order matches MSE.
+///
+/// A monotonic transform (`sqrt` on a non-negative mean) must not change the
+/// relative ordering of creatures by error. This ranks a fixed set of datasets
+/// (each standing in for a creature with a distinct error level) under both
+/// costs and asserts the sorted order — the actual selection signal — is
+/// identical.
+#[test]
+fn parity_rmse_ranks_creatures_same_order_as_mse() {
+    // Five fixed datasets with deliberately distinct squared-error levels.
+    let datasets: &[(&str, &[(f32, f32)])] = &[
+        ("near-perfect", &[(0.5, 0.5), (0.1, 0.11), (-0.2, -0.2)]),
+        ("small", &[(0.5, 0.6), (1.0, 0.9), (-0.2, -0.1)]),
+        ("medium", &[(0.5, 1.0), (1.0, 0.2), (-0.2, 0.4)]),
+        ("large", &[(0.5, 2.0), (1.0, -1.0), (-0.2, 1.5)]),
+        ("huge", &[(0.5, 5.0), (1.0, -4.0), (-0.2, 6.0)]),
+    ];
+
+    let finalise = |cost: CostKind, pairs: &[(f32, f32)]| -> f64 {
+        let records = pack_pairs(pairs);
+        let mut net = identity_1_in_1_out();
+        let sum = accumulate_cost_sum(cost, &mut net, &records, 1, 1, true)
+            .expect("dispatch must succeed");
+        cost.finalise_mean(sum / pairs.len() as f64)
+    };
+
+    // Rank each cost's errors ascending and compare the resulting name order.
+    let order_for = |cost: CostKind| -> Vec<&'static str> {
+        let mut scored: Vec<(&'static str, f64)> = datasets
+            .iter()
+            .map(|(name, pairs)| (*name, finalise(cost, pairs)))
+            .collect();
+        scored.sort_by(|a, b| a.1.partial_cmp(&b.1).expect("finite, non-NaN errors"));
+        scored.into_iter().map(|(name, _)| name).collect()
+    };
+
+    let mse_order = order_for(CostKind::Mse);
+    let rmse_order = order_for(CostKind::Rmse);
+    assert_eq!(
+        mse_order, rmse_order,
+        "RMSE must rank creatures in the same order as MSE (mse={mse_order:?}, rmse={rmse_order:?})"
+    );
+    // Sanity: the datasets genuinely differ in error, so the ordering is a
+    // real signal rather than a degenerate all-equal tie.
+    assert_eq!(
+        mse_order,
+        vec!["near-perfect", "small", "medium", "large", "huge"],
+        "expected strictly increasing error levels across the fixed datasets"
     );
 }
