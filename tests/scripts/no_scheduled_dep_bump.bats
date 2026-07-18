@@ -46,7 +46,11 @@ setup() {
   [ "$found_offender" -eq 0 ]
 }
 
-@test "quality.sh no longer invokes the removed upgrade-deps validator" {
-  run grep -F "check-upgrade-deps-workflow.sh" "$REPO_ROOT/quality.sh"
-  [ "$status" -ne 0 ]
-}
+# Note (Issue #359): a former test grepped `quality.sh`'s source for the
+# string "check-upgrade-deps-workflow.sh" and asserted its absence. That was a
+# source-text assertion, not a behavioural one — it verified nothing about how
+# the removed schedule is policed and would false-fail on an innocuous comment
+# mentioning the old name. The observable intent ("no scheduled dependency-bump
+# path exists") is fully covered by the file-absence checks above (the validator
+# helper at line 23 cannot be re-wired without reappearing) and the workflow
+# cron scan, so the redundant grep was deleted rather than duplicated here.
