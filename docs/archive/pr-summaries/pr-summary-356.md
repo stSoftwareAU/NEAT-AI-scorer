@@ -8,7 +8,7 @@ therefore never compiled and never ran under `cargo test`, giving a false
 impression of behavioural coverage.
 
 Both `sample.rs` and `sampling.rs` were introduced together in PR #314 (Issue
-#310). `sampling.rs` is the **live** implementation: it is declared, exported,
+\#310). `sampling.rs` is the **live** implementation: it is declared, exported,
 doc-tested, and additionally carries `parse_sample_rate` (used by the CLI's clap
 `value_parser`) plus a `Default` impl — none of which `sample.rs` had. This PR
 takes resolution **(b)** from the issue: delete the dead duplicate, removing the
