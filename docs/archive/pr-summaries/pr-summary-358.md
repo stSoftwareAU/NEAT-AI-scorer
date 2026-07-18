@@ -21,7 +21,7 @@ Backend/CLI change — no web interface to screenshot. Verified by running the n
 tests against a real Metal adapter on this Apple Silicon host (no skip note was
 printed, so the GPU body executed for real):
 
-```
+```text
 running 2 tests
 test gpu_sampled_matches_cpu_sampled_half_rate ... ok
 test gpu_sampled_rate_one_matches_gpu_full ... ok
