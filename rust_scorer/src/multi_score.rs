@@ -92,6 +92,50 @@ pub mod training_pass_probe {
     }
 }
 
+/// Instrumentation for the "compile each creature exactly once" invariant
+/// (Issue #42, guarded by Issue #355).
+///
+/// The batch scoring paths compile every loaded creature **once** and clone the
+/// resulting [`neat_core::network::CompiledNetwork`] for any additional workers.
+/// This process-global counter lets an integration test observe how many
+/// `compile_creature` calls a scoring invocation performs and fail loudly if a
+/// future change reintroduces the pre-#42 per-worker recompile (which would make
+/// the compile count scale with total worker count instead of staying flat at
+/// the creature count `N`).
+///
+/// Usage from a test: call [`compile_probe::reset`], run one scoring
+/// invocation, then assert [`compile_probe::count`] equals the creature count.
+///
+/// This is a behavioural (WHAT) replacement for the machine-dependent
+/// wall-clock threshold that previously guarded the same regression: it asserts
+/// the invariant the spec requires (compiled exactly once per creature) rather
+/// than a duration the current implementation happens to achieve.
+pub mod compile_probe {
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static CREATURE_COMPILES: AtomicU64 = AtomicU64::new(0);
+
+    /// Reset the compile counter to zero. Call immediately before a scoring
+    /// invocation whose compile count you want to observe.
+    #[allow(dead_code)] // used by the `compile_once_assertion` integration test.
+    pub fn reset() {
+        CREATURE_COMPILES.store(0, Ordering::SeqCst);
+    }
+
+    /// Number of `compile_creature` calls recorded since the last [`reset`].
+    #[allow(dead_code)] // used by the `compile_once_assertion` integration test.
+    pub fn count() -> u64 {
+        CREATURE_COMPILES.load(Ordering::SeqCst)
+    }
+
+    /// Record one `compile_creature` call in a batch scoring path. Called
+    /// immediately before each such compile (not the CPU-only pre-flight
+    /// hostability/topology probes, which are not part of the scoring pass).
+    pub(crate) fn record_compile() {
+        CREATURE_COMPILES.fetch_add(1, Ordering::SeqCst);
+    }
+}
+
 struct LoadedCreature {
     key: String,
     path: PathBuf,
@@ -525,6 +569,7 @@ fn score_from_creature_dir_cpu(
     let compile_started = Instant::now();
     let mut flat_networks: Vec<CompiledNetwork> = Vec::with_capacity(total_workers);
     for (ci, c) in loaded.iter().enumerate() {
+        compile_probe::record_compile();
         let template = compile_creature(&c.creature).map_err(|e| {
             format!(
                 "Failed compiling worker network for creature '{}': {e}",
@@ -1042,6 +1087,7 @@ fn score_from_creature_dir_gpu_impl(
     let compile_started = Instant::now();
     let mut networks: Vec<CompiledNetwork> = Vec::with_capacity(loaded.len());
     for c in &loaded {
+        compile_probe::record_compile();
         let net = compile_creature(&c.creature).map_err(|e| {
             format!(
                 "Failed compiling network for creature '{}': {e}",
