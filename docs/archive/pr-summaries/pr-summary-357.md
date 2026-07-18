@@ -44,7 +44,7 @@ flowchart LR
 Backend/test-only change — no web interface to screenshot. The GPU tests run on
 this machine (Metal adapter present, not skipped):
 
-```
+```text
 running 3 tests
 test reused_bind_group_preserves_cpu_parity ... ok
 test same_size_chunks_are_deterministic_and_reuse_bind_groups ... ok
