@@ -273,12 +273,17 @@ fn directory_mode_record_aligned_fast_path_matches_slow_path() {
 /// (creature × worker) pair — for a 2-creature run on a 16-CPU host that is
 /// 32 compiles before any scoring runs. After the fix each creature is
 /// compiled exactly once and the resulting `CompiledNetwork` is cloned for
-/// any additional workers, so:
+/// any additional workers.
 ///
-/// 1. `compileTimeSecs` must appear in the JSON for every creature, and
-/// 2. it must be tightly bounded — well under the wall-clock budget that the
-///    old "compile per worker" loop required for an even slightly non-trivial
-///    creature.
+/// This subprocess test guards the **JSON contract only**: `compileTimeSecs`
+/// must appear for every creature and be a non-negative number.
+///
+/// Issue #355: the machine-dependent wall-clock upper bound (`compile_secs <
+/// 1.0`) that previously lived here was removed — it was flaky on saturated CI
+/// runners yet toothless against the very regression it documented (32
+/// sub-millisecond recompiles of these tiny fixtures still land far under
+/// 1.0 s). The "compiled exactly once per creature" invariant is now asserted
+/// behaviourally via `compile_probe` in `tests/compile_once_assertion.rs`.
 #[test]
 fn directory_mode_emits_compile_time_secs() {
     let bin = env!("CARGO_BIN_EXE_rust_scorer");
@@ -318,13 +323,9 @@ fn directory_mode_emits_compile_time_secs() {
             compile_secs >= 0.0,
             "compileTimeSecs must be non-negative for {key}, got {compile_secs}",
         );
-        // Defensive upper bound: a single tiny-creature compile + clone is
-        // sub-millisecond on every supported host. If the per-worker
-        // recompile regresses, this will balloon well past the cap.
-        assert!(
-            compile_secs < 1.0,
-            "compileTimeSecs unexpectedly large for {key}: {compile_secs}s",
-        );
+        // Issue #355: no wall-clock upper bound here — the "compiled exactly
+        // once per creature" invariant is asserted behaviourally via
+        // `compile_probe` in `tests/compile_once_assertion.rs`.
     }
 }
 
