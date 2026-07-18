@@ -1,11 +1,17 @@
-//! Issue #322 — the batched GPU runner reuses its bind group across dispatches.
+//! Issue #322 / #357 — the batched GPU runner reuses its bind group across
+//! dispatches without changing observable results.
 //!
-//! `create_bind_group` was called on every `score_chunk`; the bind group only
-//! becomes stale when a growable buffer is reallocated or the scratch binding is
-//! resized. These tests assert that steady-state, same-size chunks reuse a single
-//! bind group (one build for many dispatches) and that a larger chunk — which
-//! grows the records/partials buffers — forces exactly one rebuild, all while the
-//! GPU results still match the CPU baseline.
+//! Bind-group caching is a non-contractual internal optimisation (Issue #322):
+//! its only observable surface is score parity (results match the CPU baseline
+//! and stay stable across repeated / grown / shrunk chunks) and throughput
+//! (rebuilds stay well below one-per-dispatch). These tests therefore assert
+//! that observable behaviour — WHAT a caller sees — rather than pinning the
+//! exact rebuild policy (Issue #357). The rebuild *decision logic* is already
+//! covered by the pure `bind_group_needs_rebuild` unit tests in
+//! `src/gpu/forward_mse_batched.rs`, so we keep only a loose regression guard
+//! here: across many dispatches the cache must build far fewer bind groups than
+//! dispatches (no per-dispatch rebuild), without asserting an exact count that a
+//! benign buffer-management refactor would break.
 //!
 //! Skips cleanly when no GPU adapter is present so CPU-only CI still passes.
 
@@ -83,8 +89,11 @@ fn gpu_ctx() -> Option<Arc<rust_scorer::gpu::GpuContext>> {
     }
 }
 
+/// Identical-shape chunks are deterministic (same input → same sums) and the
+/// bind-group cache does not rebuild on every dispatch — an observable
+/// throughput property that survives any benign change to the caching policy.
 #[test]
-fn same_size_chunks_reuse_one_bind_group() {
+fn same_size_chunks_are_deterministic_and_reuse_bind_groups() {
     let Some(ctx) = gpu_ctx() else { return };
 
     let (num_inputs, num_outputs, hidden) = (8, 2, 8);
@@ -98,22 +107,38 @@ fn same_size_chunks_reuse_one_bind_group() {
     let n_records = 256;
     let records = build_records(num_inputs, num_outputs, n_records);
 
-    // Five dispatches of identical shape.
-    for _ in 0..5 {
-        runner
+    // Five dispatches of identical shape must all return the same sums.
+    let first = runner
+        .score_chunk(&records, n_records)
+        .expect("GPU readback should succeed");
+    for _ in 0..4 {
+        let again = runner
             .score_chunk(&records, n_records)
             .expect("GPU readback should succeed");
+        assert_eq!(
+            again, first,
+            "identical-shape chunks must produce identical sums on every dispatch",
+        );
     }
 
     assert_eq!(runner.dispatch_count, 5, "five chunks were dispatched");
-    assert_eq!(
-        runner.bind_group_builds, 1,
-        "identical-shape chunks must reuse a single bind group (built once)",
+    // Loose optimisation guard (Issue #357): reuse means far fewer builds than
+    // dispatches — never the per-dispatch rebuild the cache exists to avoid. The
+    // exact build count is a non-contractual policy detail and is not asserted.
+    assert!(
+        runner.bind_group_builds < runner.dispatch_count,
+        "steady-state dispatches must reuse bind groups (builds {} < dispatches {})",
+        runner.bind_group_builds,
+        runner.dispatch_count,
     );
 }
 
+/// Growing then shrinking the chunk size is transparent to results: the buffers
+/// grow to fit the large chunk and the later small chunk reuses that capacity,
+/// yet every dispatch of the same shape returns the same sums. Buffer
+/// management stays a loose optimisation — no exact rebuild count is pinned.
 #[test]
-fn growing_chunk_forces_exactly_one_rebuild() {
+fn grown_and_shrunk_chunks_stay_correct() {
     let Some(ctx) = gpu_ctx() else { return };
 
     let (num_inputs, num_outputs, hidden) = (8, 2, 8);
@@ -124,29 +149,41 @@ fn growing_chunk_forces_exactly_one_rebuild() {
     let mut runner = BatchedRunner::new(ctx, &nets, num_inputs, num_outputs)
         .expect("synthetic fixture is GPU-supported");
 
-    // Two small same-size chunks: one build, reused once.
     let small = build_records(num_inputs, num_outputs, 256);
-    runner.score_chunk(&small, 256).expect("small chunk 1");
-    runner.score_chunk(&small, 256).expect("small chunk 2");
-    assert_eq!(runner.bind_group_builds, 1, "small chunks share one group");
-
-    // A much larger chunk grows the records/partials buffers → one rebuild.
     let large = build_records(num_inputs, num_outputs, 4096);
-    runner.score_chunk(&large, 4096).expect("large chunk");
+
+    // Small chunk, grow to a large chunk, then shrink back to the small shape.
+    let small_before = runner.score_chunk(&small, 256).expect("small chunk 1");
+    let large_first = runner.score_chunk(&large, 4096).expect("large chunk 1");
+    let small_after = runner.score_chunk(&small, 256).expect("small chunk 2");
+    let large_again = runner.score_chunk(&large, 4096).expect("large chunk 2");
+
+    // Buffer growth and shrink-back must not change the scored result for a
+    // given shape — that is the only behaviour a caller can observe.
     assert_eq!(
-        runner.bind_group_builds, 2,
-        "growing the buffers forces exactly one bind-group rebuild",
+        small_before, small_after,
+        "the small chunk scores identically before and after the buffers grew",
+    );
+    assert_eq!(
+        large_first, large_again,
+        "the large chunk scores identically across a shrink-and-regrow",
     );
 
-    // Returning to the small shape reuses the (now larger) buffers without a
-    // further rebuild — the records buffer capacity already covers it.
-    runner.score_chunk(&small, 256).expect("small chunk 3");
-    assert_eq!(
-        runner.bind_group_builds, 2,
-        "shrinking back to a covered shape must not rebuild the bind group",
+    assert_eq!(runner.dispatch_count, 4, "four chunks were dispatched");
+    // Loose optimisation guard (Issue #357): the cache reuses bind groups often
+    // enough that builds stay below the dispatch count even with growth. The
+    // exact number of rebuilds on growth/shrink is a non-contractual policy
+    // detail and is deliberately not asserted.
+    assert!(
+        runner.bind_group_builds < runner.dispatch_count,
+        "bind-group reuse must outpace rebuilds (builds {} < dispatches {})",
+        runner.bind_group_builds,
+        runner.dispatch_count,
     );
 }
 
+/// The reused bind group never drifts from the CPU baseline across repeated
+/// dispatches — the core WHAT-assertion of the optimisation.
 #[test]
 fn reused_bind_group_preserves_cpu_parity() {
     let Some(ctx) = gpu_ctx() else { return };
@@ -182,8 +219,13 @@ fn reused_bind_group_preserves_cpu_parity() {
             );
         }
     }
-    assert_eq!(
-        runner.bind_group_builds, 1,
-        "the reused bind group served all three parity dispatches",
+    // Loose optimisation guard (Issue #357): three identical dispatches must not
+    // rebuild the bind group each time. The exact build count is a
+    // non-contractual policy detail and is not asserted.
+    assert!(
+        runner.bind_group_builds < runner.dispatch_count,
+        "identical dispatches reuse the bind group (builds {} < dispatches {})",
+        runner.bind_group_builds,
+        runner.dispatch_count,
     );
 }
