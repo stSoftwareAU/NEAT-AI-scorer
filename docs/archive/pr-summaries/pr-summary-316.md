@@ -52,7 +52,7 @@ Backend/CLI change — no web UI. Verified on Apple Silicon (Metal):
 
 **`--gpu on --cost MAE`** on a mixed pool (3 small + 1 large 310-neuron creature):
 
-```
+```text
 large-0  backend=metal  kernel=forward_mse_batched+forward_mse_scratch  cost=MAE err=109.10  records=4096
 small-0  backend=metal  kernel=forward_mse_batched+forward_mse_scratch  cost=MAE err=0.146604 records=4096
 ```
