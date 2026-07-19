@@ -32,7 +32,7 @@ Backend/CLI test-only change — no web interface to screenshot.
 
 The affected suite passes after the change:
 
-```
+```text
 1..4
 ok 1 the weekly upgrade-dependencies workflow does not exist
 ok 2 the workflow validator helper for the removed schedule is gone
