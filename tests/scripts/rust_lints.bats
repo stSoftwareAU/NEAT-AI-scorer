@@ -50,10 +50,9 @@ EOF
   write_lib "$TMP_LINTS/lib.rs"
   run "$SCRIPT_UNDER_TEST" --manifest "$TMP_LINTS/Cargo.toml" --lib "$TMP_LINTS/lib.rs"
   [ "$status" -eq 0 ]
-  [[ "$output" == *"[workspace.lints.rust] table present"* ]]
-  [[ "$output" == *"unsafe_op_in_unsafe_fn denied"* ]]
-  [[ "$output" == *"unused denied"* ]]
-  [[ "$output" == *"missing_docs scoped to the library surface"* ]]
+  # Issue #360: prove every rule was individually evaluated and passed via the
+  # machine-checkable "OK   " marker rather than pinning informational wording.
+  [ "$(grep -c '^OK   ' <<<"$output")" -eq 5 ]
 }
 
 @test "fails when the [workspace.lints.rust] table is missing" {

@@ -81,9 +81,9 @@ EOF
   write_good_workflow "$TMP_WF"
   run "$SCRIPT_UNDER_TEST" --workflow "$TMP_WF"
   [ "$status" -eq 0 ]
-  [[ "$output" == *"job 'validation' defined"* ]]
-  [[ "$output" == *"aggregator 'ci-required' needs 'quality'"* ]]
-  [[ "$output" == *"aggregator 'ci-required' uses if: always()"* ]]
+  # Issue #360: prove every rule was individually evaluated and passed via the
+  # machine-checkable "OK   " marker rather than pinning informational wording.
+  [ "$(grep -c '^OK   ' <<<"$output")" -eq 15 ]
 }
 
 @test "fails when the aggregator job is missing" {

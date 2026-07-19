@@ -48,13 +48,9 @@ EOF
   write_quality_workflow "$TMP_WF/cargo-quality.yml"
   run "$SCRIPT_UNDER_TEST" --workflow "$TMP_WF/cargo-quality.yml"
   [ "$status" -eq 0 ]
-  [[ "$output" == *"triggers on pull_request"* ]]
-  [[ "$output" == *"permissions block grants only contents: read"* ]]
-  [[ "$output" == *"actions/checkout pinned"* ]]
-  [[ "$output" == *"dtolnay/rust-toolchain present"* ]]
-  [[ "$output" == *"rustfmt and clippy components requested"* ]]
-  [[ "$output" == *"cargo fmt --check invoked"* ]]
-  [[ "$output" == *"cargo clippy invoked with -D warnings"* ]]
+  # Issue #360: prove every rule was individually evaluated and passed via the
+  # machine-checkable "OK   " marker rather than pinning informational wording.
+  [ "$(grep -c '^OK   ' <<<"$output")" -eq 7 ]
 }
 
 @test "fails when the workflow is not triggered on pull_request" {

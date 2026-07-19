@@ -52,13 +52,9 @@ EOF
   write_markdown_lint_workflow "$TMP_WF/markdown-lint.yml"
   run "$SCRIPT_UNDER_TEST" --workflow "$TMP_WF/markdown-lint.yml"
   [ "$status" -eq 0 ]
-  [[ "$output" == *"triggers on pull_request"* ]]
-  [[ "$output" == *"permissions block grants only contents: read"* ]]
-  [[ "$output" == *"actions/checkout pinned"* ]]
-  [[ "$output" == *"actions/setup-node pinned"* ]]
-  [[ "$output" == *"markdownlint-cli2 install step present"* ]]
-  [[ "$output" == *"markdownlint-cli2 invoked"* ]]
-  [[ "$output" == *"push trigger targets the default branch (Develop)"* ]]
+  # Issue #360: prove every rule was individually evaluated and passed via the
+  # machine-checkable "OK   " marker rather than pinning informational wording.
+  [ "$(grep -c '^OK   ' <<<"$output")" -eq 7 ]
 }
 
 @test "fails when the push trigger omits Develop (Issue #207)" {

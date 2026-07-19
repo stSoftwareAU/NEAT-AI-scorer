@@ -75,10 +75,9 @@ EOF
   write_hardened_workflow "$TMP_WF/gitleaks.yml"
   run "$SCRIPT_UNDER_TEST" --workflow "$TMP_WF/gitleaks.yml"
   [ "$status" -eq 0 ]
-  [[ "$output" == *"pinned Gitleaks release URL present"* ]]
-  [[ "$output" == *"archive checksum verification present"* ]]
-  [[ "$output" == *"--log-opts limits scan to PR diff range"* ]]
-  [[ "$output" == *"strict bash (set -euo pipefail) present"* ]]
+  # Issue #360: prove every rule was individually evaluated and passed via the
+  # machine-checkable "OK   " marker rather than pinning informational wording.
+  [ "$(grep -c '^OK   ' <<<"$output")" -eq 9 ]
 }
 
 @test "fails when the workflow uses gitleaks-action instead of a pinned binary" {

@@ -64,11 +64,9 @@ EOF
   write_good_workflow "$TMP_WF"
   run "$SCRIPT_UNDER_TEST" --workflow "$TMP_WF"
   [ "$status" -eq 0 ]
-  [[ "$output" == *"workflow-level permissions block present"* ]]
-  [[ "$output" == *"top-level default grants contents: read"* ]]
-  [[ "$output" == *"top-level default declares no write scopes"* ]]
-  [[ "$output" == *"security job grants checks: write"* ]]
-  [[ "$output" == *"security job grants issues: write"* ]]
+  # Issue #360: prove every rule was individually evaluated and passed via the
+  # machine-checkable "OK   " marker rather than pinning informational wording.
+  [ "$(grep -c '^OK   ' <<<"$output")" -eq 8 ]
 }
 
 @test "fails when there is no workflow-level permissions block" {

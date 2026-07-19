@@ -46,10 +46,9 @@ EOF
   write_dependency_review_workflow "$TMP_WF/dependency-review.yml"
   run "$SCRIPT_UNDER_TEST" --workflow "$TMP_WF/dependency-review.yml"
   [ "$status" -eq 0 ]
-  [[ "$output" == *"triggers on pull_request"* ]]
-  [[ "$output" == *"permissions block grants only contents: read"* ]]
-  [[ "$output" == *"actions/checkout pinned"* ]]
-  [[ "$output" == *"actions/dependency-review-action present"* ]]
+  # Issue #360: prove every rule was individually evaluated and passed via the
+  # machine-checkable "OK   " marker rather than pinning informational wording.
+  [ "$(grep -c '^OK   ' <<<"$output")" -eq 4 ]
 }
 
 @test "fails when the workflow is not triggered on pull_request" {

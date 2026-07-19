@@ -89,13 +89,9 @@ EOF
   write_container_workflow "$TMP_WF/semgrep.yml"
   run "$SCRIPT_UNDER_TEST" --workflow "$TMP_WF/semgrep.yml"
   [ "$status" -eq 0 ]
-  [[ "$output" == *"triggers on pull_request"* ]]
-  [[ "$output" == *"permissions block grants only contents: read"* ]]
-  [[ "$output" == *"Semgrep container image is pinned by digest"* ]]
-  [[ "$output" == *"semgrep CLI invocation present"* ]]
-  [[ "$output" == *"explicit --config"* ]]
-  [[ "$output" == *"SEMGREP_APP_TOKEN sourced from secrets"* ]]
-  [[ "$output" == *"rationale comment references semgrep/semgrep-action equivalence"* ]]
+  # Issue #360: prove every rule was individually evaluated and passed via the
+  # machine-checkable "OK   " marker rather than pinning informational wording.
+  [ "$(grep -c '^OK   ' <<<"$output")" -eq 7 ]
 }
 
 @test "passes on the semgrep/semgrep-action fixture" {

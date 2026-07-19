@@ -32,9 +32,9 @@ EOF
   write_toolchain "$TMP_TC/rust-toolchain.toml"
   run "$SCRIPT_UNDER_TEST" --toolchain "$TMP_TC/rust-toolchain.toml"
   [ "$status" -eq 0 ]
-  [[ "$output" == *"[toolchain] table present"* ]]
-  [[ "$output" == *"channel pinned to a concrete X.Y.Z version"* ]]
-  [[ "$output" == *"rustfmt and clippy components declared"* ]]
+  # Issue #360: prove every rule was individually evaluated and passed via the
+  # machine-checkable "OK   " marker rather than pinning informational wording.
+  [ "$(grep -c '^OK   ' <<<"$output")" -eq 3 ]
 }
 
 @test "fails when the [toolchain] table is missing" {
