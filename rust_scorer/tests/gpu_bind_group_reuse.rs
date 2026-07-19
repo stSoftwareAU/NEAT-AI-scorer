@@ -20,6 +20,7 @@ use std::sync::Arc;
 use neat_core::creature::{compile_creature, parse_creature_json};
 use neat_core::loss::mse_sum_batch_packed;
 
+use rust_scorer::cost::CostKind;
 use rust_scorer::gpu::forward_mse_batched::BatchedRunner;
 use rust_scorer::gpu::{GpuMode, resolve_backend, select_adapter};
 
@@ -101,7 +102,7 @@ fn same_size_chunks_are_deterministic_and_reuse_bind_groups() {
     let template = compile_creature(&parse_creature_json(&json).expect("parse")).expect("compile");
     let nets: Vec<_> = (0..4).map(|_| template.clone()).collect();
 
-    let mut runner = BatchedRunner::new(ctx, &nets, num_inputs, num_outputs)
+    let mut runner = BatchedRunner::new(ctx, &nets, num_inputs, num_outputs, CostKind::Mse)
         .expect("synthetic fixture is GPU-supported");
 
     let n_records = 256;
@@ -146,7 +147,7 @@ fn grown_and_shrunk_chunks_stay_correct() {
     let template = compile_creature(&parse_creature_json(&json).expect("parse")).expect("compile");
     let nets: Vec<_> = (0..4).map(|_| template.clone()).collect();
 
-    let mut runner = BatchedRunner::new(ctx, &nets, num_inputs, num_outputs)
+    let mut runner = BatchedRunner::new(ctx, &nets, num_inputs, num_outputs, CostKind::Mse)
         .expect("synthetic fixture is GPU-supported");
 
     let small = build_records(num_inputs, num_outputs, 256);
@@ -200,7 +201,7 @@ fn reused_bind_group_preserves_cpu_parity() {
         .map(|net| mse_sum_batch_packed(net, &records, num_inputs, num_outputs, true))
         .collect();
 
-    let mut runner = BatchedRunner::new(ctx, &nets, num_inputs, num_outputs)
+    let mut runner = BatchedRunner::new(ctx, &nets, num_inputs, num_outputs, CostKind::Mse)
         .expect("synthetic fixture is GPU-supported");
 
     // Dispatch the same chunk three times; the 2nd and 3rd reuse the bind group.
