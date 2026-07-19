@@ -56,13 +56,13 @@ EOF
   write_compliant_workflow "$TMP_WF/example.yml"
   run "$SCRIPT_UNDER_TEST" --workflows "$TMP_WF"
   [ "$status" -eq 0 ]
-  [[ "$output" == *"actions/checkout@${SHA_CHECKOUT}"* ]]
-  [[ "$output" == *"SHA-pinned"* ]]
+  # Issue #360: prove every action line was individually evaluated and passed via
+  # the machine-checkable "OK   " marker rather than pinning informational wording.
+  [ "$(grep -c '^OK   ' <<<"$output")" -eq 8 ]
   # Issue #136: dependency-review-action and audit-check both now ship on
   # Node 24 (>= v5 and master post #48 respectively) — no Node 20 exceptions
-  # remain in the policy. Assert the >= v<N> form replaces the old tracked
-  # exception banner.
-  [[ "$output" == *">= v5, SHA-pinned"* ]]
+  # remain in the policy. Guard against a regression to the tracked exception
+  # path (a genuine behavioural outcome, not just success wording).
   [[ "$output" != *"Node 20 exception, tracked"* ]]
 }
 

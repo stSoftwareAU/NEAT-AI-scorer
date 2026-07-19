@@ -60,11 +60,9 @@ EOF
   write_actionlint_workflow "$TMP_WF/actionlint.yml"
   run "$SCRIPT_UNDER_TEST" --workflow "$TMP_WF/actionlint.yml"
   [ "$status" -eq 0 ]
-  [[ "$output" == *"triggers on pull_request"* ]]
-  [[ "$output" == *"permissions block grants only contents: read"* ]]
-  [[ "$output" == *"actions/checkout pinned"* ]]
-  [[ "$output" == *"actionlint install step present"* ]]
-  [[ "$output" == *"actionlint invoked"* ]]
+  # Issue #360: prove every rule was individually evaluated and passed via the
+  # machine-checkable "OK   " marker rather than pinning informational wording.
+  [ "$(grep -c '^OK   ' <<<"$output")" -eq 5 ]
 }
 
 @test "fails when the workflow is not triggered on pull_request" {

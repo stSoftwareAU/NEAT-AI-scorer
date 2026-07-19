@@ -50,9 +50,9 @@ EOF
   write_policy "$TMP_SEC/SECURITY.md"
   run "$SCRIPT_UNDER_TEST" --security-policy "$TMP_SEC/SECURITY.md"
   [ "$status" -eq 0 ]
-  [[ "$output" == *"private reporting route"* ]]
-  [[ "$output" == *"supported-versions table"* ]]
-  [[ "$output" == *"emergency dependency-bump procedure"* ]]
+  # Issue #360: prove every rule was individually evaluated and passed via the
+  # machine-checkable "OK   " marker rather than pinning informational wording.
+  [ "$(grep -c '^OK   ' <<<"$output")" -eq 5 ]
   [[ "$output" != *"FAIL"* ]]
 }
 

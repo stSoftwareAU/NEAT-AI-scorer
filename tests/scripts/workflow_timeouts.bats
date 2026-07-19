@@ -53,9 +53,9 @@ EOF
   write_good_workflow "$TMP_WF"
   run "$SCRIPT_UNDER_TEST" --workflow "$TMP_WF"
   [ "$status" -eq 0 ]
-  [[ "$output" == *"job 'quality' declares timeout-minutes: 30"* ]]
-  [[ "$output" == *"job 'lint' declares timeout-minutes: 10"* ]]
-  [[ "$output" == *"job 'security' is a reusable-workflow call"* ]]
+  # Issue #360: prove every rule was individually evaluated and passed via the
+  # machine-checkable "OK   " marker rather than pinning informational wording.
+  [ "$(grep -c '^OK   ' <<<"$output")" -eq 3 ]
 }
 
 @test "fails when a normal job has no timeout-minutes" {

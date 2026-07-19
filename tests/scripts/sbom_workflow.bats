@@ -63,12 +63,9 @@ EOF
   write_sbom_workflow "$TMP_WF/sbom.yml"
   run "$SCRIPT_UNDER_TEST" --workflow "$TMP_WF/sbom.yml"
   [ "$status" -eq 0 ]
-  [[ "$output" == *"triggers on a build event"* ]]
-  [[ "$output" == *"permissions block grants only contents: read"* ]]
-  [[ "$output" == *"actions/checkout pinned"* ]]
-  [[ "$output" == *"dtolnay/rust-toolchain present"* ]]
-  [[ "$output" == *"CycloneDX SBOM generated"* ]]
-  [[ "$output" == *"SBOM uploaded as an artefact"* ]]
+  # Issue #360: prove every rule was individually evaluated and passed via the
+  # machine-checkable "OK   " marker rather than pinning informational wording.
+  [ "$(grep -c '^OK   ' <<<"$output")" -eq 6 ]
 }
 
 @test "fails when no build trigger is present" {

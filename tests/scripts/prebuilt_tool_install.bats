@@ -58,8 +58,9 @@ EOF
   write_prebuilt_workflow "$TMP_WF/wf.yml" "cargo-audit"
   run "$SCRIPT_UNDER_TEST" --workflow "$TMP_WF/wf.yml" --tool cargo-audit
   [ "$status" -eq 0 ]
-  [[ "$output" == *"installs cargo-audit via prebuilt taiki-e/install-action"* ]]
-  [[ "$output" == *"no 'cargo install cargo-audit' source compile"* ]]
+  # Issue #360: prove every rule was individually evaluated and passed via the
+  # machine-checkable "OK   " marker rather than pinning informational wording.
+  [ "$(grep -c '^OK   ' <<<"$output")" -eq 2 ]
 }
 
 @test "fails when the tool is compiled from source via cargo install" {

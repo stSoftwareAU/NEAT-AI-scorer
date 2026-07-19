@@ -47,9 +47,9 @@ EOF
   write_hardened_workflow "$TMP_WF/example.yml"
   run "$SCRIPT_UNDER_TEST" --workflow "$TMP_WF/example.yml"
   [ "$status" -eq 0 ]
-  [[ "$output" == *"declares a top-level concurrency block"* ]]
-  [[ "$output" == *"keyed by github.ref"* ]]
-  [[ "$output" == *"cancel-in-progress is true"* ]]
+  # Issue #360: prove every rule was individually evaluated and passed via the
+  # machine-checkable "OK   " marker rather than pinning informational wording.
+  [ "$(grep -c '^OK   ' <<<"$output")" -eq 3 ]
 }
 
 @test "fails when the concurrency block is missing" {
