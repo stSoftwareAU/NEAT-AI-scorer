@@ -121,7 +121,7 @@ flag wins over the `NEAT_SCORER_GPU` environment variable.
 
 | Mode    | Behaviour                                                                                                       | `gpuBackend` value                                  |
 |---------|-----------------------------------------------------------------------------------------------------------------|-----------------------------------------------------|
-| `auto`  | **Default since Issue #83.** Use GPU on directory paths with **AllPrivate** topology (≤256 total neurons per creature); fall back to CPU for scratch/mixed GRQ-scale pools (#317), GPU-unsupported costs (any cost other than MSE/RMSE), missing adapters, or failed pre-flight. Prints one stderr note when declining GPU for topology. | `"metal"` / `"vulkan"` / `"dx12"` / `"gl"` / `"cpu-fallback"` |
+| `auto`  | **Default since Issue #83.** Use GPU on directory paths with **AllPrivate** topology (≤256 total neurons per creature); fall back to CPU for scratch/mixed GRQ-scale pools (#317), GPU-unsupported costs (any cost other than MSE/RMSE/MAE), missing adapters, or failed pre-flight. Prints one stderr note when declining GPU for topology. | `"metal"` / `"vulkan"` / `"dx12"` / `"gl"` / `"cpu-fallback"` |
 | `on`    | Require a compatible GPU; exit non-zero with a clear message when none is found (no silent fallback). Forces the GPU path even where bench evidence does not support it. | `"metal"` / `"vulkan"` / `"dx12"` / `"gl"`          |
 | `off`   | Skip GPU detection entirely; run the CPU pipeline.                                                             | `"cpu-fallback"`                                    |
 
@@ -317,13 +317,21 @@ rust_scorer --cost CATEGORICAL_ERROR <creature.json> <training_data_dir>  # mult
 rust_scorer --cost FOO               <creature.json> <training_data_dir>  # exits non-zero — unknown cost
 ```
 
-#### GPU constraint — the `forward_mse_batched` kernel serves MSE and RMSE
+#### GPU costs — the batched/scratch kernels serve MSE, RMSE and MAE
 
-The `forward_mse_batched` GPU kernel computes the **squared-error sum** that
-both `MSE` and `RMSE` need — `RMSE` (Issue #337) shares that kernel unchanged
-and only adds a host-side `sqrt` at finalisation, so both are GPU-supported at
-identical speed. Every **other** (non-MSE, non-RMSE) `--cost` selection forces
-the CPU pipeline:
+The `forward_mse_batched` and `forward_mse_scratch` GPU kernels run one shared
+forward pass and then reduce a per-record loss selected by the shader's
+`cost_kind` header field:
+
+- `MSE` / `RMSE` accumulate the **squared-error sum** — `RMSE` (Issue #339)
+  shares that sum unchanged and only adds a host-side `sqrt` at finalisation, so
+  both are GPU-supported at identical speed.
+- `MAE` (Issue #316) accumulates the **absolute-error sum** on the same forward
+  pass, so it is GPU-hosted on both kernels — including the > 256-neuron scratch
+  path used by production GRQ creatures — at MSE-class speed.
+
+Every **other** (non-`MSE`, non-`RMSE`, non-`MAE`) `--cost` selection forces the
+CPU pipeline:
 
 - Under `--gpu auto` (the default since Issue #83) a GPU-unsupported cost
   routes to the CPU directory/streaming path — the `gpuBackend` field
@@ -331,7 +339,9 @@ the CPU pipeline:
   actually ran. On the **directory path** the scorer also prints one
   informational `[gpu] auto fallback ...` line to stderr naming the
   cost as the reason (Issue #205), so the CPU choice is not silent;
-  MSE / RMSE (GPU-supported costs) print nothing extra.
+  MSE / RMSE / MAE (GPU-supported costs) print nothing extra. (An
+  `AllPrivate` pool runs on GPU; `Mixed`/`ScratchOnly` GRQ-scale pools still
+  fall back to CPU for **topology** reasons per Issue #317, independent of cost.)
 - Under `--gpu on` a GPU-unsupported cost is a hard error before any scoring
   runs (no silent downgrade — `--gpu on` is a strict requirement).
 - Under `--gpu off` GPU detection is skipped regardless of `--cost`.
@@ -343,7 +353,7 @@ flowchart LR
     Valid -->|yes| CostKind[CostKind enum]
     Valid -->|no| Err[stderr + exit 2]
     CostKind --> Dispatch[accumulate_cost_sum]
-    Dispatch -->|MSE or RMSE + GPU adapter| GPU[forward_mse_batched]
+    Dispatch -->|MSE/RMSE/MAE + GPU adapter| GPU[forward_mse_batched / forward_mse_scratch]
     Dispatch -->|other cost OR no GPU| CPU[CPU pipeline]
 ```
 
@@ -669,9 +679,11 @@ forward-only path and the per-record recurrent path:
   (landed via [`NEAT-AI-core#88`](https://github.com/stSoftwareAU/NEAT-AI-core/issues/88);
   unblocked here in #134) — the dispatch returns the integer count of
   argmax misclassifications across the corpus.
-- **GPU kernel is MSE-only.** `forward_mse_batched` does not yet have
-  per-cost variants; non-MSE costs route to the CPU pipeline (silent
-  fallback under `--gpu auto`, hard error under `--gpu on`).
+- **GPU kernels host MSE, RMSE and MAE.** `forward_mse_batched` and
+  `forward_mse_scratch` share one forward pass and select the per-record loss
+  (squared for MSE/RMSE, absolute for MAE — Issue #316) via the `cost_kind`
+  header field. The remaining costs route to the CPU pipeline (silent fallback
+  under `--gpu auto`, hard error under `--gpu on`).
 
 See the [Cost function selector](#cost-function-selector-issues-120-121) section
 above for the supported names and CLI surface.

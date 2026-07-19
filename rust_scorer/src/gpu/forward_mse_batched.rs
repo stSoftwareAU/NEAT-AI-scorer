@@ -37,6 +37,7 @@ use bytemuck::{Pod, Zeroable};
 use neat_core::network::CompiledNetwork;
 use wgpu::util::DeviceExt;
 
+use crate::cost::CostKind;
 use crate::gpu::GpuContext;
 
 /// WGSL workgroup size for the batched kernel — must match the shader.
@@ -96,8 +97,13 @@ struct HeaderGpu {
     num_outputs: u32,
     values_per_record: u32,
     num_workgroups_x: u32,
+    // Scratch kernel reads its activation stride here (`Header.max_neurons`);
+    // the private kernel ignores it. See [`BatchedRunner::score_chunk`].
     _pad0: u32,
-    _pad1: u32,
+    // Per-record error mode (Issue #316): `CostKind::gpu_error_code` — 0 for
+    // MSE/RMSE (squared error), 1 for MAE (absolute error). Both kernels read
+    // this from the shader `Header.cost_kind` field.
+    cost_kind: u32,
 }
 
 /// GPU-side mirror of a compiled neuron (`#[repr(C)]`, uploaded as an SSBO element).
@@ -352,6 +358,10 @@ pub struct BatchedRunner {
     num_inputs: u32,
     num_outputs: u32,
     values_per_record: u32,
+    /// Per-record error mode written into the kernel header each dispatch
+    /// (Issue #316): `CostKind::gpu_error_code` — 0 for MSE/RMSE (squared
+    /// error), 1 for MAE (absolute error).
+    cost_code: u32,
     /// Which kernel this runner drives (Issue #182).
     kernel: KernelKind,
     /// Largest per-creature neuron count — the activation scratch stride for
@@ -395,15 +405,25 @@ impl BatchedRunner {
         networks: &[CompiledNetwork],
         num_inputs: usize,
         num_outputs: usize,
+        cost: CostKind,
     ) -> Result<Self, GpuPrepareError> {
         let data = build_batched_network_data(networks, num_inputs, num_outputs)?;
-        Ok(Self::from_data(ctx, &data, networks.len() as u32))
+        Ok(Self::from_data(ctx, &data, networks.len() as u32, cost))
     }
 
     /// Construct a runner from already-serialised batched data. Used by tests
     /// that want to drive the kernel without building a full `CompiledNetwork`
     /// pool.
-    pub fn from_data(ctx: Arc<GpuContext>, data: &BatchedNetworkData, num_creatures: u32) -> Self {
+    ///
+    /// `cost` selects the per-record loss the kernel accumulates (Issue #316):
+    /// squared error for MSE/RMSE, absolute error for MAE. Only a
+    /// [`CostKind::gpu_supported`] cost should reach here.
+    pub fn from_data(
+        ctx: Arc<GpuContext>,
+        data: &BatchedNetworkData,
+        num_creatures: u32,
+        cost: CostKind,
+    ) -> Self {
         let device = &ctx.device;
 
         // Issue #182 — route by the largest per-creature neuron count: the
@@ -540,6 +560,7 @@ impl BatchedRunner {
             cache: None,
         });
 
+        let cost_code = cost.gpu_error_code();
         let header = HeaderGpu {
             num_records: 0,
             num_creatures,
@@ -548,7 +569,7 @@ impl BatchedRunner {
             values_per_record: data.num_inputs + data.num_outputs,
             num_workgroups_x: 0,
             _pad0: 0,
-            _pad1: 0,
+            cost_kind: cost_code,
         };
         let header_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("forward_mse_batched header"),
@@ -586,6 +607,7 @@ impl BatchedRunner {
             num_inputs: data.num_inputs,
             num_outputs: data.num_outputs,
             values_per_record,
+            cost_code,
             kernel,
             max_neurons,
             scratch_budget_bytes,
@@ -660,7 +682,8 @@ impl BatchedRunner {
             values_per_record: self.values_per_record,
             num_workgroups_x,
             _pad0: max_neurons_field,
-            _pad1: 0,
+            // Issue #316: select squared (MSE/RMSE) vs absolute (MAE) error.
+            cost_kind: self.cost_code,
         };
         queue.write_buffer(&self.header_buf, 0, bytemuck::bytes_of(&header));
 
@@ -978,6 +1001,7 @@ impl DirectoryGpuRunners {
         networks: &[CompiledNetwork],
         num_inputs: usize,
         num_outputs: usize,
+        cost: CostKind,
     ) -> Result<Self, GpuPrepareError> {
         let creature_count = networks.len();
         let mut private_nets: Vec<CompiledNetwork> = Vec::new();
@@ -1003,6 +1027,7 @@ impl DirectoryGpuRunners {
                 &private_nets,
                 num_inputs,
                 num_outputs,
+                cost,
             )?)
         };
         let scratch = if scratch_orig.is_empty() {
@@ -1013,6 +1038,7 @@ impl DirectoryGpuRunners {
                 &scratch_nets,
                 num_inputs,
                 num_outputs,
+                cost,
             )?)
         };
 

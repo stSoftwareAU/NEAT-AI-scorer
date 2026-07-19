@@ -816,12 +816,13 @@ fn scorer_binary_categorical_error_runs_after_upstream_helper_landed() {
     );
 }
 
-/// Issue #121: `--gpu on --cost MAE` must hard-error because the
-/// `forward_mse_batched` kernel has no MAE implementation. The error
-/// message must name the cost so the user can recover by switching mode
-/// or cost.
+/// Issue #121/#316: `--gpu on` with a cost the GPU kernels cannot host must
+/// hard-error before scoring. MSE/RMSE/MAE are now GPU-supported, so this uses
+/// `MAPE` — still unhosted — and the up-front guard fires before adapter
+/// selection, so it errors on both GPU and CPU-only hosts. The error message
+/// must name the cost so the user can recover by switching mode or cost.
 #[test]
-fn scorer_binary_gpu_on_with_non_mse_cost_errors() {
+fn scorer_binary_gpu_on_with_unsupported_cost_errors() {
     let bin = env!("CARGO_BIN_EXE_rust_scorer");
     let creature = fixture("identity_creature.json");
     let data_dir = fixture_data_dir("identity_data.bin");
@@ -830,26 +831,27 @@ fn scorer_binary_gpu_on_with_non_mse_cost_errors() {
         .arg("--gpu")
         .arg("on")
         .arg("--cost")
-        .arg("MAE")
+        .arg("MAPE")
         .arg(&creature)
         .arg(data_dir.path())
         .output()
-        .expect("failed to spawn rust_scorer (--gpu on --cost MAE)");
+        .expect("failed to spawn rust_scorer (--gpu on --cost MAPE)");
     assert!(
         !out.status.success(),
-        "--gpu on --cost MAE must exit non-zero"
+        "--gpu on --cost MAPE must exit non-zero"
     );
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
-        stderr.contains("MAE") && stderr.contains("GPU"),
-        "stderr must mention MAE and GPU, got: {stderr}"
+        stderr.contains("MAPE") && stderr.contains("GPU"),
+        "stderr must mention MAPE and GPU, got: {stderr}"
     );
 }
 
-/// Issue #121: `--gpu auto --cost MAE` must complete successfully on
-/// CPU. Whether or not a GPU is available, an unsupported cost forces
-/// the silent fallback path — `gpuBackend` should report `cpu-fallback`
-/// because no GPU kernel ran.
+/// Issue #121/#316: `--gpu auto --cost MAE` on a *single creature* must
+/// complete successfully on CPU. MAE is GPU-supported since Issue #316, but the
+/// single-creature path never runs on the GPU (Issue #81 closed without a
+/// single-creature kernel), so `gpuBackend` reports `cpu-fallback` here
+/// regardless of cost — that is what this test locks.
 #[test]
 fn scorer_binary_gpu_auto_with_non_mse_cost_runs_on_cpu() {
     let bin = env!("CARGO_BIN_EXE_rust_scorer");

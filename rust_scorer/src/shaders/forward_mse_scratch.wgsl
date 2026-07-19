@@ -1,6 +1,9 @@
-// Forward-only MLP activation + per-record MSE for *large* creatures.
+// Forward-only MLP activation + per-record loss for *large* creatures.
 //
 // Issue #182 — lifts the 256-neuron cap of `forward_mse_batched.wgsl`.
+// Issue #316 — hosts MSE/RMSE (squared error) and MAE (absolute error) via the
+// shared `Header.cost_kind` selector, keeping the `forward_mse_scratch` entry
+// name for the `gpuKernel` field.
 //
 // The original batched kernel holds each invocation's activations in a
 // fixed-size `private` array, which WGSL requires to be a compile-time
@@ -44,8 +47,13 @@ struct Header {
     num_workgroups_x: u32,
     // Activation scratch stride per thread (>= every creature's num_neurons).
     max_neurons: u32,
-    _pad0: u32,
+    // Per-record error mode (Issue #316): 0 = squared error (MSE/RMSE),
+    // 1 = absolute error (MAE). Shared forward pass; only the loss branches.
+    cost_kind: u32,
 }
+
+// Per-record error modes matching `CostKind::gpu_error_code` (Issue #316).
+const COST_ABS_ERR: u32 = 1u;
 
 struct NeuronGpu {
     bias: f32,
@@ -307,16 +315,17 @@ fn forward_mse_scratch(
                 scratch[base + header.num_inputs + n] = a;
             }
 
-            // Per-record MSE = mean over outputs of (target - predicted)^2.
+            // Per-record loss = mean over outputs of the per-output error,
+            // squared (MSE/RMSE) or absolute (MAE) per `cost_kind` (Issue #316).
             let output_start = cr.num_neurons - header.num_outputs;
             let target_start = rec_base + header.num_inputs;
-            var sq_sum: f32 = 0.0;
+            var err_sum: f32 = 0.0;
             for (var o: u32 = 0u; o < header.num_outputs; o = o + 1u) {
                 let d = records[target_start + o] - scratch[base + output_start + o];
-                sq_sum = sq_sum + d * d;
+                err_sum = err_sum + select(d * d, abs(d), header.cost_kind == COST_ABS_ERR);
             }
             if (header.num_outputs > 0u) {
-                thread_sum = thread_sum + sq_sum / f32(header.num_outputs);
+                thread_sum = thread_sum + err_sum / f32(header.num_outputs);
             }
 
             record_idx = record_idx + stride;

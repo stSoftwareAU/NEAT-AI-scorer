@@ -1,6 +1,10 @@
-// Forward-only MLP activation + per-record MSE for many creatures per dispatch.
+// Forward-only MLP activation + per-record loss for many creatures per dispatch.
 //
 // Issue #82 — multi-creature batched dispatch.
+// Issue #316 — the same kernel now hosts MSE/RMSE (squared error) and MAE
+// (absolute error), selected per dispatch by `Header.cost_kind`. The entry
+// point keeps its historical `forward_mse_batched` name for the `gpuKernel`
+// field even though it is cost-agnostic.
 //
 // Each thread handles a (creature, record) pair. The 2D dispatch grid is
 // (records, creatures, 1); workgroup_size is (64, 1, 1). Per-creature partial
@@ -40,8 +44,14 @@ struct Header {
     values_per_record: u32,
     num_workgroups_x: u32,
     _pad0: u32,
-    _pad1: u32,
+    // Per-record error mode (Issue #316): 0 = squared error (MSE/RMSE),
+    // 1 = absolute error (MAE). The forward pass is shared; only the loss
+    // reduction below branches on this.
+    cost_kind: u32,
 }
+
+// Per-record error modes matching `CostKind::gpu_error_code` (Issue #316).
+const COST_ABS_ERR: u32 = 1u;
 
 struct NeuronGpu {
     bias: f32,
@@ -312,18 +322,20 @@ fn forward_mse_batched(
             act[header.num_inputs + n] = a;
         }
 
-        // Per-record squared error = mean over outputs of (target - predicted)^2.
+        // Per-record loss = mean over outputs of the per-output error. The error
+        // is squared (MSE/RMSE) or absolute (MAE) depending on `cost_kind`
+        // (Issue #316); the forward pass above is identical for both.
         let output_start = cr.num_neurons - header.num_outputs;
         let target_start = rec_base + header.num_inputs;
-        var sq_sum: f32 = 0.0;
+        var err_sum: f32 = 0.0;
         for (var o: u32 = 0u; o < header.num_outputs; o = o + 1u) {
             let target_val = records[target_start + o];
             let predicted = act[output_start + o];
             let d = target_val - predicted;
-            sq_sum = sq_sum + d * d;
+            err_sum = err_sum + select(d * d, abs(d), header.cost_kind == COST_ABS_ERR);
         }
         if (header.num_outputs > 0u) {
-            sample_err = sq_sum / f32(header.num_outputs);
+            sample_err = err_sum / f32(header.num_outputs);
         }
     }
 

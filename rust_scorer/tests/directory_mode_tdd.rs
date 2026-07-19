@@ -329,13 +329,15 @@ fn directory_mode_emits_compile_time_secs() {
     }
 }
 
-/// Issue #205: under the default `--gpu auto`, a non-MSE `--cost` forces the
-/// directory path onto CPU (`auto_should_use_gpu` returns false). That
-/// fallback was otherwise silent — only the `gpuBackend: cpu-fallback` JSON
-/// field hinted at it. Assert the CPU run now prints one informational stderr
-/// note naming the cost as the reason, while MSE prints nothing extra.
+/// Issue #205/#316: under the default `--gpu auto`, a GPU-unsupported `--cost`
+/// forces the directory path onto CPU (`auto_should_use_gpu` returns false).
+/// That fallback was otherwise silent — only the `gpuBackend: cpu-fallback`
+/// JSON field hinted at it. Assert the CPU run prints one informational stderr
+/// note naming the cost as the reason, while MSE prints nothing extra. Uses
+/// `MAPE`: since Issue #316 MAE is GPU-hosted, so it no longer triggers the
+/// cost fallback; MAPE is still unhosted and does.
 #[test]
-fn directory_mode_auto_non_mse_cost_notes_cpu_fallback() {
+fn directory_mode_auto_unsupported_cost_notes_cpu_fallback() {
     let bin = env!("CARGO_BIN_EXE_rust_scorer");
     let tmp = tempfile::tempdir().expect("create tempdir");
     let creatures_dir = tmp.path().join("creatures");
@@ -346,24 +348,24 @@ fn directory_mode_auto_non_mse_cost_notes_cpu_fallback() {
     std::fs::write(creatures_dir.join("a.json"), minimal_creature(1, 1, true)).expect("write a");
     write_training_data(&data_dir, &[(vec![0.5], vec![0.5]), (vec![1.0], vec![1.0])]);
 
-    // Non-MSE cost under the default `--gpu auto` ⇒ CPU fallback + stderr note.
+    // GPU-unsupported cost under the default `--gpu auto` ⇒ CPU fallback + note.
     let non_mse = Command::new(bin)
         .arg("--cost")
-        .arg("MAE")
+        .arg("MAPE")
         .arg(&creatures_dir)
         .arg(&data_dir)
         .output()
-        .expect("spawn scorer (MAE)");
+        .expect("spawn scorer (MAPE)");
     assert!(
         non_mse.status.success(),
-        "auto MAE directory run should succeed, stderr:\n{}",
+        "auto MAPE directory run should succeed, stderr:\n{}",
         String::from_utf8_lossy(&non_mse.stderr),
     );
     let non_mse_stderr = String::from_utf8_lossy(&non_mse.stderr);
     assert!(
         non_mse_stderr.contains("[gpu] auto fallback to CPU directory mode")
-            && non_mse_stderr.contains("MAE"),
-        "non-MSE cost must print a CPU-fallback note naming the cost, got: {non_mse_stderr}",
+            && non_mse_stderr.contains("MAPE"),
+        "GPU-unsupported cost must print a CPU-fallback note naming the cost, got: {non_mse_stderr}",
     );
 
     // MSE (the GPU-supported cost) must not print the cost-fallback note.

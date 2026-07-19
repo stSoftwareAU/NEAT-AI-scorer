@@ -982,7 +982,8 @@ pub fn score_from_creature_dir_gpu(
     gpu_backend: GpuBackendLabel,
     ctx: Arc<GpuContext>,
     inflight_chunks: usize,
-    // Issue #121 — the GPU `forward_mse_batched` kernel only computes MSE.
+    // Issue #121/#316 — the batched/scratch GPU kernels host MSE, RMSE and MAE
+    // (squared vs absolute per-record error, selected by `Header.cost_kind`).
     // Any other cost is a hard error here; callers under `--gpu auto` are
     // expected to detect this via [`crate::gpu::auto_should_use_gpu`] and
     // route to the CPU path instead.
@@ -1041,8 +1042,8 @@ fn score_from_creature_dir_gpu_impl(
 ) -> Result<BTreeMap<String, ScoreResult>, String> {
     if !cost.gpu_supported() {
         return Err(format!(
-            "GPU kernel not implemented for cost {}: forward_mse_batched only handles MSE \
-             (use --gpu auto for silent CPU fallback, or --gpu off to skip GPU entirely)",
+            "GPU kernel not implemented for cost {}: the batched/scratch kernels host MSE, RMSE \
+             and MAE only (use --gpu auto for silent CPU fallback, or --gpu off to skip GPU entirely)",
             cost.as_str()
         ));
     }
@@ -1103,7 +1104,7 @@ fn score_from_creature_dir_gpu_impl(
     // back to the CPU path so callers still get a result. Mixed pools route
     // small creatures to the private kernel and large ones to scratch (#317).
     let mut runners =
-        match DirectoryGpuRunners::new(ctx.clone(), &networks, num_inputs, num_outputs) {
+        match DirectoryGpuRunners::new(ctx.clone(), &networks, num_inputs, num_outputs, cost) {
             Ok(r) => r,
             Err(e) => {
                 return Err(format!(
@@ -1278,10 +1279,12 @@ fn score_from_creature_dir_gpu_impl(
     let gpu_kernel_label = runners.kernel_label();
     let mut results = BTreeMap::new();
     for (loaded_creature, mse_sum) in loaded.iter().zip(total_mse.iter()) {
-        // Issue #339: the GPU creature-directory finalisation. `mse_sum` is the
-        // squared-error sum the `forward_mse_batched` kernel returns; routing it
+        // Issue #339/#316: the GPU creature-directory finalisation. `mse_sum` is
+        // the per-record error sum the kernel returns — squared error for
+        // MSE/RMSE, absolute error for MAE (`Header.cost_kind`). Routing it
         // through the shared finaliser gives RMSE its host-side `sqrt` on the GPU
-        // path too (no new kernel), matching the CPU path bit-for-bit.
+        // path too (no new kernel) and reports the plain mean for MSE/MAE,
+        // matching the CPU path within tolerance.
         let avg_error = cost.finalise_mean(*mse_sum, total_records);
         // Issue #289: the scoring API now returns the typed `ScoringError`;
         // flatten to this module's `String` error contract at the boundary.

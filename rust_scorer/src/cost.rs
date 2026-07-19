@@ -144,11 +144,14 @@ impl CostKind {
 }
 
 impl CostKind {
-    /// Issue #121 / #339: which costs the GPU `forward_mse_batched` kernel can
-    /// service. [`CostKind::Mse`] and [`CostKind::Rmse`] today — RMSE reuses
-    /// the MSE squared-error sum unchanged and only adds a host-side `sqrt` at
-    /// finalisation (no new kernel, see [`CostKind::finalise_mean`]). Every
-    /// other cost forces a CPU fallback (or a hard error under `--gpu on`).
+    /// Issue #121 / #339 / #316: which costs the batched + scratch GPU kernels
+    /// can service. [`CostKind::Mse`], [`CostKind::Rmse`] and [`CostKind::Mae`]
+    /// today. MSE and RMSE share the squared-error sum (RMSE only adds a
+    /// host-side `sqrt` at finalisation, see [`CostKind::finalise_mean`]); MAE
+    /// (Issue #316) reuses the same forward pass and accumulates the absolute
+    /// error per record instead, selected inside the kernel via
+    /// [`CostKind::gpu_error_code`]. Every other cost forces a CPU fallback (or
+    /// a hard error under `--gpu on`).
     ///
     /// # Examples
     ///
@@ -156,10 +159,36 @@ impl CostKind {
     /// use rust_scorer::cost::CostKind;
     /// assert!(CostKind::Mse.gpu_supported());
     /// assert!(CostKind::Rmse.gpu_supported());
-    /// assert!(!CostKind::Mae.gpu_supported());
+    /// assert!(CostKind::Mae.gpu_supported());
+    /// assert!(!CostKind::Mape.gpu_supported());
     /// ```
     pub const fn gpu_supported(self) -> bool {
-        matches!(self, Self::Mse | Self::Rmse)
+        matches!(self, Self::Mse | Self::Rmse | Self::Mae)
+    }
+
+    /// Per-record error mode the GPU kernels apply, encoded for the shader
+    /// `Header.cost_kind` field (Issue #316).
+    ///
+    /// The batched and scratch kernels run one shared forward pass and then
+    /// reduce a per-record loss. `0` accumulates the **squared** error — used by
+    /// [`CostKind::Mse`] and [`CostKind::Rmse`], which share the squared-error
+    /// sum. `1` accumulates the **absolute** error — used by [`CostKind::Mae`].
+    /// Every other (non-GPU) cost maps to `0` but never reaches the GPU runner,
+    /// which is gated by [`CostKind::gpu_supported`].
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use rust_scorer::cost::CostKind;
+    /// assert_eq!(CostKind::Mse.gpu_error_code(), 0);
+    /// assert_eq!(CostKind::Rmse.gpu_error_code(), 0);
+    /// assert_eq!(CostKind::Mae.gpu_error_code(), 1);
+    /// ```
+    pub const fn gpu_error_code(self) -> u32 {
+        match self {
+            Self::Mae => 1,
+            _ => 0,
+        }
     }
 
     /// Finalise an accumulated per-record error sum into the mean loss the
@@ -427,19 +456,23 @@ mod tests {
         }
     }
 
-    /// Issue #121/#339: MSE and RMSE are GPU-supported (RMSE reuses the MSE
-    /// kernel with a host-side `sqrt`); every other cost must run on CPU.
-    /// Locks the predicate so a regression that drops RMSE back to CPU — or
-    /// that accidentally makes another cost GPU-eligible — fails immediately.
+    /// Issue #121/#339/#316: MSE, RMSE and MAE are GPU-supported (RMSE reuses
+    /// the MSE squared-error sum with a host-side `sqrt`; MAE reuses the shared
+    /// forward pass and accumulates absolute error); every other cost must run
+    /// on CPU. Locks the predicate so a regression that drops one back to CPU —
+    /// or that accidentally makes another cost GPU-eligible — fails immediately.
     #[test]
-    fn gpu_supported_only_for_mse_and_rmse() {
+    fn gpu_supported_for_mse_rmse_and_mae() {
         assert!(CostKind::Mse.gpu_supported());
         assert!(
             CostKind::Rmse.gpu_supported(),
             "RMSE must be GPU-supported: it reuses the MSE kernel (Issue #339)"
         );
+        assert!(
+            CostKind::Mae.gpu_supported(),
+            "MAE must be GPU-supported: it reuses the shared forward pass (Issue #316)"
+        );
         for v in [
-            CostKind::Mae,
             CostKind::Mape,
             CostKind::Msle,
             CostKind::Hinge,
@@ -451,6 +484,21 @@ mod tests {
                 "{} must not be GPU-supported until a new kernel ships",
                 v.as_str()
             );
+        }
+    }
+
+    /// Issue #316: the GPU per-record error selector. MSE and RMSE share the
+    /// squared-error code (0); MAE uses the absolute-error code (1). Non-GPU
+    /// costs map to 0 but never reach the GPU runner.
+    #[test]
+    fn gpu_error_code_distinguishes_squared_and_absolute() {
+        assert_eq!(CostKind::Mse.gpu_error_code(), 0);
+        assert_eq!(CostKind::Rmse.gpu_error_code(), 0);
+        assert_eq!(CostKind::Mae.gpu_error_code(), 1);
+        // A GPU-supported cost's error code must always be a squared/absolute
+        // selector the kernels understand (0 or 1).
+        for v in [CostKind::Mse, CostKind::Rmse, CostKind::Mae] {
+            assert!(v.gpu_error_code() <= 1);
         }
     }
 

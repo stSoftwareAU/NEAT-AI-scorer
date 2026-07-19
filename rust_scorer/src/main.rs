@@ -100,12 +100,13 @@ struct Cli {
     /// `categorical_error_sum_batch_packed` helper landed via
     /// `NEAT-AI-core#88`.
     ///
-    /// GPU constraint: the `forward_mse_batched` kernel is **MSE-only** —
-    /// there is no separate RMSE kernel. `RMSE` reuses it (Issue #339),
-    /// adding only a host-side `sqrt` at finalisation, so both `MSE` and
-    /// `RMSE` run on the GPU at full MSE speed. The other costs under
-    /// `--gpu auto` silently fall back to the CPU pipeline; under `--gpu on`
-    /// they hard-error before any scoring runs.
+    /// GPU support: the batched/scratch kernels host `MSE`, `RMSE` and `MAE`
+    /// on one shared forward pass. `MSE`/`RMSE` accumulate squared error
+    /// (`RMSE` adds only a host-side `sqrt` at finalisation, Issue #339); `MAE`
+    /// accumulates absolute error (Issue #316), selected per dispatch by the
+    /// shader's `cost_kind` header field. The remaining costs under `--gpu auto`
+    /// silently fall back to the CPU pipeline; under `--gpu on` they hard-error
+    /// before any scoring runs.
     ///
     /// See the README "Cost function selector" section for per-cost
     /// usage examples.
@@ -213,17 +214,18 @@ fn run(cli: &Cli) -> Result<RunOutput, String> {
         None => SampleSpec::full(),
     };
 
-    // Issue #121/#339: `--gpu on` with a cost the kernel cannot serve is a hard
-    // error — the GPU kernel computes squared-error sums, so MSE and RMSE are
-    // supported (RMSE via a host-side `sqrt`) but every other cost would be a
-    // wrong scoring result if silently downgraded. Check this before adapter
+    // Issue #121/#339/#316: `--gpu on` with a cost the kernels cannot serve is a
+    // hard error. The batched/scratch kernels host MSE and RMSE (squared-error
+    // sum, RMSE via a host-side `sqrt`) and MAE (absolute-error sum); every
+    // other cost would be a wrong scoring result if silently downgraded. Check
+    // this before adapter
     // selection so the error always mentions the unsupported cost, even on
     // machines without a GPU. `--gpu auto` (the default) falls back to CPU
     // instead; `--gpu off` never touches the GPU and is fine.
     if matches!(mode, GpuMode::On) && !cli.cost.gpu_supported() {
         return Err(format!(
-            "GPU kernel not implemented for cost {}: forward_mse_batched only handles MSE \
-             (use --gpu auto to silently fall back to CPU, or --gpu off to skip GPU detection)",
+            "GPU kernel not implemented for cost {}: the batched/scratch kernels host MSE, RMSE \
+             and MAE only (use --gpu auto to silently fall back to CPU, or --gpu off to skip GPU detection)",
             cli.cost.as_str()
         ));
     }
@@ -1277,17 +1279,18 @@ mod tests {
         assert_eq!(parsed.cost, CostKind::Rmse);
     }
 
-    /// Issue #339: `--gpu on --cost RMSE` must clear the up-front guard that
-    /// hard-errors non-GPU-supported costs. The guard at the top of `run`
-    /// fires only when `!cli.cost.gpu_supported()`; RMSE is GPU-supported (it
-    /// reuses the MSE kernel), so it clears the guard exactly like MSE while
+    /// Issue #339/#316: `--gpu on --cost {RMSE,MAE}` must clear the up-front
+    /// guard that hard-errors non-GPU-supported costs. The guard at the top of
+    /// `run` fires only when `!cli.cost.gpu_supported()`; MSE, RMSE and MAE are
+    /// GPU-supported (RMSE reuses the MSE squared-error sum, MAE accumulates
+    /// absolute error on the shared forward pass), so they clear the guard while
     /// the CPU-only costs still trip it.
     #[test]
-    fn test_gpu_on_accepts_mse_and_rmse_only() {
+    fn test_gpu_on_accepts_mse_rmse_and_mae() {
         assert!(CostKind::Mse.gpu_supported());
         assert!(CostKind::Rmse.gpu_supported());
+        assert!(CostKind::Mae.gpu_supported());
         for cost in [
-            CostKind::Mae,
             CostKind::Mape,
             CostKind::Msle,
             CostKind::Hinge,
@@ -1341,21 +1344,24 @@ mod tests {
         );
     }
 
-    /// Issue #123: `--help` must note the GPU constraint (only MSE is GPU
-    /// supported today) so users picking a non-MSE cost understand they
-    /// will run on the CPU pipeline.
+    /// Issue #123/#316: `--help` must note the GPU cost constraint so users
+    /// picking a CPU-only cost understand they will run on the CPU pipeline.
+    /// The GPU kernels host MSE, RMSE and MAE; the remaining costs fall back.
     #[test]
-    fn test_help_notes_gpu_mse_only_constraint() {
+    fn test_help_notes_gpu_cost_constraint() {
         use clap::CommandFactory;
         let mut cmd = Cli::command();
         let help = cmd.render_long_help().to_string();
-        // The doc comment on the `--cost` flag must mention the MSE-only
-        // GPU kernel; phrasing kept loose so future kernel work can update
-        // the wording without breaking the contract.
+        // The doc comment on the `--cost` flag must mention GPU support and the
+        // hosted costs; phrasing kept loose so future kernel work can update the
+        // wording without breaking the contract.
         let lower = help.to_lowercase();
         assert!(
-            lower.contains("gpu") && (lower.contains("mse-only") || lower.contains("mse only")),
-            "rendered --help must note GPU is MSE-only, got:\n{help}"
+            lower.contains("gpu")
+                && lower.contains("mae")
+                && lower.contains("rmse")
+                && lower.contains("fall back"),
+            "rendered --help must note the GPU cost support (MSE/RMSE/MAE + CPU fallback), got:\n{help}"
         );
     }
 

@@ -231,13 +231,13 @@ pub enum ScoringPath {
 /// 1. The bench evidence supports GPU at `BENCH_SCORING_BYTES=200000000`
 ///    being ≥ 3 % faster than CPU+PGO for the path, **and**
 /// 2. The CPU↔GPU parity tolerance from #81 holds for the kernel, **and**
-/// 3. The requested cost is one the GPU kernel actually implements
-///    ([`crate::cost::CostKind::gpu_supported`] — currently MSE only).
+/// 3. The requested cost is one the GPU kernels actually implement
+///    ([`crate::cost::CostKind::gpu_supported`] — MSE, RMSE and MAE).
 ///
 /// `false` for every path means "no GPU paths shipped as default" — i.e. the
 /// negative-result outcome from the Performance Task Workflow.
 pub fn auto_should_use_gpu(path: ScoringPath, cost: crate::cost::CostKind) -> bool {
-    // Issue #121: the GPU `forward_mse_batched` kernel only computes MSE.
+    // Issue #121/#316: the batched/scratch GPU kernels host MSE, RMSE and MAE.
     // Any other cost forces a silent CPU fallback under Auto.
     if !cost.gpu_supported() {
         return false;
@@ -334,7 +334,7 @@ pub fn auto_cost_fallback_note(
     match path {
         ScoringPath::CreatureDirectory => Some(format!(
             "[gpu] auto fallback to CPU directory mode: cost {} is not GPU-supported \
-             (forward_mse_batched only handles MSE); rerun with --gpu off to skip GPU detection",
+             (the batched/scratch kernels host MSE, RMSE and MAE); rerun with --gpu off to skip GPU detection",
             cost.as_str()
         )),
         // The single-creature path is always CPU regardless of cost, so there
@@ -557,6 +557,17 @@ mod tests {
     }
 
     #[test]
+    fn auto_should_use_gpu_directory_uses_gpu_for_mae() {
+        // Issue #316 — MAE is now hosted on the batched/scratch kernels
+        // (absolute per-record error), so `auto` must pick GPU on the directory
+        // path exactly like MSE/RMSE rather than forcing a CPU cost fallback.
+        assert!(auto_should_use_gpu(
+            ScoringPath::CreatureDirectory,
+            crate::cost::CostKind::Mae
+        ));
+    }
+
+    #[test]
     fn auto_should_use_gpu_directory_declines_scratch_topology() {
         use crate::multi_score::gpu_directory_topology_for_dir;
         use neat_core::creature::{compile_creature, parse_creature_json};
@@ -596,13 +607,12 @@ mod tests {
         assert!(note.contains("scratch-kernel"));
     }
 
-    /// Issue #121: Auto must keep the directory path on CPU when the
-    /// requested cost is not one the GPU kernel implements — today that
-    /// means every cost except MSE forces CPU fallback.
+    /// Issue #121/#316: Auto must keep the directory path on CPU when the
+    /// requested cost is not one the GPU kernels implement. MSE, RMSE and MAE
+    /// are hosted; every remaining cost forces the CPU fallback.
     #[test]
-    fn auto_should_use_gpu_directory_falls_back_to_cpu_for_non_mse_costs() {
+    fn auto_should_use_gpu_directory_falls_back_to_cpu_for_unsupported_costs() {
         for cost in [
-            crate::cost::CostKind::Mae,
             crate::cost::CostKind::Mape,
             crate::cost::CostKind::Msle,
             crate::cost::CostKind::Hinge,
@@ -611,7 +621,7 @@ mod tests {
         ] {
             assert!(
                 !auto_should_use_gpu(ScoringPath::CreatureDirectory, cost),
-                "Auto must fall back to CPU for non-MSE cost {} until a kernel ships",
+                "Auto must fall back to CPU for unsupported cost {} until a kernel ships",
                 cost.as_str()
             );
         }
@@ -623,7 +633,6 @@ mod tests {
     #[test]
     fn auto_cost_fallback_note_present_for_non_mse_directory() {
         for cost in [
-            crate::cost::CostKind::Mae,
             crate::cost::CostKind::Mape,
             crate::cost::CostKind::Msle,
             crate::cost::CostKind::Hinge,
@@ -672,16 +681,33 @@ mod tests {
         );
     }
 
+    /// Issue #316: MAE is GPU-supported, so — like MSE/RMSE — it must not emit
+    /// the "cost is not GPU-supported" CPU-fallback note. A regression that
+    /// dropped MAE back to CPU would surface here as an unexpected `Some(note)`.
+    #[test]
+    fn auto_cost_fallback_note_absent_for_mae_directory() {
+        assert_eq!(
+            auto_cost_fallback_note(
+                GpuMode::Auto,
+                ScoringPath::CreatureDirectory,
+                crate::cost::CostKind::Mae
+            ),
+            None
+        );
+    }
+
     /// Issue #205: explicit `--gpu on|off` are unaffected — no note even for a
     /// non-MSE cost (`on` hard-errors elsewhere; `off` never touches the GPU).
     #[test]
     fn auto_cost_fallback_note_absent_for_explicit_modes() {
+        // Use an unsupported cost (MAPE) so the guard under test is the explicit
+        // mode, not the now-GPU-supported MAE short-circuit (Issue #316).
         for mode in [GpuMode::On, GpuMode::Off] {
             assert_eq!(
                 auto_cost_fallback_note(
                     mode,
                     ScoringPath::CreatureDirectory,
-                    crate::cost::CostKind::Mae
+                    crate::cost::CostKind::Mape
                 ),
                 None,
                 "explicit mode {mode:?} must not emit the auto fallback note"
@@ -693,11 +719,13 @@ mod tests {
     /// so there is no cost-driven fallback to explain.
     #[test]
     fn auto_cost_fallback_note_absent_for_single_creature() {
+        // MAPE (unsupported) so the SingleCreature path guard is what returns
+        // None here, not the MAE gpu_supported short-circuit (Issue #316).
         assert_eq!(
             auto_cost_fallback_note(
                 GpuMode::Auto,
                 ScoringPath::SingleCreature,
-                crate::cost::CostKind::Mae
+                crate::cost::CostKind::Mape
             ),
             None
         );

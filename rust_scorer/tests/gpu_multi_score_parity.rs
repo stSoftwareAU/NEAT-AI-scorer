@@ -12,6 +12,7 @@ use std::sync::Arc;
 use neat_core::creature::{compile_creature, parse_creature_json};
 use neat_core::loss::mse_sum_batch_packed;
 
+use rust_scorer::cost::CostKind;
 use rust_scorer::gpu::forward_mse_batched::{BatchedRunner, KernelKind, MAX_NEURONS_PER_CREATURE};
 use rust_scorer::gpu::{GpuMode, resolve_backend, select_adapter};
 
@@ -112,7 +113,7 @@ fn run_parity(
         .collect();
 
     // GPU: build the runner and dispatch a single chunk.
-    let mut runner = BatchedRunner::new(ctx, &nets, num_inputs, num_outputs)
+    let mut runner = BatchedRunner::new(ctx, &nets, num_inputs, num_outputs, CostKind::Mse)
         .expect("supported squash types in synthetic fixture");
 
     // The runner must route to the kernel matching the creature size: the fast
@@ -201,7 +202,7 @@ fn run_parity_squash(hidden_squash: &str, num_creatures: usize, hidden: usize, n
         .map(|net| mse_sum_batch_packed(net, &records, num_inputs, num_outputs, true))
         .collect();
 
-    let mut runner = BatchedRunner::new(ctx, &nets, num_inputs, num_outputs)
+    let mut runner = BatchedRunner::new(ctx, &nets, num_inputs, num_outputs, CostKind::Mse)
         .unwrap_or_else(|e| panic!("squash {hidden_squash} must be GPU-supported: {e:?}"));
     let gpu_sums = runner
         .score_chunk(&records, n_records)
@@ -391,7 +392,7 @@ fn run_parity_json(label: &str, json: &str, num_creatures: usize, n_records: usi
         .map(|net| mse_sum_batch_packed(net, &records, num_inputs, num_outputs, true))
         .collect();
 
-    let mut runner = BatchedRunner::new(ctx, &nets, num_inputs, num_outputs)
+    let mut runner = BatchedRunner::new(ctx, &nets, num_inputs, num_outputs, CostKind::Mse)
         .unwrap_or_else(|e| panic!("{label} must be GPU-supported: {e:?}"));
     let gpu_sums = runner
         .score_chunk(&records, n_records)
