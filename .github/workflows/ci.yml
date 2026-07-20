@@ -269,6 +269,10 @@ jobs:
           repository: stSoftwareAU/NEAT-AI-core
           ref: Develop
           path: NEAT-AI-core
+          # shell-checks only reads the tree (lint/syntax/bats) and never pushes
+          # back, so the workflow GITHUB_TOKEN must not be written to .git/config
+          # where a later step could read it (Issue #379).
+          persist-credentials: false
 
       - name: Link NEAT-AI-core sibling path expected by Cargo
         run: |
