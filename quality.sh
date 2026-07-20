@@ -105,6 +105,9 @@ echo "⏱️  Validating per-job timeout-minutes across workflows (Issue #154)..
 echo "🔁 Validating concurrency groups on pile-up-prone workflows (Issue #156)..."
 ./scripts/check-workflow-concurrency.sh
 
+echo "🔒 Validating credential-free checkouts set persist-credentials: false (Issue #380)..."
+./scripts/check-persist-credentials.sh
+
 echo "📖 Validating README 'matches CI' block aligns with the CI quality job (Issue #212)..."
 ./scripts/check-readme-ci-alignment.sh
 

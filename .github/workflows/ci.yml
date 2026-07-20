@@ -329,6 +329,11 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd  # v5
+        with:
+          # Spell check only reads the tree — it never pushes back or fetches a
+          # private submodule — so the GITHUB_TOKEN must not be persisted into
+          # .git/config where a later step could read it (Issue #380).
+          persist-credentials: false
 
       # Configuration lives in `.codespellrc` at the repo root so CI and the
       # local preflight (`scripts/spell-check.sh`) stay in lock-step — see
