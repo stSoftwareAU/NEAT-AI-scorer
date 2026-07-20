@@ -156,8 +156,15 @@ EOF
   [[ "$output" == *"Usage"* ]]
 }
 
-@test "real repository ci.yml satisfies the persist-credentials rule" {
+@test "real repository default workflows satisfy the persist-credentials rule" {
   run "$SCRIPT_UNDER_TEST"
   [ "$status" -eq 0 ]
   [[ "$output" != *"FAIL"* ]]
+}
+
+@test "real repository dependency-review.yml hardens its single checkout (Issue #383)" {
+  DR_WF="${BATS_TEST_DIRNAME}/../../.github/workflows/dependency-review.yml"
+  run "$SCRIPT_UNDER_TEST" --workflow "$DR_WF"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"job 'dependency-review' single checkout sets persist-credentials: false"* ]]
 }
