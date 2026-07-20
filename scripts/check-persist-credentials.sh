@@ -22,10 +22,11 @@
 #
 # The script accepts zero or more `--workflow PATH` arguments so BATS tests can
 # exercise it against fixtures. With no argument it validates `ci.yml` — the
-# file this rule was introduced for (Issue #380). Sibling workflows carry their
-# own `BP-PERSIST-CREDS` audit findings; broadening this gate to every workflow
-# is deferred until those land, so an unfixed sibling cannot fail this check.
-# Point `--workflow` at any file to validate it directly.
+# file this rule was introduced for (Issue #380) — plus every sibling workflow
+# whose `BP-PERSIST-CREDS` audit finding has since been fixed and hardened
+# (`dependency-review.yml`, Issue #383). Sibling workflows are added to this
+# default set only once their checkout is hardened, so an unfixed sibling cannot
+# fail this check. Point `--workflow` at any file to validate it directly.
 set -euo pipefail
 
 usage() {
@@ -34,9 +35,10 @@ Usage: check-persist-credentials.sh [--workflow PATH]...
 
 Options:
   --workflow PATH   Path to a workflow YAML file to validate. May be repeated.
-                    With no --workflow argument, .github/workflows/ci.yml
-                    (relative to the repo root) is checked — see the header note
-                    on scope (Issue #380).
+                    With no --workflow argument, .github/workflows/ci.yml and
+                    .github/workflows/dependency-review.yml (relative to the repo
+                    root) are checked — see the header note on scope
+                    (Issues #380, #383).
   -h, --help        Show this message.
 
 Exits 0 when every credential-free single-checkout job sets
@@ -67,7 +69,10 @@ done
 
 if [[ ${#WORKFLOWS[@]} -eq 0 ]]; then
   SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  # Default set: ci.yml (Issue #380) plus sibling workflows whose checkout has
+  # since been hardened (Issue #383).
   WORKFLOWS+=("$SCRIPT_DIR/../.github/workflows/ci.yml")
+  WORKFLOWS+=("$SCRIPT_DIR/../.github/workflows/dependency-review.yml")
 fi
 
 if [[ ${#WORKFLOWS[@]} -eq 0 ]]; then
