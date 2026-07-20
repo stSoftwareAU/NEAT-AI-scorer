@@ -189,6 +189,11 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd  # v5
+        with:
+          # validation only reads the tree (required-file check + cargo metadata)
+          # and never pushes back, so the workflow GITHUB_TOKEN must not be
+          # written to .git/config where a later step could read it (Issue #381).
+          persist-credentials: false
 
       # NEAT-AI-core checkout path strategy — see note in the `quality` job
       # above. Summary: in-workspace clone + sibling symlink so Cargo resolves
@@ -199,6 +204,10 @@ jobs:
           repository: stSoftwareAU/NEAT-AI-core
           ref: Develop
           path: NEAT-AI-core
+          # This job only reads the neat-core tree (cargo metadata resolves the
+          # path dependency); it never pushes back, so the token must not persist
+          # on disk (Issue #381).
+          persist-credentials: false
 
       - name: Link NEAT-AI-core sibling path expected by Cargo
         run: |
