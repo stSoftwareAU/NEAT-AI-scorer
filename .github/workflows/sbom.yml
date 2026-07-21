@@ -45,6 +45,12 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd  # v5
+        with:
+          # Least-privilege token handling (Issue #385): this job only reads the
+          # checked-out code to build the SBOM — it never pushes back — so the
+          # workflow GITHUB_TOKEN must not be written to `.git/config`, where a
+          # later step could read it and act as the token.
+          persist-credentials: false
 
       # Path strategy for the NEAT-AI-core sibling (Issue #18): clone it INTO
       # the workspace, then symlink so Cargo resolves the
