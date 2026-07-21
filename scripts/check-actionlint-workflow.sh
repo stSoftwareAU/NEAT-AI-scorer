@@ -11,6 +11,9 @@
 #      download-actionlint.bash installer fetched from a version-pinned
 #      upstream ref — no third-party wrapper action).
 #   5. Invoke `actionlint` so the lint gate actually runs.
+#   6. Cover milestone/<slug> branches in the pull_request filter so the gate
+#      runs on milestone sub-issue PRs, not only top-level base branches
+#      (Issue #390). A bare "*" glob does not match refs containing a slash.
 #
 # The script takes a single optional `--workflow PATH` argument so BATS tests
 # can exercise it against fixtures. When called with no argument it validates
@@ -112,6 +115,17 @@ if grep -qE '^[[:space:]]+(- )?run:[[:space:]]*actionlint' "$WORKFLOW" \
   ok "actionlint invoked"
 else
   fail "actionlint is not invoked — no 'run: actionlint' step found"
+fi
+
+# 6. pull_request branch filter must include milestone branches so the gate
+#    runs on milestone/<slug> sub-issue PRs. A bare "*" glob only matches
+#    single-level refs, so milestone/<slug> would otherwise skip the gate and
+#    merge unchecked into the milestone branch (Issue #390). The token
+#    `milestone/*` also matches the wider `milestone/**` glob.
+if grep -qE 'milestone/\*' "$WORKFLOW"; then
+  ok "pull_request branch filter covers milestone/* branches"
+else
+  fail "pull_request branch filter omits milestone/* — milestone PRs skip the gate"
 fi
 
 exit "$EXIT_CODE"
