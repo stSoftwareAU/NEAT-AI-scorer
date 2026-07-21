@@ -124,4 +124,36 @@ else
   fail "SBOM is not uploaded — an actions/upload-artifact step is required"
 fi
 
+# 7. The self checkout (current repository — a checkout with no `repository:`
+#    input) must set `persist-credentials: false` (Issue #385). This job only
+#    reads the checked-out code to build the SBOM, so the workflow GITHUB_TOKEN
+#    must not be persisted to `.git/config` where a later step could read it.
+#    A cross-repo checkout (one with `repository:`, e.g. NEAT-AI-core) is
+#    exempt — it legitimately needs a credential to fetch a different repo.
+read -r self_seen self_ok < <(awk '
+  BEGIN { self_seen = 0; self_ok = 0 }
+  function flush() {
+    if (in_checkout && !has_repo) {
+      self_seen = 1
+      if (has_persist) self_ok = 1
+    }
+  }
+  /^[[:space:]]*-[[:space:]]/ {
+    flush()
+    in_checkout = 0; has_repo = 0; has_persist = 0
+  }
+  /uses:[[:space:]]*actions\/checkout@/ { in_checkout = 1 }
+  /^[[:space:]]*repository:/            { if (in_checkout) has_repo = 1 }
+  /persist-credentials:[[:space:]]*false/ { if (in_checkout) has_persist = 1 }
+  END { flush(); print self_seen "\t" self_ok }
+' "$WORKFLOW")
+
+if [[ "$self_seen" != "1" ]]; then
+  ok "no self checkout of the current repository to harden"
+elif [[ "$self_ok" == "1" ]]; then
+  ok "self checkout sets persist-credentials: false"
+else
+  fail "self checkout of the current repo must set 'persist-credentials: false' (Issue #385)"
+fi
+
 exit "$EXIT_CODE"
