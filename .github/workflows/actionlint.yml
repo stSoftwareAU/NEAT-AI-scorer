@@ -23,7 +23,9 @@ name: Actionlint
 
 on:
   pull_request:
-    branches: ["*"]
+    # "*" matches only single-level base branches, so milestone/<slug> sub-issue
+    # PRs would skip this gate; "milestone/**" restores coverage (Issue #390).
+    branches: ["*", "milestone/**"]
   push:
     branches: [main, master, Develop]
   workflow_dispatch:

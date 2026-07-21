@@ -26,7 +26,7 @@ name: Actionlint
 
 on:
   pull_request:
-    branches: ["*"]
+    branches: ["*", "milestone/**"]
   push:
     branches: [main, master, Develop]
 
@@ -62,7 +62,7 @@ EOF
   [ "$status" -eq 0 ]
   # Issue #360: prove every rule was individually evaluated and passed via the
   # machine-checkable "OK   " marker rather than pinning informational wording.
-  [ "$(grep -c '^OK   ' <<<"$output")" -eq 5 ]
+  [ "$(grep -c '^OK   ' <<<"$output")" -eq 6 ]
 }
 
 @test "fails when the workflow is not triggered on pull_request" {
@@ -72,7 +72,7 @@ import sys
 path = sys.argv[1]
 with open(path) as fh:
     text = fh.read()
-text = text.replace("  pull_request:\n    branches: [\"*\"]\n", "")
+text = text.replace("  pull_request:\n    branches: [\"*\", \"milestone/**\"]\n", "")
 with open(path, "w") as fh:
     fh.write(text)
 PY
@@ -137,6 +137,15 @@ PY
   run "$SCRIPT_UNDER_TEST" --workflow "$TMP_WF/actionlint.yml"
   [ "$status" -ne 0 ]
   [[ "$output" == *"not invoked"* ]]
+}
+
+@test "fails when the pull_request branch filter omits milestone branches" {
+  write_actionlint_workflow "$TMP_WF/actionlint.yml"
+  # Revert to the pre-fix bare "*" filter, which does not match milestone/<slug>.
+  sed -i.bak 's|branches: \["\*", "milestone/\*\*"\]|branches: ["*"]|' "$TMP_WF/actionlint.yml"
+  run "$SCRIPT_UNDER_TEST" --workflow "$TMP_WF/actionlint.yml"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"milestone"* ]]
 }
 
 @test "reports an error when the workflow file does not exist" {
