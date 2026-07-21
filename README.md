@@ -919,8 +919,9 @@ validated by `scripts/check-dependency-review-workflow.sh` (invoked from
 
 A standalone Actionlint workflow (`.github/workflows/actionlint.yml`,
 Issue #195) runs [actionlint](https://github.com/rhysd/actionlint) — the
-standard GitHub Actions linter — on every pull request and on pushes to the
-default branches. actionlint catches workflow regressions that a plain YAML
+standard GitHub Actions linter — on every pull request (including PRs targeting
+`milestone/**` sub-issue branches, Issue #390) and on pushes to the default
+branches. actionlint catches workflow regressions that a plain YAML
 parse misses: invalid `runs-on` labels, broken `${{ }}` expressions, unknown
 `uses:` inputs, and shellcheck findings inside `run:` scripts. The binary is
 downloaded from a version-pinned upstream release by the official
