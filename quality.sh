@@ -99,6 +99,9 @@ echo "🔢 Validating workflow action versions for Node 24 compat (Issue #24)...
 echo "🔑 Validating CI least-privilege token scope (Issue #155)..."
 ./scripts/check-ci-permissions.sh
 
+echo "🔐 Validating security.yml checkouts disable credential persistence (Issue #388)..."
+./scripts/check-persist-credentials.sh
+
 echo "⏱️  Validating per-job timeout-minutes across workflows (Issue #154)..."
 ./scripts/check-workflow-timeouts.sh
 
