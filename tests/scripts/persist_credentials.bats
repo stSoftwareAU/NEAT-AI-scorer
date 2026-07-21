@@ -168,3 +168,10 @@ EOF
   [ "$status" -eq 0 ]
   [[ "$output" == *"job 'dependency-review' single checkout sets persist-credentials: false"* ]]
 }
+
+@test "real repository markdown-lint.yml hardens its single checkout (Issue #384)" {
+  ML_WF="${BATS_TEST_DIRNAME}/../../.github/workflows/markdown-lint.yml"
+  run "$SCRIPT_UNDER_TEST" --workflow "$ML_WF"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"job 'markdownlint' single checkout sets persist-credentials: false"* ]]
+}

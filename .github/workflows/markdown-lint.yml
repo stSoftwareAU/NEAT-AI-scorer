@@ -42,6 +42,12 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd  # v5
+        with:
+          # This job only reads the tree to lint markdown and never pushes back
+          # or fetches a private submodule, so the workflow GITHUB_TOKEN must not
+          # be written to .git/config where a later step could read it
+          # (Issue #384).
+          persist-credentials: false
 
       - name: Setup Node.js
         uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e  # v6

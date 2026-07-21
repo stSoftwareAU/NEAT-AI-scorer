@@ -24,7 +24,8 @@
 # exercise it against fixtures. With no argument it validates `ci.yml` — the
 # file this rule was introduced for (Issue #380) — plus every sibling workflow
 # whose `BP-PERSIST-CREDS` audit finding has since been fixed and hardened
-# (`dependency-review.yml`, Issue #383). Sibling workflows are added to this
+# (`dependency-review.yml`, Issue #383; `markdown-lint.yml`, Issue #384).
+# Sibling workflows are added to this
 # default set only once their checkout is hardened, so an unfixed sibling cannot
 # fail this check. Point `--workflow` at any file to validate it directly.
 set -euo pipefail
@@ -35,10 +36,11 @@ Usage: check-persist-credentials.sh [--workflow PATH]...
 
 Options:
   --workflow PATH   Path to a workflow YAML file to validate. May be repeated.
-                    With no --workflow argument, .github/workflows/ci.yml and
-                    .github/workflows/dependency-review.yml (relative to the repo
+                    With no --workflow argument, .github/workflows/ci.yml,
+                    .github/workflows/dependency-review.yml and
+                    .github/workflows/markdown-lint.yml (relative to the repo
                     root) are checked — see the header note on scope
-                    (Issues #380, #383).
+                    (Issues #380, #383, #384).
   -h, --help        Show this message.
 
 Exits 0 when every credential-free single-checkout job sets
@@ -70,9 +72,11 @@ done
 if [[ ${#WORKFLOWS[@]} -eq 0 ]]; then
   SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
   # Default set: ci.yml (Issue #380) plus sibling workflows whose checkout has
-  # since been hardened (Issue #383).
+  # since been hardened (dependency-review.yml — Issue #383;
+  # markdown-lint.yml — Issue #384).
   WORKFLOWS+=("$SCRIPT_DIR/../.github/workflows/ci.yml")
   WORKFLOWS+=("$SCRIPT_DIR/../.github/workflows/dependency-review.yml")
+  WORKFLOWS+=("$SCRIPT_DIR/../.github/workflows/markdown-lint.yml")
 fi
 
 if [[ ${#WORKFLOWS[@]} -eq 0 ]]; then
