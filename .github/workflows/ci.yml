@@ -25,12 +25,13 @@
 name: CI
 
 on:
-  push:
-    branches:
-      - Develop
-    paths-ignore:
-      - "**.md"
-      - "docs/**"
+  # No `push:` trigger (Issue #370). CI is a checker — the heavy test/lint/scan
+  # gate — so it should gate the pull request, not re-run post-merge. A
+  # push-to-`Develop` trigger duplicated the run that already gated the PR,
+  # wasting CI minutes and risking a red tick on the default branch for a check
+  # that already passed. Deploy/publish/release workflows differ (they must keep
+  # firing on push); this checker fires on `pull_request` and `workflow_dispatch`
+  # only. `scripts/check-ci-push-trigger.sh` guards against re-adding it.
   pull_request:
     types: [opened, synchronize, reopened]
     branches:

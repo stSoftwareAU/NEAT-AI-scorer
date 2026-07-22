@@ -96,6 +96,9 @@ echo "🪄 Validating auto-format PR workflow (Issue #19)..."
 echo "🧭 Validating CI job dependency graph (Issue #23)..."
 ./scripts/check-ci-job-graph.sh
 
+echo "🚫 Validating CI checker does not re-trigger on push to Develop (Issue #370)..."
+./scripts/check-ci-push-trigger.sh
+
 echo "🎯 Validating CI gates milestone PRs (Issue #393)..."
 ./scripts/check-milestone-branch-filter.sh
 
