@@ -17,7 +17,8 @@
 #
 # The script takes an optional `--workflow PATH` argument so BATS tests can
 # exercise it against fixtures. With no argument it validates every guarded
-# workflow (`security.yml`, `semgrep.yml`) relative to the repo root.
+# workflow (`security.yml`, `semgrep.yml`, `cargo-quality.yml`) relative to the
+# repo root.
 set -euo pipefail
 
 usage() {
@@ -27,7 +28,8 @@ Usage: check-persist-credentials.sh [--workflow PATH]
 Options:
   --workflow PATH   Path to a single workflow YAML file to validate. When
                     omitted, every guarded workflow under
-                    .github/workflows/ (security.yml, semgrep.yml) is checked.
+                    .github/workflows/ (security.yml, semgrep.yml,
+                    cargo-quality.yml) is checked.
   -h, --help        Show this message.
 
 Exits 0 when every actions/checkout step disables credential persistence (or
@@ -70,6 +72,7 @@ else
   WORKFLOWS=(
     "$SCRIPT_DIR/../.github/workflows/security.yml"
     "$SCRIPT_DIR/../.github/workflows/semgrep.yml"
+    "$SCRIPT_DIR/../.github/workflows/cargo-quality.yml"
   )
 fi
 
