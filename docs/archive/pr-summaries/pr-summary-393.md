@@ -38,14 +38,14 @@ flowchart LR
 
 Validator against the fixed workflow:
 
-```
+```text
 $ ./scripts/check-milestone-branch-filter.sh
 OK   .github/workflows/ci.yml: pull_request.branches includes 'milestone/*' — milestone PRs are gated
 ```
 
 New bats suite (all pass):
 
-```
+```text
 1..7
 ok 1 passes when pull_request.branches includes milestone/*
 ok 2 fails when the milestone/* glob is absent

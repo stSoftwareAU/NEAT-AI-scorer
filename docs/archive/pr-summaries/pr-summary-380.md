@@ -42,7 +42,7 @@ and the BATS suite.
 
 Validator against the real `ci.yml` (after the fix):
 
-```
+```text
 OK   ci.yml: job 'quality' runs 2 checkouts (fetches an additional repository) — exempt
 OK   ci.yml: job 'validation' runs 2 checkouts (fetches an additional repository) — exempt
 OK   ci.yml: job 'shell-checks' runs 2 checkouts (fetches an additional repository) — exempt

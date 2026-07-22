@@ -34,7 +34,7 @@ least-privilege validator and its test suite.
 
 `scripts/check-ci-permissions.sh` against the real `ci.yml`:
 
-```
+```text
 OK   …/ci.yml: security job grants checks: write
 OK   …/ci.yml: security job grants pull-requests: write
 OK   …/ci.yml: security job grants contents: read

@@ -27,14 +27,14 @@ workflow validator and its BATS suite.
 
 Validator against the real workflow (7/7 rules pass, including the new one):
 
-```
+```text
 OK   .../cargo-audit.yml: pull_request branch filter covers milestone/* branches
 ```
 
 BATS suite (`tests/scripts/cargo_audit_workflow.bats`) — all 12 tests pass,
 including the new milestone regression test:
 
-```
+```text
 ok 1 passes on the canonical fixture
 ok 9 fails when the pull_request branch filter omits milestone branches
 ...
