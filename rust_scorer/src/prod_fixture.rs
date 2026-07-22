@@ -67,8 +67,6 @@ pub const MAX_SYNAPSES: usize = 120_000;
 
 // --- Production corpus sizing (from GRQ-cluster performance.csv) --------------
 
-/// Total production training-corpus size in bytes (`training_data_size_bytes`).
-pub const PRODUCTION_CORPUS_BYTES: u64 = 20_845_703_976;
 /// Number of production training-data files (`training_data_files`).
 pub const PRODUCTION_CORPUS_FILES: usize = 520;
 /// Default corpus size the production bench builds when `BENCH_PROD_BYTES` is
