@@ -35,6 +35,10 @@ on:
     types: [opened, synchronize, reopened]
     branches:
       - Develop
+      # Milestone sub-issue PRs target a shared `milestone/<slug>` branch
+      # (planning delivery workflow). Gate them here so each intermediate PR is
+      # checked, not just the single rollup PR into Develop (Issue #393).
+      - milestone/*
   workflow_dispatch:
 
 # Least-privilege default token scope (Issue #155). Without this block every

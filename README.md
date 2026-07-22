@@ -913,10 +913,15 @@ Issue #66) runs `cargo fmt --check` and `cargo clippy -- -D warnings` on
 pull requests against **any** branch (`branches: ["**"]`). `**` is used
 rather than `*` because GitHub's `*` glob does not match across `/`, so a
 `["*"]` filter would silently skip `milestone/<slug>` sub-issue PRs
-(Issue #392); `**` also matches nested branch names. `ci.yml` only fires for PRs
-targeting `Develop`, so this dedicated workflow gives feature branches and
-stacked PRs the same fmt + clippy gate without spinning up the full CI
-graph. The workflow is validated by
+(Issue #392); `**` also matches nested branch names. `ci.yml` fires for PRs
+targeting `Develop` and `milestone/*` (Issue #393) — milestone branch names are
+`milestone/<slug>` with no nested slashes, so the single-level `milestone/*`
+glob gates every sub-issue PR rather than only the rollup PR into `Develop`.
+This dedicated workflow still gives other feature branches and stacked PRs the
+same fmt + clippy gate without spinning up the full CI graph. The milestone
+filter on `ci.yml` is validated by
+`scripts/check-milestone-branch-filter.sh` (invoked from `quality.sh`) and
+covered end-to-end by `tests/scripts/milestone_branch_filter.bats`. The workflow is validated by
 `scripts/check-cargo-quality-workflow.sh` (invoked from `quality.sh`) and
 covered end-to-end by `tests/scripts/cargo_quality_workflow.bats`.
 
