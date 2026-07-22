@@ -148,7 +148,21 @@ EOF
 }
 
 @test "real repository security.yml disables credential persistence everywhere" {
+  run "$SCRIPT_UNDER_TEST" --workflow "${BATS_TEST_DIRNAME}/../../.github/workflows/security.yml"
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"FAIL"* ]]
+}
+
+@test "real repository semgrep.yml disables credential persistence (Issue #389)" {
+  run "$SCRIPT_UNDER_TEST" --workflow "${BATS_TEST_DIRNAME}/../../.github/workflows/semgrep.yml"
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"FAIL"* ]]
+}
+
+@test "default run validates every guarded workflow (security.yml and semgrep.yml)" {
   run "$SCRIPT_UNDER_TEST"
   [ "$status" -eq 0 ]
   [[ "$output" != *"FAIL"* ]]
+  [[ "$output" == *"security.yml"* ]]
+  [[ "$output" == *"semgrep.yml"* ]]
 }
