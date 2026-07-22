@@ -159,10 +159,17 @@ EOF
   [[ "$output" != *"FAIL"* ]]
 }
 
-@test "default run validates every guarded workflow (security.yml and semgrep.yml)" {
+@test "real repository cargo-quality.yml disables credential persistence (Issue #374)" {
+  run "$SCRIPT_UNDER_TEST" --workflow "${BATS_TEST_DIRNAME}/../../.github/workflows/cargo-quality.yml"
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"FAIL"* ]]
+}
+
+@test "default run validates every guarded workflow (security.yml, semgrep.yml and cargo-quality.yml)" {
   run "$SCRIPT_UNDER_TEST"
   [ "$status" -eq 0 ]
   [[ "$output" != *"FAIL"* ]]
   [[ "$output" == *"security.yml"* ]]
   [[ "$output" == *"semgrep.yml"* ]]
+  [[ "$output" == *"cargo-quality.yml"* ]]
 }
