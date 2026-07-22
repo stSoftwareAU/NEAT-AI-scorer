@@ -54,7 +54,7 @@ flowchart LR
 
 Validator against the real workflow — rule 7 now reported:
 
-```
+```text
 OK   .../actionlint.yml: does not re-trigger on push to the default branch Develop
 ```
 
