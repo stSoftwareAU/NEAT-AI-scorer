@@ -918,8 +918,12 @@ targeting `Develop` and `milestone/*` (Issue #393) — milestone branch names ar
 `milestone/<slug>` with no nested slashes, so the single-level `milestone/*`
 glob gates every sub-issue PR rather than only the rollup PR into `Develop`.
 This dedicated workflow still gives other feature branches and stacked PRs the
-same fmt + clippy gate without spinning up the full CI graph. The milestone
-filter on `ci.yml` is validated by
+same fmt + clippy gate without spinning up the full CI graph. The Gitleaks
+secret-scanning workflow (`.github/workflows/gitleaks.yml`) carries the same
+`milestone/*` glob (Issue #394) — its previous `["*"]` filter matched only
+top-level branches (GitHub's `*` glob does not span `/`), so milestone
+sub-issue PRs merged into the milestone branch unscanned. The milestone
+filter on both `ci.yml` and `gitleaks.yml` is validated by
 `scripts/check-milestone-branch-filter.sh` (invoked from `quality.sh`) and
 covered end-to-end by `tests/scripts/milestone_branch_filter.bats`. The workflow is validated by
 `scripts/check-cargo-quality-workflow.sh` (invoked from `quality.sh`) and
