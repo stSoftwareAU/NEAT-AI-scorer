@@ -19,6 +19,11 @@ teardown() {
 
 # Canonical hardened workflow. Failure tests mutate this fixture to drop or
 # break one rule at a time.
+#
+# Issue #371: a lint/checker workflow must gate the PR only — it must NOT
+# trigger on push to the default branch `Develop`. The canonical fixture
+# therefore carries no `push:` trigger (this reverses the Issue #207 policy
+# that previously required push→Develop).
 write_markdown_lint_workflow() {
   local file="$1"
   cat >"$file" <<'EOF'
@@ -27,8 +32,6 @@ name: Markdown Lint
 on:
   pull_request:
     branches: ["*"]
-  push:
-    branches: [main, master, Develop]
 
 permissions:
   contents: read
@@ -57,13 +60,69 @@ EOF
   [ "$(grep -c '^OK   ' <<<"$output")" -eq 7 ]
 }
 
-@test "fails when the push trigger omits Develop (Issue #207)" {
+# Business-logic change (Issue #371 reverses Issue #207): a lint/checker
+# workflow must gate the PR only, so a `push:` trigger reaching the default
+# branch `Develop` is now a failure rather than a requirement.
+@test "fails when the push trigger targets the default branch Develop (Issue #371)" {
   write_markdown_lint_workflow "$TMP_WF/markdown-lint.yml"
-  sed -i.bak 's|branches: \[main, master, Develop\]|branches: [main, master]|' \
-    "$TMP_WF/markdown-lint.yml"
+  # Re-introduce a push→Develop trigger to prove the checker rejects it.
+  python3 - "$TMP_WF/markdown-lint.yml" <<'PY'
+import sys
+path = sys.argv[1]
+with open(path) as fh:
+    text = fh.read()
+text = text.replace(
+    "on:\n  pull_request:\n    branches: [\"*\"]\n",
+    "on:\n  pull_request:\n    branches: [\"*\"]\n  push:\n    branches: [main, master, Develop]\n",
+)
+with open(path, "w") as fh:
+    fh.write(text)
+PY
   run "$SCRIPT_UNDER_TEST" --workflow "$TMP_WF/markdown-lint.yml"
   [ "$status" -ne 0 ]
-  [[ "$output" == *"push trigger does not target Develop"* ]]
+  [[ "$output" == *"push trigger targets the default branch (Develop)"* ]]
+}
+
+# A push trigger that excludes the default branch is acceptable — the workflow
+# may still lint pushes to non-default branches without duplicating the PR gate.
+@test "passes when a push trigger excludes the default branch Develop (Issue #371)" {
+  write_markdown_lint_workflow "$TMP_WF/markdown-lint.yml"
+  python3 - "$TMP_WF/markdown-lint.yml" <<'PY'
+import sys
+path = sys.argv[1]
+with open(path) as fh:
+    text = fh.read()
+text = text.replace(
+    "on:\n  pull_request:\n    branches: [\"*\"]\n",
+    "on:\n  pull_request:\n    branches: [\"*\"]\n  push:\n    branches: [main, master]\n",
+)
+with open(path, "w") as fh:
+    fh.write(text)
+PY
+  run "$SCRIPT_UNDER_TEST" --workflow "$TMP_WF/markdown-lint.yml"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"push trigger excludes the default branch (Develop)"* ]]
+}
+
+# An unfiltered push trigger (no branches list) reaches every branch, including
+# the default — the checker must reject it.
+@test "fails when the push trigger has no branches filter (Issue #371)" {
+  write_markdown_lint_workflow "$TMP_WF/markdown-lint.yml"
+  python3 - "$TMP_WF/markdown-lint.yml" <<'PY'
+import sys
+path = sys.argv[1]
+with open(path) as fh:
+    text = fh.read()
+text = text.replace(
+    "on:\n  pull_request:\n    branches: [\"*\"]\n",
+    "on:\n  pull_request:\n    branches: [\"*\"]\n  push:\n",
+)
+with open(path, "w") as fh:
+    fh.write(text)
+PY
+  run "$SCRIPT_UNDER_TEST" --workflow "$TMP_WF/markdown-lint.yml"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"unfiltered branches list"* ]]
 }
 
 @test "fails when the workflow is not triggered on pull_request" {

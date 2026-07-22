@@ -118,10 +118,17 @@ else
   fail "markdownlint-cli2 is not invoked — no 'run: markdownlint-cli2' step found"
 fi
 
-# 6. push trigger targets the default branch (Develop). Issue #207 — the repo
-#    default is `Develop`, so a push trigger limited to main/master never fires.
-#    Capture the first `branches:` line inside the `push:` block and require it
-#    to list `Develop`.
+# 6. A lint/checker workflow must gate the PR only — it must NOT trigger on
+#    push to the default branch `Develop` (Issue #371, reversing Issue #207).
+#    Once this check is a required status, a post-merge push run only duplicates
+#    the run that already gated the PR: it wastes CI minutes and can leave a red
+#    tick on the default branch for a check that already passed. The PR gate
+#    (rule 1) is the sole gate a checker needs.
+#      * No `push:` trigger              -> pass (PR-gated only).
+#      * `push:` whose branches exclude   -> pass (non-default pushes are fine).
+#        the default branch `Develop`
+#      * `push:` reaching `Develop`, or   -> fail.
+#        an unfiltered `push:`
 if grep -qE '^[[:space:]]+push:' "$WORKFLOW"; then
   push_branches="$(awk '
     /^[[:space:]]+push:[[:space:]]*$/ { in_push = 1; next }
@@ -129,12 +136,14 @@ if grep -qE '^[[:space:]]+push:' "$WORKFLOW"; then
     in_push && /^[^[:space:]#]/ { exit }
   ' "$WORKFLOW")"
   if [[ -z "$push_branches" ]]; then
-    fail "push trigger has no branches list — cannot confirm Develop is covered"
+    fail "push trigger has an unfiltered branches list — a lint/checker workflow must not push to the default branch (Develop); remove push or exclude Develop (Issue #371)"
   elif echo "$push_branches" | grep -q 'Develop'; then
-    ok "push trigger targets the default branch (Develop)"
+    fail "push trigger targets the default branch (Develop) — a lint/checker workflow should gate the PR only (Issue #371)"
   else
-    fail "push trigger does not target Develop — pushes to the default branch are not linted"
+    ok "push trigger excludes the default branch (Develop)"
   fi
+else
+  ok "no push trigger — the lint workflow gates the PR only (Issue #371)"
 fi
 
 exit "$EXIT_CODE"
