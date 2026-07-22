@@ -18,16 +18,14 @@ name: Markdown Lint
 #   * actions/setup-node — SHA-pinned to v6 (Node 24).
 
 on:
+  # Issue #371: this is a lint/checker workflow, so it gates the pull request
+  # only. It deliberately has no `push:` trigger — a post-merge push run to the
+  # default branch (`Develop`) would just duplicate the run that already gated
+  # the PR, wasting CI minutes and risking a red tick on the default branch for
+  # a check that already passed. (This reverses the Issue #207 push→Develop
+  # policy; deploy/publish workflows still fire on push, a checker does not.)
   pull_request:
-    # `"*"` matches only slash-free branch names, so milestone sub-issue PRs
-    # targeting `milestone/<slug>` slip through unlinted. Add `milestone/*` so
-    # every intermediate milestone PR is gated too (Issue #395).
-    branches: ["*", "milestone/*"]
-  push:
-    # Default branch is `Develop`; include legacy names for symmetry with
-    # actionlint.yml so markdown lint also runs on pushes to the real default
-    # branch (Issue #207).
-    branches: [main, master, Develop]
+    branches: ["*"]
 
 permissions:
   contents: read

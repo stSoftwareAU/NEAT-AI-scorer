@@ -997,9 +997,11 @@ covered end-to-end by `tests/scripts/semgrep_workflow.bats`.
 A standalone Markdown Lint workflow
 (`.github/workflows/markdown-lint.yml`, Issue #63) runs
 `markdownlint-cli2` against the existing `.markdownlint-cli2.yaml`
-config on every pull request and on pushes to `main`/`master`. The
-workflow keeps README/docs style regressions out of merged commits
-without depending on the full CI graph. It is validated by
+config on every pull request. As a lint/checker it gates the PR only
+and deliberately carries no `push:` trigger (Issue #371) — a post-merge
+push run to the default branch (`Develop`) would just duplicate the run
+that already gated the PR. The workflow keeps README/docs style
+regressions out of merged commits without depending on the full CI graph. It is validated by
 `scripts/check-markdown-lint-workflow.sh` (invoked from `quality.sh`)
 and covered end-to-end by `tests/scripts/markdown_lint_workflow.bats`.
 
