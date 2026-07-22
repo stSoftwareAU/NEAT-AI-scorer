@@ -68,6 +68,18 @@ section to the released version with its date.
 
 ### Changed
 
+- **Drop the push-to-`Develop` trigger from the CI checker workflow (Issue
+  #370).** `ci.yml` runs the heavy test/lint/scan gate; as a *checker* it should
+  gate the pull request, not re-run post-merge. The `push:` trigger targeting the
+  default branch `Develop` duplicated the run that already gated the PR — wasting
+  CI minutes and risking a red tick on `Develop` for a check that already passed.
+  The workflow now fires on `pull_request` and `workflow_dispatch` only.
+  Deploy/publish/release workflows are unaffected (they must keep firing on
+  push). A new guard (`scripts/check-ci-push-trigger.sh`, wired into
+  `quality.sh`, with BATS coverage in `tests/scripts/ci_push_trigger.bats`)
+  rejects any re-added push-to-`Develop` trigger while leaving the legitimate
+  `pull_request` filter on `Develop` untouched.
+
 - **Extract the NEAT-AI-core checkout + symlink block into a local composite
   action (Issue #401).** The "checkout `stSoftwareAU/NEAT-AI-core` + symlink the
   sibling path Cargo expects" pair was copy-pasted across seven call sites in
