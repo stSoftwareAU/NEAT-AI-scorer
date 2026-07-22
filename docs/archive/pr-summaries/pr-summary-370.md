@@ -45,7 +45,7 @@ passes after).
 
 Validator against the fixed workflow:
 
-```
+```text
 OK   .github/workflows/ci.yml: no push trigger — the checker gates the PR, not push to Develop
 ```
 
