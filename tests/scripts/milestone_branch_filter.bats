@@ -114,3 +114,10 @@ EOF
   [ "$status" -eq 0 ]
   [[ "$output" != *"FAIL"* ]]
 }
+
+# Issue #394 — the Gitleaks CI quality workflow must also gate milestone PRs.
+@test "the repository Gitleaks workflow gates milestone PRs" {
+  run "$SCRIPT_UNDER_TEST" --workflow "${BATS_TEST_DIRNAME}/../../.github/workflows/gitleaks.yml"
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"FAIL"* ]]
+}

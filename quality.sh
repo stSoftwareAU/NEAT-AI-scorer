@@ -96,6 +96,9 @@ echo "🧭 Validating CI job dependency graph (Issue #23)..."
 echo "🎯 Validating CI gates milestone PRs (Issue #393)..."
 ./scripts/check-milestone-branch-filter.sh
 
+echo "🎯 Validating Gitleaks gates milestone PRs (Issue #394)..."
+./scripts/check-milestone-branch-filter.sh --workflow .github/workflows/gitleaks.yml
+
 echo "🔢 Validating workflow action versions for Node 24 compat (Issue #24)..."
 ./scripts/check-workflow-action-versions.sh
 
