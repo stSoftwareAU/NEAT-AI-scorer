@@ -188,7 +188,12 @@ jobs:
     uses: ./.github/workflows/security.yml
     if: github.event_name == 'pull_request'
     with:
-      include-dependency-review: true
+      # Opt out of the reusable workflow's dependency-review step (Issue #399).
+      # The standalone `dependency-review.yml` runs the same action on every PR
+      # — including PRs into `Develop` and `milestone/**` — so enabling it here
+      # too only produced a duplicate verdict on the dominant path. The
+      # standalone workflow is now the single dependency-review gate.
+      include-dependency-review: false
 
   validation:
     name: Project Validation

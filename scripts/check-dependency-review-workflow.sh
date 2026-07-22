@@ -15,11 +15,13 @@
 #      major (the version policy in
 #      `scripts/check-workflow-action-versions.sh` tracks the current
 #      Node 20 exception at @v4).
-#   5. Gate milestone PRs (Issue #402). A single-level `*` glob does not match
-#      `/`, so a bare `pull_request.branches: ["*"]` filter skips
-#      `milestone/<slug>` sub-issue PRs. The workflow must either omit the
-#      branches filter entirely (every PR target runs) or include a
-#      `milestone/*` glob.
+#   5. Cover milestone/<slug> branches in the pull_request filter. Since
+#      Issue #399 this standalone workflow is the *sole* dependency-review gate
+#      (the reusable `security.yml` no longer runs the action), so a bare "*"
+#      glob — which does not match refs containing a slash — would leave
+#      milestone sub-issue PRs with no dependency-review coverage at all. The
+#      `milestone/*` token also matches the wider `milestone/**` glob
+#      (Issue #391).
 #
 # The script takes a single optional `--workflow PATH` argument so BATS tests
 # can exercise it against fixtures. When called with no argument it validates
@@ -119,17 +121,13 @@ else
   fail "actions/dependency-review-action is not pinned — branch refs disallowed"
 fi
 
-# 5. Milestone PRs are gated (Issue #402). A single-level `*` glob does not
-# match `/`, so `branches: ["*"]` alone skips `milestone/<slug>` PRs. Pass
-# when there is no pull_request branches filter (every PR target runs) or the
-# filter includes a `milestone/*` glob.
-branches_line="$(grep -nE '^[[:space:]]+branches:' "$WORKFLOW" || true)"
-if [[ -z "$branches_line" ]]; then
-  ok "no pull_request branches filter — every PR target gated (milestone PRs included)"
-elif echo "$branches_line" | grep -q 'milestone/\*'; then
-  ok "pull_request branches filter includes milestone/* — milestone PRs are gated"
+# 5. pull_request branch filter must include milestone branches. As the sole
+#    dependency-review gate (Issue #399), a bare "*" glob would silently skip
+#    milestone/<slug> sub-issue PRs (GitHub's "*" does not span "/").
+if grep -qE 'milestone/\*' "$WORKFLOW"; then
+  ok "pull_request branch filter covers milestone/* branches"
 else
-  fail "pull_request branches filter omits 'milestone/*' — milestone/<slug> PRs are skipped (single-level '*' does not match '/')"
+  fail "pull_request branch filter omits milestone/* — milestone PRs skip the dependency-review gate (Issue #399)"
 fi
 
 exit "$EXIT_CODE"

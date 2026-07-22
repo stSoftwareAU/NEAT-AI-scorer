@@ -105,14 +105,41 @@ EOF
 }
 
 @test "validates a directory of canonical workflows" {
+  # Issue #399: security.yml no longer installs cargo-audit standalone, so it
+  # is not a canonical pair. The three remaining pairs are cargo-audit.yml,
+  # sbom.yml and ci.yml.
   mkdir -p "$TMP_WF/wf"
   write_prebuilt_workflow "$TMP_WF/wf/cargo-audit.yml" "cargo-audit"
-  write_prebuilt_workflow "$TMP_WF/wf/security.yml" "cargo-audit"
   write_prebuilt_workflow "$TMP_WF/wf/sbom.yml" "cargo-cyclonedx"
   write_prebuilt_workflow "$TMP_WF/wf/ci.yml" "cargo-deny"
   run "$SCRIPT_UNDER_TEST" --workflows "$TMP_WF/wf"
   [ "$status" -eq 0 ]
   [[ "$output" != *"FAIL"* ]]
+}
+
+@test "security.yml is not a canonical cargo-audit pair (Issue #399)" {
+  # A directory containing only the three canonical workflows must pass even
+  # when security.yml has no prebuilt cargo-audit install — the validator must
+  # not require one there. A security.yml that only runs rustsec/audit-check
+  # (no taiki-e install) is present but deliberately not checked.
+  mkdir -p "$TMP_WF/wf"
+  write_prebuilt_workflow "$TMP_WF/wf/cargo-audit.yml" "cargo-audit"
+  write_prebuilt_workflow "$TMP_WF/wf/sbom.yml" "cargo-cyclonedx"
+  write_prebuilt_workflow "$TMP_WF/wf/ci.yml" "cargo-deny"
+  cat >"$TMP_WF/wf/security.yml" <<'EOF'
+name: Security Reusable Workflow
+on: [workflow_call]
+jobs:
+  security:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd  # v5
+      - uses: rustsec/audit-check@858dc40f52ca2b8570b7a997c1c4e35c6fc9a432  # v2
+EOF
+  run "$SCRIPT_UNDER_TEST" --workflows "$TMP_WF/wf"
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"FAIL"* ]]
+  [[ "$output" != *"security.yml"* ]]
 }
 
 @test "real repository workflows install tools from prebuilt binaries" {
