@@ -770,6 +770,30 @@ lives in the called workflow's own job (`security.yml`).
 The rule is validated by `scripts/check-workflow-timeouts.sh` (wired into
 `quality.sh`) and covered end-to-end by `tests/scripts/workflow_timeouts.bats`.
 
+### Checkout credential persistence (Issue #388)
+
+Every `actions/checkout` step in the reusable `security.yml` sets
+`persist-credentials: false`. By default checkout writes the workflow's
+`GITHUB_TOKEN` into `.git/config` as an auth header, where any later step in the
+same job — including a compromised dependency or an injected script — can read
+it and act as the token. The `security` job only reads the checked-out code and
+runs `cargo audit` / dependency-review; it never pushes back and never fetches a
+private submodule, so keeping the credential on disk is pure blast radius.
+
+```mermaid
+flowchart LR
+    A[checkout default] -->|token written to .git/config| B[later step reads it]
+    B --> C[acts as GITHUB_TOKEN]
+    D[persist-credentials: false] -->|token off disk| E[later step has nothing to steal]
+```
+
+If a checkout genuinely needs the persisted credential (e.g. it later pushes
+back or fetches a private submodule), document the exception with an inline
+`# best-practice-ignore: BP-PERSIST-CREDS — <reason>` comment above the `uses:`
+line. The rule is validated by `scripts/check-persist-credentials.sh` (wired
+into `quality.sh`) and covered end-to-end by
+`tests/scripts/persist_credentials.bats`.
+
 ### Pre-quality dependency bump (`bump-deps.sh`)
 
 `bump-deps.sh` lives at the repo root and is invoked by the Vibe Coder
