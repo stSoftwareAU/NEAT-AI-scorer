@@ -19,7 +19,10 @@ name: Markdown Lint
 
 on:
   pull_request:
-    branches: ["*"]
+    # `"*"` matches only slash-free branch names, so milestone sub-issue PRs
+    # targeting `milestone/<slug>` slip through unlinted. Add `milestone/*` so
+    # every intermediate milestone PR is gated too (Issue #395).
+    branches: ["*", "milestone/*"]
   push:
     # Default branch is `Develop`; include legacy names for symmetry with
     # actionlint.yml so markdown lint also runs on pushes to the real default

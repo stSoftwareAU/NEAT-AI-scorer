@@ -121,3 +121,13 @@ EOF
   [ "$status" -eq 0 ]
   [[ "$output" != *"FAIL"* ]]
 }
+
+# Issue #395 — the Markdown Lint CI quality workflow must also gate milestone
+# PRs. A bare `["*"]` filter matches only slash-free branch names, so
+# `milestone/<slug>` PRs slip through unlinted; the filter must include a
+# `milestone/*` glob.
+@test "the repository Markdown Lint workflow gates milestone PRs" {
+  run "$SCRIPT_UNDER_TEST" --workflow "${BATS_TEST_DIRNAME}/../../.github/workflows/markdown-lint.yml"
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"FAIL"* ]]
+}
