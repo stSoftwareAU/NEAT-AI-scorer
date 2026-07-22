@@ -147,6 +147,12 @@ EOF
   [[ "$output" == *"Usage"* ]]
 }
 
+@test "real repository ci.yml disables credential persistence everywhere (Issue #378)" {
+  run "$SCRIPT_UNDER_TEST" --workflow "${BATS_TEST_DIRNAME}/../../.github/workflows/ci.yml"
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"FAIL"* ]]
+}
+
 @test "real repository security.yml disables credential persistence everywhere" {
   run "$SCRIPT_UNDER_TEST" --workflow "${BATS_TEST_DIRNAME}/../../.github/workflows/security.yml"
   [ "$status" -eq 0 ]
@@ -165,10 +171,11 @@ EOF
   [[ "$output" != *"FAIL"* ]]
 }
 
-@test "default run validates every guarded workflow (security.yml, semgrep.yml and cargo-quality.yml)" {
+@test "default run validates every guarded workflow (ci.yml, security.yml, semgrep.yml and cargo-quality.yml)" {
   run "$SCRIPT_UNDER_TEST"
   [ "$status" -eq 0 ]
   [[ "$output" != *"FAIL"* ]]
+  [[ "$output" == *"ci.yml"* ]]
   [[ "$output" == *"security.yml"* ]]
   [[ "$output" == *"semgrep.yml"* ]]
   [[ "$output" == *"cargo-quality.yml"* ]]

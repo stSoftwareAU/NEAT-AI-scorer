@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Validate that every `actions/checkout` step in the guarded workflows
-# disables credential persistence (Issues #388, #389).
+# disables credential persistence (Issues #388, #389, #378).
 #
 # Background: by default `actions/checkout` writes the workflow's GITHUB_TOKEN
 # into `.git/config` as an auth header. Any later step in the same job — a
@@ -28,7 +28,7 @@ Usage: check-persist-credentials.sh [--workflow PATH]
 Options:
   --workflow PATH   Path to a single workflow YAML file to validate. When
                     omitted, every guarded workflow under
-                    .github/workflows/ (security.yml, semgrep.yml,
+                    .github/workflows/ (ci.yml, security.yml, semgrep.yml,
                     cargo-quality.yml) is checked.
   -h, --help        Show this message.
 
@@ -63,13 +63,15 @@ while [[ $# -gt 0 ]]; do
 done
 
 # Build the list of workflows to validate. An explicit --workflow overrides the
-# default set; otherwise every guarded workflow is checked in one run.
+# default set; otherwise every guarded workflow is checked in one run
+# (ci.yml is guarded per Issue #378).
 WORKFLOWS=()
 if [[ -n "$WORKFLOW" ]]; then
   WORKFLOWS=("$WORKFLOW")
 else
   SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
   WORKFLOWS=(
+    "$SCRIPT_DIR/../.github/workflows/ci.yml"
     "$SCRIPT_DIR/../.github/workflows/security.yml"
     "$SCRIPT_DIR/../.github/workflows/semgrep.yml"
     "$SCRIPT_DIR/../.github/workflows/cargo-quality.yml"
