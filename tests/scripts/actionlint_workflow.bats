@@ -28,7 +28,7 @@ on:
   pull_request:
     branches: ["*", "milestone/**"]
   push:
-    branches: [main, master, Develop]
+    branches: [main, master]
 
 permissions:
   contents: read
@@ -62,7 +62,7 @@ EOF
   [ "$status" -eq 0 ]
   # Issue #360: prove every rule was individually evaluated and passed via the
   # machine-checkable "OK   " marker rather than pinning informational wording.
-  [ "$(grep -c '^OK   ' <<<"$output")" -eq 6 ]
+  [ "$(grep -c '^OK   ' <<<"$output")" -eq 7 ]
 }
 
 @test "fails when the workflow is not triggered on pull_request" {
@@ -146,6 +146,16 @@ PY
   run "$SCRIPT_UNDER_TEST" --workflow "$TMP_WF/actionlint.yml"
   [ "$status" -ne 0 ]
   [[ "$output" == *"milestone"* ]]
+}
+
+@test "fails when the push trigger re-runs on the default branch Develop" {
+  write_actionlint_workflow "$TMP_WF/actionlint.yml"
+  # Re-introduce the pre-fix push-to-Develop trigger (Issue #369): a lint gate
+  # must not re-run on push to the default branch.
+  sed -i.bak 's|branches: \[main, master\]|branches: [main, master, Develop]|' "$TMP_WF/actionlint.yml"
+  run "$SCRIPT_UNDER_TEST" --workflow "$TMP_WF/actionlint.yml"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"Develop"* ]]
 }
 
 @test "reports an error when the workflow file does not exist" {
