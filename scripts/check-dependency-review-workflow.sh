@@ -15,6 +15,11 @@
 #      major (the version policy in
 #      `scripts/check-workflow-action-versions.sh` tracks the current
 #      Node 20 exception at @v4).
+#   5. Gate milestone PRs (Issue #402). A single-level `*` glob does not match
+#      `/`, so a bare `pull_request.branches: ["*"]` filter skips
+#      `milestone/<slug>` sub-issue PRs. The workflow must either omit the
+#      branches filter entirely (every PR target runs) or include a
+#      `milestone/*` glob.
 #
 # The script takes a single optional `--workflow PATH` argument so BATS tests
 # can exercise it against fixtures. When called with no argument it validates
@@ -112,6 +117,19 @@ elif echo "$dr_line" | grep -qE 'actions/dependency-review-action@(v[0-9]+|[0-9a
   ok "actions/dependency-review-action present and pinned to a numeric major or 40-char SHA"
 else
   fail "actions/dependency-review-action is not pinned — branch refs disallowed"
+fi
+
+# 5. Milestone PRs are gated (Issue #402). A single-level `*` glob does not
+# match `/`, so `branches: ["*"]` alone skips `milestone/<slug>` PRs. Pass
+# when there is no pull_request branches filter (every PR target runs) or the
+# filter includes a `milestone/*` glob.
+branches_line="$(grep -nE '^[[:space:]]+branches:' "$WORKFLOW" || true)"
+if [[ -z "$branches_line" ]]; then
+  ok "no pull_request branches filter — every PR target gated (milestone PRs included)"
+elif echo "$branches_line" | grep -q 'milestone/\*'; then
+  ok "pull_request branches filter includes milestone/* — milestone PRs are gated"
+else
+  fail "pull_request branches filter omits 'milestone/*' — milestone/<slug> PRs are skipped (single-level '*' does not match '/')"
 fi
 
 exit "$EXIT_CODE"

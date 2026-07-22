@@ -28,7 +28,7 @@ name: Dependency Review
 
 on:
   pull_request:
-    branches: ["*"]
+    branches: ["*", "milestone/*"]
 
 permissions:
   contents: read
@@ -48,7 +48,7 @@ EOF
   [ "$status" -eq 0 ]
   # Issue #360: prove every rule was individually evaluated and passed via the
   # machine-checkable "OK   " marker rather than pinning informational wording.
-  [ "$(grep -c '^OK   ' <<<"$output")" -eq 4 ]
+  [ "$(grep -c '^OK   ' <<<"$output")" -eq 5 ]
 }
 
 @test "fails when the workflow is not triggered on pull_request" {
@@ -58,7 +58,7 @@ import sys
 path = sys.argv[1]
 with open(path) as fh:
     text = fh.read()
-text = text.replace("on:\n  pull_request:\n    branches: [\"*\"]\n", "on:\n  workflow_dispatch:\n")
+text = text.replace("on:\n  pull_request:\n    branches: [\"*\", \"milestone/*\"]\n", "on:\n  workflow_dispatch:\n")
 with open(path, "w") as fh:
     fh.write(text)
 PY
@@ -129,6 +129,35 @@ PY
   run "$SCRIPT_UNDER_TEST" --nonsense
   [ "$status" -ne 0 ]
   [[ "$output" == *"Usage"* ]]
+}
+
+# Issue #402 — a bare `branches: ["*"]` filter matches only slash-free branch
+# names, so `milestone/<slug>` PRs slip through ungated. The validator must
+# fail when the milestone glob is absent.
+@test "fails when the branches filter omits milestone/*" {
+  write_dependency_review_workflow "$TMP_WF/dependency-review.yml"
+  sed -i.bak 's|branches: \["\*", "milestone/\*"\]|branches: ["*"]|' "$TMP_WF/dependency-review.yml"
+  run "$SCRIPT_UNDER_TEST" --workflow "$TMP_WF/dependency-review.yml"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"milestone/*"* ]]
+}
+
+# Issue #402 — dropping the branches filter entirely runs the workflow on every
+# PR target, which covers milestone PRs. The validator must accept this too.
+@test "passes when the pull_request branches filter is dropped entirely" {
+  write_dependency_review_workflow "$TMP_WF/dependency-review.yml"
+  python3 - "$TMP_WF/dependency-review.yml" <<'PY'
+import sys
+path = sys.argv[1]
+with open(path) as fh:
+    text = fh.read()
+text = text.replace("on:\n  pull_request:\n    branches: [\"*\", \"milestone/*\"]\n", "on:\n  pull_request:\n")
+with open(path, "w") as fh:
+    fh.write(text)
+PY
+  run "$SCRIPT_UNDER_TEST" --workflow "$TMP_WF/dependency-review.yml"
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"FAIL"* ]]
 }
 
 @test "real repository dependency-review workflow satisfies every rule" {
