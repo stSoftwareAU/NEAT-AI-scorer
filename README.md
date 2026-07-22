@@ -912,8 +912,8 @@ A standalone Cargo Quality workflow (`.github/workflows/cargo-quality.yml`,
 Issue #66) runs `cargo fmt --check` and `cargo clippy -- -D warnings` on
 pull requests against **any** branch (`branches: ["**"]`). `**` is used
 rather than `*` because GitHub's `*` glob does not match across `/`, so a
-`["*"]` filter would silently skip `milestone/<slug>` sub-issue PRs (Issue
-#392); `**` also matches nested branch names. `ci.yml` only fires for PRs
+`["*"]` filter would silently skip `milestone/<slug>` sub-issue PRs
+(Issue #392); `**` also matches nested branch names. `ci.yml` only fires for PRs
 targeting `Develop`, so this dedicated workflow gives feature branches and
 stacked PRs the same fmt + clippy gate without spinning up the full CI
 graph. The workflow is validated by
