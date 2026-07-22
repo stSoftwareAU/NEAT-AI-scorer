@@ -77,29 +77,11 @@ jobs:
         with:
           fetch-depth: 0
 
-      # Path strategy for the NEAT-AI-core sibling (Issue #18):
-      #   * `actions/checkout` refuses any `path:` that resolves outside
-      #     `$GITHUB_WORKSPACE` (hence no `path: ../NEAT-AI-core`). We
-      #     therefore clone NEAT-AI-core INTO the workspace as `NEAT-AI-core`.
-      #   * Locally, `rust_scorer/Cargo.toml` points at
-      #     `../../NEAT-AI-core/neat-core` (NEAT-AI-core is a SIBLING clone
-      #     of NEAT-AI-scorer — see AGENTS.md).
-      #   * The symlink step below bridges the two layouts so Cargo finds
-      #     the expected sibling without the workflow having to rewrite
-      #     Cargo.toml.
-      - name: Checkout NEAT-AI-core (path dependency for neat-core)
-        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd  # v5
-        with:
-          repository: stSoftwareAU/NEAT-AI-core
-          ref: Develop
-          path: NEAT-AI-core
-
-      - name: Link NEAT-AI-core sibling path expected by Cargo
-        run: |
-          set -euo pipefail
-          if [ ! -e "$GITHUB_WORKSPACE/../NEAT-AI-core" ]; then
-            ln -s "$GITHUB_WORKSPACE/NEAT-AI-core" "$GITHUB_WORKSPACE/../NEAT-AI-core"
-          fi
+      # Checkout + sibling symlink for the NEAT-AI-core path dependency
+      # (Issue #18) live in one local composite action (Issue #401) so the
+      # path strategy is defined once, not copy-pasted per job.
+      - name: Set up NEAT-AI-core sibling (path dependency for neat-core)
+        uses: ./.github/actions/setup-neat-core
 
       - name: Free up runner disk space
         run: |
@@ -211,26 +193,11 @@ jobs:
           # written to .git/config where a later step could read it (Issue #381).
           persist-credentials: false
 
-      # NEAT-AI-core checkout path strategy — see note in the `quality` job
-      # above. Summary: in-workspace clone + sibling symlink so Cargo resolves
-      # the `../../NEAT-AI-core/neat-core` path dependency on the runner.
-      - name: Checkout NEAT-AI-core (path dependency for neat-core)
-        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd  # v5
-        with:
-          repository: stSoftwareAU/NEAT-AI-core
-          ref: Develop
-          path: NEAT-AI-core
-          # This job only reads the neat-core tree (cargo metadata resolves the
-          # path dependency); it never pushes back, so the token must not persist
-          # on disk (Issue #381).
-          persist-credentials: false
-
-      - name: Link NEAT-AI-core sibling path expected by Cargo
-        run: |
-          set -euo pipefail
-          if [ ! -e "$GITHUB_WORKSPACE/../NEAT-AI-core" ]; then
-            ln -s "$GITHUB_WORKSPACE/NEAT-AI-core" "$GITHUB_WORKSPACE/../NEAT-AI-core"
-          fi
+      # NEAT-AI-core checkout + sibling symlink via the shared composite action
+      # (Issue #401); the composite already sets persist-credentials: false so
+      # this read-only job keeps the token off disk (Issue #381).
+      - name: Set up NEAT-AI-core sibling (path dependency for neat-core)
+        uses: ./.github/actions/setup-neat-core
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8  # stable, frozen 2026-05-18
@@ -286,26 +253,12 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd  # v5
 
-      # NEAT-AI-core checkout path strategy — see note in the `quality` job.
-      # Summary: in-workspace clone + sibling symlink so `cargo metadata`
-      # (invoked by cargo_metadata.bats) resolves the path dependency.
-      - name: Checkout NEAT-AI-core (path dependency for neat-core)
-        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd  # v5
-        with:
-          repository: stSoftwareAU/NEAT-AI-core
-          ref: Develop
-          path: NEAT-AI-core
-          # shell-checks only reads the tree (lint/syntax/bats) and never pushes
-          # back, so the workflow GITHUB_TOKEN must not be written to .git/config
-          # where a later step could read it (Issue #379).
-          persist-credentials: false
-
-      - name: Link NEAT-AI-core sibling path expected by Cargo
-        run: |
-          set -euo pipefail
-          if [ ! -e "$GITHUB_WORKSPACE/../NEAT-AI-core" ]; then
-            ln -s "$GITHUB_WORKSPACE/NEAT-AI-core" "$GITHUB_WORKSPACE/../NEAT-AI-core"
-          fi
+      # NEAT-AI-core checkout + sibling symlink via the shared composite action
+      # (Issue #401) so `cargo metadata` (invoked by cargo_metadata.bats)
+      # resolves the path dependency; the composite sets persist-credentials:
+      # false, keeping the token off disk for this read-only job (Issue #379).
+      - name: Set up NEAT-AI-core sibling (path dependency for neat-core)
+        uses: ./.github/actions/setup-neat-core
 
       - name: Check bash script syntax
         run: |

@@ -32,7 +32,7 @@ Closes #383.
 Backend/CI-config change only — no web interface to screenshot. Verified via the
 repository's own gate and the bats suite:
 
-```
+```text
 $ ./scripts/check-persist-credentials.sh
 OK   .../dependency-review.yml: job 'dependency-review' single checkout sets persist-credentials: false
 exit=0
