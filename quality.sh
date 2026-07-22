@@ -117,6 +117,9 @@ echo "🔁 Validating concurrency groups on pile-up-prone workflows (Issue #156)
 echo "🔒 Validating credential-free checkouts set persist-credentials: false (Issue #380)..."
 ./scripts/check-persist-credentials.sh
 
+echo "🛟 Validating risk-bearing multi-line run: blocks open with set -euo pipefail (Issue #400)..."
+./scripts/check-run-block-safety.sh
+
 echo "📖 Validating README 'matches CI' block aligns with the CI quality job (Issue #212)..."
 ./scripts/check-readme-ci-alignment.sh
 

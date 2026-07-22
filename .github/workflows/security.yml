@@ -52,6 +52,7 @@ jobs:
 
       - name: Link NEAT-AI-core sibling path expected by Cargo
         run: |
+          set -euo pipefail
           if [ ! -e "$GITHUB_WORKSPACE/../NEAT-AI-core" ]; then
             ln -s "$GITHUB_WORKSPACE/NEAT-AI-core" "$GITHUB_WORKSPACE/../NEAT-AI-core"
           fi
