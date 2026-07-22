@@ -3,11 +3,13 @@
 # compiled from source on every CI run (Issue #208, part of #198).
 #
 # Why this exists:
-#   Four workflows install a cargo CLI tool before using it:
+#   Three workflows install a cargo CLI tool before using it:
 #     * cargo-audit.yml — cargo-audit
-#     * security.yml    — cargo-audit
 #     * sbom.yml        — cargo-cyclonedx
 #     * ci.yml          — cargo-deny
+#   (security.yml no longer installs cargo-audit standalone: its redundant
+#    in-job `cargo audit` run was removed in Issue #399, leaving the
+#    `rustsec/audit-check` action as its sole advisory scan.)
 #   `cargo install <tool> --locked` recompiles the tool from source on every
 #   run, costing minutes of wasted CI wall-clock with no behaviour change.
 #   `taiki-e/install-action` downloads a prebuilt release binary instead, so
@@ -37,7 +39,8 @@ Options:
   --tool NAME       Cargo tool name expected to be installed as a prebuilt
                     binary (e.g. cargo-audit). Only valid with --workflow.
   --workflows DIR   Directory holding the canonical workflows (default:
-                    .github/workflows relative to the repo root).
+                    .github/workflows relative to the repo root). The three
+                    canonical pairs are cargo-audit.yml, sbom.yml and ci.yml.
   -h, --help        Show this message.
 
 Exits 0 when every checked (workflow, tool) pair installs the tool from a
@@ -133,7 +136,6 @@ fi
 # parallel-indexed pair list is used.
 PAIRS=(
   "cargo-audit.yml:cargo-audit"
-  "security.yml:cargo-audit"
   "sbom.yml:cargo-cyclonedx"
   "ci.yml:cargo-deny"
 )
