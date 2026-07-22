@@ -631,16 +631,6 @@ impl BatchedRunner {
         self.kernel
     }
 
-    /// Stable WGSL entry-point name of the kernel this runner drives, for the
-    /// `gpuKernel` JSON field (Issue #182).
-    #[allow(dead_code)] // superseded by [`DirectoryGpuRunners::kernel_label`] for directory mode.
-    pub fn kernel_label(&self) -> &'static str {
-        match self.kernel {
-            KernelKind::Private => "forward_mse_batched",
-            KernelKind::Scratch => "forward_mse_scratch",
-        }
-    }
-
     /// Score a single chunk of `n_records` packed records against every
     /// creature. Returns one `f64` MSE-sum partial per creature that the
     /// caller adds to its running total.
