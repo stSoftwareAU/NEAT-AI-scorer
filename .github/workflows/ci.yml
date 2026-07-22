@@ -77,6 +77,9 @@ jobs:
         uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd  # v5
         with:
           fetch-depth: 0
+          # Read-only job (fmt/clippy/build/test/doc/release); never pushes
+          # back, so keep the GITHUB_TOKEN off disk (Issue #376).
+          persist-credentials: false
 
       # Checkout + sibling symlink for the NEAT-AI-core path dependency
       # (Issue #18) live in one local composite action (Issue #401) so the
