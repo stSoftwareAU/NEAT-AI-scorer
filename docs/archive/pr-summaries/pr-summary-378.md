@@ -28,7 +28,7 @@ Backend/CI-only change — no web interface to screenshot.
 
 Validator now passes against `ci.yml` (previously failed at line 258):
 
-```
+```text
 OK   .github/workflows/ci.yml: checkout at line 77 sets persist-credentials: false
 OK   .github/workflows/ci.yml: checkout at line 193 sets persist-credentials: false
 OK   .github/workflows/ci.yml: checkout at line 258 sets persist-credentials: false

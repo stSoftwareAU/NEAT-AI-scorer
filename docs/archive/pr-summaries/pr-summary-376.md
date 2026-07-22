@@ -25,13 +25,13 @@ regression test plus the workflow validators.
 Before the fix, the credential-persistence check reported the `quality`
 checkout as unprotected:
 
-```
+```text
 FAIL .github/workflows/ci.yml: checkout at line 77 must set 'persist-credentials: false' ...
 ```
 
 After the fix, the new BATS regression test passes and `actionlint` is clean:
 
-```
+```text
 ok 18 quality self checkout sets persist-credentials: false
 ok 19 parser reports 'no' when the disable flag is absent (guards the assertion)
 actionlint OK
