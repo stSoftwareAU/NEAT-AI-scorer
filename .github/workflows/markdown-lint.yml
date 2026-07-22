@@ -25,7 +25,9 @@ on:
   # a check that already passed. (This reverses the Issue #207 push→Develop
   # policy; deploy/publish workflows still fire on push, a checker does not.)
   pull_request:
-    branches: ["*"]
+    # `*` matches only slash-free branch names, so bare `["*"]` skips
+    # `milestone/<slug>` PRs; the `milestone/*` glob gates them too (Issue #395).
+    branches: ["*", "milestone/*"]
 
 permissions:
   contents: read
