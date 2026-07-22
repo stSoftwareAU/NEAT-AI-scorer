@@ -51,9 +51,15 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+# In default mode also scan local composite actions: the NEAT-AI-core checkout
+# + sibling symlink now lives in `.github/actions/setup-neat-core/action.yml`
+# (Issue #401), so the path strategy must be validated there too. An explicit
+# --workflows override scans only that directory (keeps test fixtures isolated).
+ACTIONS_DIR=""
 if [[ -z "$WORKFLOWS_DIR" ]]; then
   SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
   WORKFLOWS_DIR="$SCRIPT_DIR/../.github/workflows"
+  ACTIONS_DIR="$SCRIPT_DIR/../.github/actions"
 fi
 
 if [[ ! -d "$WORKFLOWS_DIR" ]]; then
@@ -171,7 +177,14 @@ PY
     echo "FAIL $workflow: checks out NEAT-AI-core but has no 'Link NEAT-AI-core sibling path' step — the Cargo path dependency will not resolve." >&2
     EXIT_CODE=1
   fi
-done < <(find "$WORKFLOWS_DIR" -maxdepth 1 \( -name "*.yml" -o -name "*.yaml" \) -type f | sort)
+done < <(
+  {
+    find "$WORKFLOWS_DIR" -maxdepth 1 \( -name "*.yml" -o -name "*.yaml" \) -type f
+    if [[ -n "$ACTIONS_DIR" && -d "$ACTIONS_DIR" ]]; then
+      find "$ACTIONS_DIR" \( -name "action.yml" -o -name "action.yaml" \) -type f
+    fi
+  } | sort
+)
 
 if [[ "$FOUND_ANY" -eq 0 ]]; then
   echo "No workflow files found in $WORKFLOWS_DIR" >&2
