@@ -27,7 +27,12 @@ on:
     # PRs would skip this gate; "milestone/**" restores coverage (Issue #390).
     branches: ["*", "milestone/**"]
   push:
-    branches: [main, master, Develop]
+    # Lint gates belong on the PR, not on push to the default branch `Develop`
+    # (Issue #369): a post-merge re-run duplicates the check that already gated
+    # the PR, wasting CI minutes and risking a red tick on `Develop` for a
+    # check that already passed. Keep push coverage for non-default branches
+    # only; deploy/release workflows are different and must keep firing on push.
+    branches: [main, master]
   workflow_dispatch:
 
 # Least-privilege default token scope — actionlint only reads the checked-out
