@@ -68,6 +68,18 @@ section to the released version with its date.
 
 ### Changed
 
+- **Extract the NEAT-AI-core checkout + symlink block into a local composite
+  action (Issue #401).** The "checkout `stSoftwareAU/NEAT-AI-core` + symlink the
+  sibling path Cargo expects" pair was copy-pasted across seven call sites in
+  five workflows (`ci.yml`, `auto-format.yml`, `cargo-quality.yml`, `sbom.yml`,
+  `security.yml`) and had already drifted. It now lives once in
+  `.github/actions/setup-neat-core/action.yml`; every consumer calls
+  `uses: ./.github/actions/setup-neat-core`, so the next path-strategy change is
+  a one-file diff. The composite sets `persist-credentials: false` (least
+  privilege) and opens its symlink script with `set -euo pipefail`. A new guard
+  (`scripts/check-neat-core-composite-action.sh`) rejects any re-inlined copy,
+  and the path-strategy, run-block-safety, and action-version-pinning guards now
+  also scan `.github/actions` so the extracted block stays covered.
 - **Drop the redundant `cargo check` step from the CI `quality` job (Issue
   #403).** `cargo clippy` (Run linter) drives the same rustc front-end over the
   identical `--all-targets --all-features` scope with `-D warnings`, so it is

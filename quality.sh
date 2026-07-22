@@ -41,6 +41,9 @@ echo "🛡️  Validating crate-level rustc lint hardening (Issue #274)..."
 echo "🔗 Validating NEAT-AI-core checkout path strategy in workflows..."
 ./scripts/check-workflow-paths.sh
 
+echo "🧩 Validating NEAT-AI-core setup is a single composite action (Issue #401)..."
+./scripts/check-neat-core-composite-action.sh
+
 echo "🚧 Gating on unhandled breaking neat-core bump (Issue #252)..."
 # Mirrors the CI `validation` job step. Runs only when the sibling neat-core
 # clone is present (CI always has it; local checkouts may not), so a missing
