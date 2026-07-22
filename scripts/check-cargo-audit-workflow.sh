@@ -13,6 +13,9 @@
 #   6. Invoke cargo-audit — either directly (`cargo audit` after a
 #      `cargo install cargo-audit` step) or via the official RustSec
 #      action (`rustsec/audit-check@vN`).
+#   7. Cover milestone/<slug> branches in the pull_request filter so the gate
+#      runs on milestone sub-issue PRs, not only top-level base branches
+#      (Issue #391). A bare "*" glob does not match refs containing a slash.
 #
 # The script takes a single optional `--workflow PATH` argument so BATS tests
 # can exercise it against fixtures. When called with no argument it validates
@@ -125,6 +128,17 @@ elif grep -qE '^[[:space:]]+(- )?run:[[:space:]]*cargo audit' "$WORKFLOW" \
   ok "cargo audit invoked directly"
 else
   fail "cargo audit is not invoked — neither rustsec/audit-check nor a 'cargo audit' run step found"
+fi
+
+# 7. pull_request branch filter must include milestone branches so the gate
+#    runs on milestone/<slug> sub-issue PRs. A bare "*" glob only matches
+#    single-level refs, so milestone/<slug> would otherwise skip the gate and
+#    merge unchecked into the milestone branch (Issue #391). The token
+#    `milestone/*` also matches the wider `milestone/**` glob.
+if grep -qE 'milestone/\*' "$WORKFLOW"; then
+  ok "pull_request branch filter covers milestone/* branches"
+else
+  fail "pull_request branch filter omits milestone/* — milestone PRs skip the gate"
 fi
 
 exit "$EXIT_CODE"

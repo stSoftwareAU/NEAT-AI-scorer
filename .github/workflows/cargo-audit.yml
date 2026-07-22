@@ -12,7 +12,10 @@ name: Cargo Audit
 # Triggers:
 #   * pull_request   — belt-and-braces alongside security.yml; cargo-audit
 #                      is fast (seconds) so the duplication is negligible
-#                      and keeps the standalone workflow self-contained.
+#                      and keeps the standalone workflow self-contained. The
+#                      filter includes `milestone/**` so the gate also runs on
+#                      milestone/<slug> sub-issue PRs — a bare "*" glob does
+#                      not match refs containing a slash (Issue #391).
 #   * schedule       — Mondays 06:00 UTC; catches new advisories weekly.
 #   * workflow_dispatch — manual trigger for ad-hoc audits.
 #
@@ -22,7 +25,7 @@ name: Cargo Audit
 
 on:
   pull_request:
-    branches: ["*"]
+    branches: ["*", "milestone/**"]
   schedule:
     - cron: "0 6 * * 1"
   workflow_dispatch:
