@@ -9,6 +9,10 @@
 #      `rustfmt` and `clippy` components.
 #   5. Invoke `cargo fmt --check` (any flag form) so unformatted code fails CI.
 #   6. Invoke `cargo clippy` with `-D warnings` so lints fail CI.
+#   7. Use a pull_request `branches:` filter that matches milestone/<slug>
+#      branches (Issue #392). GitHub's `*` glob does NOT cross `/`, so `["*"]`
+#      silently skips milestone sub-issue PRs; require `**` or an explicit
+#      `milestone/` glob so the gate runs on them.
 #
 # The script takes a single optional `--workflow PATH` argument so BATS tests
 # can exercise it against fixtures. When called with no argument it validates
@@ -121,6 +125,19 @@ if grep -qE 'cargo[[:space:]]+clippy' "$WORKFLOW" \
   ok "cargo clippy invoked with -D warnings"
 else
   fail "cargo clippy must be invoked with '-D warnings' so lints fail CI"
+fi
+
+# 7. pull_request branch filter matches milestone/<slug> branches (Issue #392).
+#    GitHub's `*` glob does not match across `/`, so a `["*"]` filter skips
+#    milestone/<slug> PRs and the gate never runs on milestone sub-issue PRs.
+#    Require `**` (matches any branch) or an explicit `milestone/` glob.
+branches_filter="$(grep -E '^[[:space:]]*branches:' "$WORKFLOW" || true)"
+if [[ -z "$branches_filter" ]]; then
+  fail "no pull_request 'branches:' filter found — cannot verify milestone coverage"
+elif echo "$branches_filter" | grep -qE '\*\*|milestone/'; then
+  ok "pull_request branch filter matches milestone/<slug> branches"
+else
+  fail "pull_request branch filter does not match milestone/<slug> — '*' does not cross '/'; use '**' or add 'milestone/*'"
 fi
 
 exit "$EXIT_CODE"

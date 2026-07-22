@@ -4,9 +4,12 @@ name: Cargo Quality
 #
 # Why a dedicated workflow when ci.yml already runs fmt + clippy?
 #   * ci.yml only triggers on pushes/PRs against `Develop`. This workflow
-#     fires on PRs against ANY branch (`branches: ["*"]`), so feature
+#     fires on PRs against ANY branch (`branches: ["**"]`), so feature
 #     branches and stacked PRs targeting non-Develop bases also get fmt
-#     and clippy coverage.
+#     and clippy coverage. `**` is used rather than `*` because GitHub's
+#     `*` glob does not match across `/`, so `["*"]` would silently skip
+#     milestone/<slug> sub-issue PRs (Issue #392); `**` matches nested
+#     branch names too.
 #   * Keeps a small, fast, single-purpose gate that is cheap to re-run
 #     when iterating on style or lint fixes.
 #
@@ -20,7 +23,7 @@ name: Cargo Quality
 
 on:
   pull_request:
-    branches: ["*"]
+    branches: ["**"]
   workflow_dispatch:
 
 permissions:

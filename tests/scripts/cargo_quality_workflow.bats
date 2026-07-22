@@ -26,7 +26,7 @@ name: Cargo Quality
 
 on:
   pull_request:
-    branches: ["*"]
+    branches: ["**"]
 
 permissions:
   contents: read
@@ -50,7 +50,7 @@ EOF
   [ "$status" -eq 0 ]
   # Issue #360: prove every rule was individually evaluated and passed via the
   # machine-checkable "OK   " marker rather than pinning informational wording.
-  [ "$(grep -c '^OK   ' <<<"$output")" -eq 7 ]
+  [ "$(grep -c '^OK   ' <<<"$output")" -eq 8 ]
 }
 
 @test "fails when the workflow is not triggered on pull_request" {
@@ -60,7 +60,7 @@ import sys
 path = sys.argv[1]
 with open(path) as fh:
     text = fh.read()
-text = text.replace("  pull_request:\n    branches: [\"*\"]\n", "")
+text = text.replace("  pull_request:\n    branches: [\"**\"]\n", "")
 with open(path, "w") as fh:
     fh.write(text)
 PY
@@ -127,6 +127,25 @@ PY
   [ "$status" -ne 0 ]
   [[ "$output" == *"cargo clippy"* ]]
   [[ "$output" == *"-D warnings"* ]]
+}
+
+@test "fails when the branch filter skips milestone/<slug> PRs (Issue #392)" {
+  # A `["*"]` filter looks like "any branch" but GitHub's `*` glob does not
+  # cross `/`, so milestone/<slug> PRs are silently skipped. The gate must
+  # reject it.
+  write_quality_workflow "$TMP_WF/cargo-quality.yml"
+  sed -i.bak 's|branches: \["\*\*"\]|branches: ["*"]|' "$TMP_WF/cargo-quality.yml"
+  run "$SCRIPT_UNDER_TEST" --workflow "$TMP_WF/cargo-quality.yml"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"does not match milestone/<slug>"* ]]
+}
+
+@test "passes when the branch filter uses an explicit milestone/* glob" {
+  write_quality_workflow "$TMP_WF/cargo-quality.yml"
+  sed -i.bak 's|branches: \["\*\*"\]|branches: [Develop, main, milestone/*]|' "$TMP_WF/cargo-quality.yml"
+  run "$SCRIPT_UNDER_TEST" --workflow "$TMP_WF/cargo-quality.yml"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"matches milestone/<slug>"* ]]
 }
 
 @test "reports an error when the workflow file does not exist" {
