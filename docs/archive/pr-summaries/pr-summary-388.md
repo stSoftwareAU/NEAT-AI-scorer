@@ -40,7 +40,7 @@ check script plus its BATS suite.
 
 `scripts/check-persist-credentials.sh` against the fixed workflow:
 
-```
+```text
 OK   .../security.yml: checkout at line 23 sets persist-credentials: false
 OK   .../security.yml: checkout at line 38 sets persist-credentials: false
 ```
