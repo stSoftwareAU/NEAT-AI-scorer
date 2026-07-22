@@ -67,8 +67,6 @@ pub const MAX_SYNAPSES: usize = 120_000;
 
 // --- Production corpus sizing (from GRQ-cluster performance.csv) --------------
 
-/// Number of production training-data files (`training_data_files`).
-pub const PRODUCTION_CORPUS_FILES: usize = 520;
 /// Default corpus size the production bench builds when `BENCH_PROD_BYTES` is
 /// unset — a runnable slice (64 MiB) of the ≈ 19.4 GiB production corpus. The
 /// full production size is documented in `docs/performance-baseline.md`.
