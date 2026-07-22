@@ -16,7 +16,11 @@ name: Gitleaks
 
 on:
   pull_request:
-    branches: ["*"]
+    # `*` matches only top-level branches (it does not span `/`), so
+    # `milestone/<slug>` PRs need an explicit `milestone/*` glob — otherwise the
+    # secret-scanning gate never runs on milestone sub-issue PRs and they merge
+    # into the milestone branch unscanned (Issue #394).
+    branches: ["*", "milestone/*"]
 
 permissions:
   contents: read
