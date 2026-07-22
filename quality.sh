@@ -41,6 +41,9 @@ echo "🛡️  Validating crate-level rustc lint hardening (Issue #274)..."
 echo "🔗 Validating NEAT-AI-core checkout path strategy in workflows..."
 ./scripts/check-workflow-paths.sh
 
+echo "🧩 Validating NEAT-AI-core setup is a single composite action (Issue #401)..."
+./scripts/check-neat-core-composite-action.sh
+
 echo "🚧 Gating on unhandled breaking neat-core bump (Issue #252)..."
 # Mirrors the CI `validation` job step. Runs only when the sibling neat-core
 # clone is present (CI always has it; local checkouts may not), so a missing
@@ -93,13 +96,22 @@ echo "🪄 Validating auto-format PR workflow (Issue #19)..."
 echo "🧭 Validating CI job dependency graph (Issue #23)..."
 ./scripts/check-ci-job-graph.sh
 
+echo "🚫 Validating CI checker does not re-trigger on push to Develop (Issue #370)..."
+./scripts/check-ci-push-trigger.sh
+
+echo "🎯 Validating CI gates milestone PRs (Issue #393)..."
+./scripts/check-milestone-branch-filter.sh
+
+echo "🎯 Validating Gitleaks gates milestone PRs (Issue #394)..."
+./scripts/check-milestone-branch-filter.sh --workflow .github/workflows/gitleaks.yml
+
 echo "🔢 Validating workflow action versions for Node 24 compat (Issue #24)..."
 ./scripts/check-workflow-action-versions.sh
 
 echo "🔑 Validating CI least-privilege token scope (Issue #155)..."
 ./scripts/check-ci-permissions.sh
 
-echo "🔐 Validating security.yml checkouts disable credential persistence (Issue #388)..."
+echo "🔐 Validating guarded workflow checkouts disable credential persistence (Issues #388, #389)..."
 ./scripts/check-persist-credentials.sh
 
 echo "⏱️  Validating per-job timeout-minutes across workflows (Issue #154)..."
@@ -107,6 +119,12 @@ echo "⏱️  Validating per-job timeout-minutes across workflows (Issue #154)..
 
 echo "🔁 Validating concurrency groups on pile-up-prone workflows (Issue #156)..."
 ./scripts/check-workflow-concurrency.sh
+
+echo "🔒 Validating credential-free checkouts set persist-credentials: false (Issue #380)..."
+./scripts/check-persist-credentials.sh
+
+echo "🛟 Validating risk-bearing multi-line run: blocks open with set -euo pipefail (Issue #400)..."
+./scripts/check-run-block-safety.sh
 
 echo "📖 Validating README 'matches CI' block aligns with the CI quality job (Issue #212)..."
 ./scripts/check-readme-ci-alignment.sh

@@ -28,7 +28,7 @@ name: Dependency Review
 
 on:
   pull_request:
-    branches: ["*"]
+    branches: ["*", "milestone/**"]
 
 permissions:
   contents: read
@@ -48,7 +48,15 @@ EOF
   [ "$status" -eq 0 ]
   # Issue #360: prove every rule was individually evaluated and passed via the
   # machine-checkable "OK   " marker rather than pinning informational wording.
-  [ "$(grep -c '^OK   ' <<<"$output")" -eq 4 ]
+  [ "$(grep -c '^OK   ' <<<"$output")" -eq 5 ]
+}
+
+@test "fails when the pull_request filter omits milestone branches (Issue #399)" {
+  write_dependency_review_workflow "$TMP_WF/dependency-review.yml"
+  sed -i.bak 's|branches: \["\*", "milestone/\*\*"\]|branches: ["*"]|' "$TMP_WF/dependency-review.yml"
+  run "$SCRIPT_UNDER_TEST" --workflow "$TMP_WF/dependency-review.yml"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"omits milestone/*"* ]]
 }
 
 @test "fails when the workflow is not triggered on pull_request" {
@@ -58,7 +66,7 @@ import sys
 path = sys.argv[1]
 with open(path) as fh:
     text = fh.read()
-text = text.replace("on:\n  pull_request:\n    branches: [\"*\"]\n", "on:\n  workflow_dispatch:\n")
+text = text.replace("on:\n  pull_request:\n    branches: [\"*\", \"milestone/**\"]\n", "on:\n  workflow_dispatch:\n")
 with open(path, "w") as fh:
     fh.write(text)
 PY

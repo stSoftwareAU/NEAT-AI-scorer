@@ -15,6 +15,13 @@
 #      major (the version policy in
 #      `scripts/check-workflow-action-versions.sh` tracks the current
 #      Node 20 exception at @v4).
+#   5. Cover milestone/<slug> branches in the pull_request filter. Since
+#      Issue #399 this standalone workflow is the *sole* dependency-review gate
+#      (the reusable `security.yml` no longer runs the action), so a bare "*"
+#      glob — which does not match refs containing a slash — would leave
+#      milestone sub-issue PRs with no dependency-review coverage at all. The
+#      `milestone/*` token also matches the wider `milestone/**` glob
+#      (Issue #391).
 #
 # The script takes a single optional `--workflow PATH` argument so BATS tests
 # can exercise it against fixtures. When called with no argument it validates
@@ -112,6 +119,15 @@ elif echo "$dr_line" | grep -qE 'actions/dependency-review-action@(v[0-9]+|[0-9a
   ok "actions/dependency-review-action present and pinned to a numeric major or 40-char SHA"
 else
   fail "actions/dependency-review-action is not pinned — branch refs disallowed"
+fi
+
+# 5. pull_request branch filter must include milestone branches. As the sole
+#    dependency-review gate (Issue #399), a bare "*" glob would silently skip
+#    milestone/<slug> sub-issue PRs (GitHub's "*" does not span "/").
+if grep -qE 'milestone/\*' "$WORKFLOW"; then
+  ok "pull_request branch filter covers milestone/* branches"
+else
+  fail "pull_request branch filter omits milestone/* — milestone PRs skip the dependency-review gate (Issue #399)"
 fi
 
 exit "$EXIT_CODE"

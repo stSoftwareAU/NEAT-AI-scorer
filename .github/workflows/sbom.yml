@@ -45,23 +45,19 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd  # v5
-
-      # Path strategy for the NEAT-AI-core sibling (Issue #18): clone it INTO
-      # the workspace, then symlink so Cargo resolves the
-      # `../../NEAT-AI-core/neat-core` path dependency. cargo-cyclonedx reads
-      # the resolved workspace metadata, so the path dependency must resolve.
-      - name: Checkout NEAT-AI-core (path dependency for neat-core)
-        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd  # v5
         with:
-          repository: stSoftwareAU/NEAT-AI-core
-          ref: Develop
-          path: NEAT-AI-core
+          # Least-privilege token handling (Issue #385): this job only reads the
+          # checked-out code to build the SBOM — it never pushes back — so the
+          # workflow GITHUB_TOKEN must not be written to `.git/config`, where a
+          # later step could read it and act as the token.
+          persist-credentials: false
 
-      - name: Link NEAT-AI-core sibling path expected by Cargo
-        run: |
-          if [ ! -e "$GITHUB_WORKSPACE/../NEAT-AI-core" ]; then
-            ln -s "$GITHUB_WORKSPACE/NEAT-AI-core" "$GITHUB_WORKSPACE/../NEAT-AI-core"
-          fi
+      # NEAT-AI-core checkout + sibling symlink (Issue #18) via the shared
+      # composite action (Issue #401): cargo-cyclonedx reads the resolved
+      # workspace metadata, so the `../../NEAT-AI-core/neat-core` path
+      # dependency must resolve on the runner.
+      - name: Set up NEAT-AI-core sibling (path dependency for neat-core)
+        uses: ./.github/actions/setup-neat-core
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8  # stable, frozen 2026-05-18

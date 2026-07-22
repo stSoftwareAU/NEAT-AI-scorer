@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Validate that every `actions/checkout` step in the reusable security workflow
-# disables credential persistence (Issue #388).
+# Validate that every `actions/checkout` step in the guarded workflows
+# disables credential persistence (Issues #388, #389, #378).
 #
 # Background: by default `actions/checkout` writes the workflow's GITHUB_TOKEN
 # into `.git/config` as an auth header. Any later step in the same job — a
@@ -16,8 +16,9 @@
 #      documenting why the credential is genuinely required.
 #
 # The script takes an optional `--workflow PATH` argument so BATS tests can
-# exercise it against fixtures. With no argument it validates
-# `.github/workflows/security.yml` relative to the repo root.
+# exercise it against fixtures. With no argument it validates every guarded
+# workflow (`security.yml`, `semgrep.yml`, `cargo-quality.yml`) relative to the
+# repo root.
 set -euo pipefail
 
 usage() {
@@ -25,8 +26,10 @@ usage() {
 Usage: check-persist-credentials.sh [--workflow PATH]
 
 Options:
-  --workflow PATH   Path to the workflow YAML file (default:
-                    .github/workflows/security.yml relative to the repo root).
+  --workflow PATH   Path to a single workflow YAML file to validate. When
+                    omitted, every guarded workflow under
+                    .github/workflows/ (ci.yml, security.yml, semgrep.yml,
+                    cargo-quality.yml) is checked.
   -h, --help        Show this message.
 
 Exits 0 when every actions/checkout step disables credential persistence (or
@@ -59,24 +62,40 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-if [[ -z "$WORKFLOW" ]]; then
+# Build the list of workflows to validate. An explicit --workflow overrides the
+# default set; otherwise every guarded workflow is checked in one run
+# (ci.yml is guarded per Issue #378).
+WORKFLOWS=()
+if [[ -n "$WORKFLOW" ]]; then
+  WORKFLOWS=("$WORKFLOW")
+else
   SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-  WORKFLOW="$SCRIPT_DIR/../.github/workflows/security.yml"
-fi
-
-if [[ ! -f "$WORKFLOW" ]]; then
-  echo "Workflow file not found: $WORKFLOW" >&2
-  exit 2
+  WORKFLOWS=(
+    "$SCRIPT_DIR/../.github/workflows/ci.yml"
+    "$SCRIPT_DIR/../.github/workflows/security.yml"
+    "$SCRIPT_DIR/../.github/workflows/semgrep.yml"
+    "$SCRIPT_DIR/../.github/workflows/cargo-quality.yml"
+  )
 fi
 
 EXIT_CODE=0
-fail() {
-  echo "FAIL $WORKFLOW: $*" >&2
-  EXIT_CODE=1
-}
-ok() {
-  echo "OK   $WORKFLOW: $*"
-}
+
+validate_workflow() {
+  local WORKFLOW="$1"
+
+  if [[ ! -f "$WORKFLOW" ]]; then
+    echo "Workflow file not found: $WORKFLOW" >&2
+    EXIT_CODE=2
+    return
+  fi
+
+  fail() {
+    echo "FAIL $WORKFLOW: $*" >&2
+    EXIT_CODE=1
+  }
+  ok() {
+    echo "OK   $WORKFLOW: $*"
+  }
 
 # Emit one report line per checkout step found:
 #   STEP\t<line>\t<persist_ok|persist_missing|ignored>
@@ -145,25 +164,30 @@ for i, line in enumerate(lines):
 PY
 )"
 
-checkout_count="$(grep -c $'^STEP\t' <<<"$report" || true)"
-if [[ "$checkout_count" -eq 0 ]]; then
-  fail "no 'actions/checkout' step found — expected at least one to validate"
-  exit "$EXIT_CODE"
-fi
+  checkout_count="$(grep -c $'^STEP\t' <<<"$report" || true)"
+  if [[ "$checkout_count" -eq 0 ]]; then
+    fail "no 'actions/checkout' step found — expected at least one to validate"
+    return
+  fi
 
-while IFS=$'\t' read -r tag lineno state; do
-  [[ "$tag" == "STEP" ]] || continue
-  case "$state" in
-    persist_ok)
-      ok "checkout at line $lineno sets persist-credentials: false"
-      ;;
-    ignored)
-      ok "checkout at line $lineno carries a documented BP-PERSIST-CREDS ignore"
-      ;;
-    *)
-      fail "checkout at line $lineno must set 'persist-credentials: false' (or document a BP-PERSIST-CREDS ignore) so the GITHUB_TOKEN is not written to .git/config"
-      ;;
-  esac
-done <<<"$report"
+  while IFS=$'\t' read -r tag lineno state; do
+    [[ "$tag" == "STEP" ]] || continue
+    case "$state" in
+      persist_ok)
+        ok "checkout at line $lineno sets persist-credentials: false"
+        ;;
+      ignored)
+        ok "checkout at line $lineno carries a documented BP-PERSIST-CREDS ignore"
+        ;;
+      *)
+        fail "checkout at line $lineno must set 'persist-credentials: false' (or document a BP-PERSIST-CREDS ignore) so the GITHUB_TOKEN is not written to .git/config"
+        ;;
+    esac
+  done <<<"$report"
+}
+
+for wf in "${WORKFLOWS[@]}"; do
+  validate_workflow "$wf"
+done
 
 exit "$EXIT_CODE"

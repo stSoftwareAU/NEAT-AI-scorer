@@ -1,0 +1,45 @@
+name: Set up NEAT-AI-core sibling
+description: >-
+  Check out stSoftwareAU/NEAT-AI-core into the workspace and symlink it to the
+  sibling path Cargo expects, so the `rust_scorer/Cargo.toml`
+  `../../NEAT-AI-core/neat-core` path dependency resolves on the runner
+  (Issue #18). Single source of truth for the checkout + symlink block that was
+  previously copy-pasted across every workflow needing the dependency
+  (Issue #401).
+
+inputs:
+  ref:
+    description: Git ref of stSoftwareAU/NEAT-AI-core to check out.
+    required: false
+    default: Develop
+
+runs:
+  using: composite
+  steps:
+    # Path strategy for the NEAT-AI-core sibling (Issue #18):
+    #   * `actions/checkout` refuses any `path:` that resolves outside
+    #     `$GITHUB_WORKSPACE` (hence no `path: ../NEAT-AI-core`). We therefore
+    #     clone NEAT-AI-core INTO the workspace as `NEAT-AI-core`.
+    #   * Locally, `rust_scorer/Cargo.toml` points at
+    #     `../../NEAT-AI-core/neat-core` (NEAT-AI-core is a SIBLING clone of
+    #     NEAT-AI-scorer — see AGENTS.md).
+    #   * The symlink step below bridges the two layouts so Cargo finds the
+    #     expected sibling without the workflow having to rewrite Cargo.toml.
+    - name: Checkout NEAT-AI-core (path dependency for neat-core)
+      uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd  # v5
+      with:
+        repository: stSoftwareAU/NEAT-AI-core
+        ref: ${{ inputs.ref }}
+        path: NEAT-AI-core
+        # Public sibling clone, read-only — no job pushes back to NEAT-AI-core,
+        # so the workflow GITHUB_TOKEN must not be written to .git/config where a
+        # later step could read it (Issues #379, #381, #385, #388).
+        persist-credentials: false
+
+    - name: Link NEAT-AI-core sibling path expected by Cargo
+      shell: bash
+      run: |
+        set -euo pipefail
+        if [ ! -e "$GITHUB_WORKSPACE/../NEAT-AI-core" ]; then
+          ln -s "$GITHUB_WORKSPACE/NEAT-AI-core" "$GITHUB_WORKSPACE/../NEAT-AI-core"
+        fi

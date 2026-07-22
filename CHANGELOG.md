@@ -68,6 +68,39 @@ section to the released version with its date.
 
 ### Changed
 
+- **Drop the push-to-`Develop` trigger from the CI checker workflow (Issue
+  #370).** `ci.yml` runs the heavy test/lint/scan gate; as a *checker* it should
+  gate the pull request, not re-run post-merge. The `push:` trigger targeting the
+  default branch `Develop` duplicated the run that already gated the PR — wasting
+  CI minutes and risking a red tick on `Develop` for a check that already passed.
+  The workflow now fires on `pull_request` and `workflow_dispatch` only.
+  Deploy/publish/release workflows are unaffected (they must keep firing on
+  push). A new guard (`scripts/check-ci-push-trigger.sh`, wired into
+  `quality.sh`, with BATS coverage in `tests/scripts/ci_push_trigger.bats`)
+  rejects any re-added push-to-`Develop` trigger while leaving the legitimate
+  `pull_request` filter on `Develop` untouched.
+
+- **Extract the NEAT-AI-core checkout + symlink block into a local composite
+  action (Issue #401).** The "checkout `stSoftwareAU/NEAT-AI-core` + symlink the
+  sibling path Cargo expects" pair was copy-pasted across seven call sites in
+  five workflows (`ci.yml`, `auto-format.yml`, `cargo-quality.yml`, `sbom.yml`,
+  `security.yml`) and had already drifted. It now lives once in
+  `.github/actions/setup-neat-core/action.yml`; every consumer calls
+  `uses: ./.github/actions/setup-neat-core`, so the next path-strategy change is
+  a one-file diff. The composite sets `persist-credentials: false` (least
+  privilege) and opens its symlink script with `set -euo pipefail`. A new guard
+  (`scripts/check-neat-core-composite-action.sh`) rejects any re-inlined copy,
+  and the path-strategy, run-block-safety, and action-version-pinning guards now
+  also scan `.github/actions` so the extracted block stays covered.
+- **Drop the redundant `cargo check` step from the CI `quality` job (Issue
+  #403).** `cargo clippy` (Run linter) drives the same rustc front-end over the
+  identical `--all-targets --all-features` scope with `-D warnings`, so it is
+  the strict type-check gate — the separate `Check types` step could only pass
+  once clippy already had and did not reuse clippy's artefacts, adding wall-clock
+  to the heaviest job for no coverage. The README "matches CI" block, its
+  alignment guard (`scripts/check-readme-ci-alignment.sh`), and `AGENTS.md` are
+  updated to match; the guard now rejects a re-introduced standalone
+  `cargo check`.
 - **Document the recommended `NEAT_SCORER_READ_BYTES` for large-record GRQ
   hosts (Issue #307).** Swept `NEAT_SCORER_READ_BYTES` ∈ {2, 8, 16, 32, 64} MiB
   on the #296 production fixture (9848-byte records). Larger aligned reads

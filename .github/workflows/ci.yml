@@ -25,16 +25,21 @@
 name: CI
 
 on:
-  push:
-    branches:
-      - Develop
-    paths-ignore:
-      - "**.md"
-      - "docs/**"
+  # No `push:` trigger (Issue #370). CI is a checker — the heavy test/lint/scan
+  # gate — so it should gate the pull request, not re-run post-merge. A
+  # push-to-`Develop` trigger duplicated the run that already gated the PR,
+  # wasting CI minutes and risking a red tick on the default branch for a check
+  # that already passed. Deploy/publish/release workflows differ (they must keep
+  # firing on push); this checker fires on `pull_request` and `workflow_dispatch`
+  # only. `scripts/check-ci-push-trigger.sh` guards against re-adding it.
   pull_request:
     types: [opened, synchronize, reopened]
     branches:
       - Develop
+      # Milestone sub-issue PRs target a shared `milestone/<slug>` branch
+      # (planning delivery workflow). Gate them here so each intermediate PR is
+      # checked, not just the single rollup PR into Develop (Issue #393).
+      - milestone/*
   workflow_dispatch:
 
 # Least-privilege default token scope (Issue #155). Without this block every
@@ -72,32 +77,19 @@ jobs:
         uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd  # v5
         with:
           fetch-depth: 0
+          # Read-only job (fmt/clippy/build/test/doc/release); never pushes
+          # back, so keep the GITHUB_TOKEN off disk (Issue #376).
+          persist-credentials: false
 
-      # Path strategy for the NEAT-AI-core sibling (Issue #18):
-      #   * `actions/checkout` refuses any `path:` that resolves outside
-      #     `$GITHUB_WORKSPACE` (hence no `path: ../NEAT-AI-core`). We
-      #     therefore clone NEAT-AI-core INTO the workspace as `NEAT-AI-core`.
-      #   * Locally, `rust_scorer/Cargo.toml` points at
-      #     `../../NEAT-AI-core/neat-core` (NEAT-AI-core is a SIBLING clone
-      #     of NEAT-AI-scorer — see AGENTS.md).
-      #   * The symlink step below bridges the two layouts so Cargo finds
-      #     the expected sibling without the workflow having to rewrite
-      #     Cargo.toml.
-      - name: Checkout NEAT-AI-core (path dependency for neat-core)
-        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd  # v5
-        with:
-          repository: stSoftwareAU/NEAT-AI-core
-          ref: Develop
-          path: NEAT-AI-core
-
-      - name: Link NEAT-AI-core sibling path expected by Cargo
-        run: |
-          if [ ! -e "$GITHUB_WORKSPACE/../NEAT-AI-core" ]; then
-            ln -s "$GITHUB_WORKSPACE/NEAT-AI-core" "$GITHUB_WORKSPACE/../NEAT-AI-core"
-          fi
+      # Checkout + sibling symlink for the NEAT-AI-core path dependency
+      # (Issue #18) live in one local composite action (Issue #401) so the
+      # path strategy is defined once, not copy-pasted per job.
+      - name: Set up NEAT-AI-core sibling (path dependency for neat-core)
+        uses: ./.github/actions/setup-neat-core
 
       - name: Free up runner disk space
         run: |
+          set -euo pipefail
           df -h /
           sudo rm -rf /usr/share/dotnet
           sudo rm -rf /usr/local/lib/android
@@ -142,9 +134,12 @@ jobs:
             -D clippy::filter_next \
             -D clippy::collapsible_if
 
-      - name: Check types
-        run: cargo check --all-targets --all-features
-
+      # No standalone `cargo check` step: the clippy step above drives the same
+      # rustc front-end over the identical `--all-targets --all-features` scope
+      # with `-D warnings`, so it is the strict type-check gate. A separate
+      # `cargo check` could only pass once clippy already had, and clippy's
+      # rustc wrapper means it would not reuse clippy's artefacts either —
+      # pure redundant wall-clock on the heaviest job (Issue #403).
       - name: Build workspace
         run: cargo build --workspace
 
@@ -166,20 +161,27 @@ jobs:
     # Fan-in after `validation` keeps security audits aligned with the rest
     # of the graph — no advisory scan runs against a broken repo layout.
     needs: [validation]
-    # The reusable security.yml writes check-run annotations and PR/issue
-    # comments, so the calling job must grant those scopes explicitly: a
-    # called workflow's token can only be narrowed, never elevated, along the
-    # caller chain. With the read-only workflow default above, omitting this
-    # block would clamp security.yml's own `checks: write` / `issues: write`
-    # away. Mirrors the permissions declared in security.yml.
+    # The reusable security.yml writes check-run annotations and the
+    # dependency-review PR summary comment, so the calling job must grant those
+    # scopes explicitly: a called workflow's token can only be narrowed, never
+    # elevated, along the caller chain. With the read-only workflow default
+    # above, omitting this block would clamp security.yml's own `checks: write`
+    # / `pull-requests: write` away. `issues: write` is intentionally omitted —
+    # audit-check only files issues on non-PR events and this caller is PR-gated
+    # (Issue #398). Mirrors the permissions declared in security.yml.
     permissions:
       contents: read
       checks: write
-      issues: write
+      pull-requests: write
     uses: ./.github/workflows/security.yml
     if: github.event_name == 'pull_request'
     with:
-      include-dependency-review: true
+      # Opt out of the reusable workflow's dependency-review step (Issue #399).
+      # The standalone `dependency-review.yml` runs the same action on every PR
+      # — including PRs into `Develop` and `milestone/**` — so enabling it here
+      # too only produced a duplicate verdict on the dominant path. The
+      # standalone workflow is now the single dependency-review gate.
+      include-dependency-review: false
 
   validation:
     name: Project Validation
@@ -189,22 +191,17 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd  # v5
-
-      # NEAT-AI-core checkout path strategy — see note in the `quality` job
-      # above. Summary: in-workspace clone + sibling symlink so Cargo resolves
-      # the `../../NEAT-AI-core/neat-core` path dependency on the runner.
-      - name: Checkout NEAT-AI-core (path dependency for neat-core)
-        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd  # v5
         with:
-          repository: stSoftwareAU/NEAT-AI-core
-          ref: Develop
-          path: NEAT-AI-core
+          # validation only reads the tree (required-file check + cargo metadata)
+          # and never pushes back, so the workflow GITHUB_TOKEN must not be
+          # written to .git/config where a later step could read it (Issue #381).
+          persist-credentials: false
 
-      - name: Link NEAT-AI-core sibling path expected by Cargo
-        run: |
-          if [ ! -e "$GITHUB_WORKSPACE/../NEAT-AI-core" ]; then
-            ln -s "$GITHUB_WORKSPACE/NEAT-AI-core" "$GITHUB_WORKSPACE/../NEAT-AI-core"
-          fi
+      # NEAT-AI-core checkout + sibling symlink via the shared composite action
+      # (Issue #401); the composite already sets persist-credentials: false so
+      # this read-only job keeps the token off disk (Issue #381).
+      - name: Set up NEAT-AI-core sibling (path dependency for neat-core)
+        uses: ./.github/actions/setup-neat-core
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8  # stable, frozen 2026-05-18
@@ -259,25 +256,23 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd  # v5
-
-      # NEAT-AI-core checkout path strategy — see note in the `quality` job.
-      # Summary: in-workspace clone + sibling symlink so `cargo metadata`
-      # (invoked by cargo_metadata.bats) resolves the path dependency.
-      - name: Checkout NEAT-AI-core (path dependency for neat-core)
-        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd  # v5
         with:
-          repository: stSoftwareAU/NEAT-AI-core
-          ref: Develop
-          path: NEAT-AI-core
+          # shell-checks only reads the tree (bash -n / ShellCheck / bats) and
+          # never pushes back or fetches a private submodule, so the workflow
+          # GITHUB_TOKEN must not be written to .git/config where a later step
+          # could read it (Issue #378).
+          persist-credentials: false
 
-      - name: Link NEAT-AI-core sibling path expected by Cargo
-        run: |
-          if [ ! -e "$GITHUB_WORKSPACE/../NEAT-AI-core" ]; then
-            ln -s "$GITHUB_WORKSPACE/NEAT-AI-core" "$GITHUB_WORKSPACE/../NEAT-AI-core"
-          fi
+      # NEAT-AI-core checkout + sibling symlink via the shared composite action
+      # (Issue #401) so `cargo metadata` (invoked by cargo_metadata.bats)
+      # resolves the path dependency; the composite sets persist-credentials:
+      # false, keeping the token off disk for this read-only job (Issue #379).
+      - name: Set up NEAT-AI-core sibling (path dependency for neat-core)
+        uses: ./.github/actions/setup-neat-core
 
       - name: Check bash script syntax
         run: |
+          set -euo pipefail
           EXIT_CODE=0
           while IFS= read -r script; do
             if bash -n "$script"; then
@@ -301,6 +296,7 @@ jobs:
         env:
           SHELLCHECK_OPTS: -s bash
         run: |
+          set -euo pipefail
           shellcheck --version
           scripts=()
           while IFS= read -r script; do
@@ -329,6 +325,11 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd  # v5
+        with:
+          # Spell check only reads the tree — it never pushes back or fetches a
+          # private submodule — so the GITHUB_TOKEN must not be persisted into
+          # .git/config where a later step could read it (Issue #380).
+          persist-credentials: false
 
       # Configuration lives in `.codespellrc` at the repo root so CI and the
       # local preflight (`scripts/spell-check.sh`) stay in lock-step — see

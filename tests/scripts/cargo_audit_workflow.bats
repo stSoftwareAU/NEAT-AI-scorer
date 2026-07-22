@@ -30,7 +30,7 @@ name: Cargo Audit
 
 on:
   pull_request:
-    branches: ["*"]
+    branches: ["*", "milestone/**"]
   schedule:
     - cron: "0 6 * * 1"
   workflow_dispatch:
@@ -55,7 +55,7 @@ EOF
   [ "$status" -eq 0 ]
   # Issue #360: prove every rule was individually evaluated and passed via the
   # machine-checkable "OK   " marker rather than pinning informational wording.
-  [ "$(grep -c '^OK   ' <<<"$output")" -eq 6 ]
+  [ "$(grep -c '^OK   ' <<<"$output")" -eq 7 ]
 }
 
 @test "fails when the workflow is not triggered on pull_request" {
@@ -65,7 +65,7 @@ import sys
 path = sys.argv[1]
 with open(path) as fh:
     text = fh.read()
-text = text.replace("  pull_request:\n    branches: [\"*\"]\n", "")
+text = text.replace("  pull_request:\n    branches: [\"*\", \"milestone/**\"]\n", "")
 with open(path, "w") as fh:
     fh.write(text)
 PY
@@ -139,7 +139,7 @@ name: Cargo Audit
 # Issue #64 — uses the official rustsec/audit-check action.
 on:
   pull_request:
-    branches: ["*"]
+    branches: ["*", "milestone/**"]
   schedule:
     - cron: "0 6 * * 1"
 permissions:
@@ -157,6 +157,15 @@ EOF
   run "$SCRIPT_UNDER_TEST" --workflow "$TMP_WF/cargo-audit.yml"
   [ "$status" -eq 0 ]
   [[ "$output" == *"cargo audit invoked"* ]]
+}
+
+@test "fails when the pull_request branch filter omits milestone branches" {
+  write_audit_workflow "$TMP_WF/cargo-audit.yml"
+  # Revert to the pre-fix bare "*" filter, which does not match milestone/<slug>.
+  sed -i.bak 's|branches: \["\*", "milestone/\*\*"\]|branches: ["*"]|' "$TMP_WF/cargo-audit.yml"
+  run "$SCRIPT_UNDER_TEST" --workflow "$TMP_WF/cargo-audit.yml"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"milestone"* ]]
 }
 
 @test "reports an error when the workflow file does not exist" {

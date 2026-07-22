@@ -26,7 +26,6 @@ cargo clippy --all-targets --all-features -- \
   -D warnings \
   -D clippy::filter_next \
   -D clippy::collapsible_if
-cargo check --all-targets --all-features
 cargo build --workspace
 cargo test --workspace --all-features --verbose -- --test-threads=2
 RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
@@ -867,13 +866,17 @@ message live in `scripts/auto-format.sh` and are covered by
 `scripts/check-auto-format-workflow.sh` (invoked from `quality.sh`).
 
 A standalone Cargo Security Audit workflow (`.github/workflows/cargo-audit.yml`,
-Issue #64) mirrors the `cargo audit` step in the reusable `security.yml` but
-adds a weekly cron schedule (`0 6 * * 1`) plus `workflow_dispatch`. The
-schedule catches advisories published *after* the last PR — the lockfile
-does not change but the RustSec advisory database does. The workflow is
-validated by `scripts/check-cargo-audit-workflow.sh` (invoked from
-`quality.sh`) and covered end-to-end by
-`tests/scripts/cargo_audit_workflow.bats`.
+Issue #64) runs a prebuilt `cargo audit` on every PR (against `*` and
+`milestone/**`) and adds a weekly cron schedule (`0 6 * * 1`) plus
+`workflow_dispatch`. The schedule catches advisories published *after* the last
+PR — the lockfile does not change but the RustSec advisory database does. The
+reusable `security.yml` scans the same `Cargo.lock` via the `rustsec/audit-check`
+action (which annotates the PR check run). A second, direct `cargo audit` run
+in `security.yml` was removed as pure duplication (Issue #399): the action
+already fails the check on any advisory, so a follow-up run in the same job
+could not catch anything it missed. The workflow is validated by
+`scripts/check-cargo-audit-workflow.sh` (invoked from `quality.sh`) and covered
+end-to-end by `tests/scripts/cargo_audit_workflow.bats`.
 
 A standalone SBOM workflow (`.github/workflows/sbom.yml`, Issue #172) exports
 the dependency inventory as a CycloneDX Software Bill of Materials and uploads
@@ -899,7 +902,7 @@ flowchart LR
 ```
 
 CI installs its cargo CLI tools from **prebuilt binaries**, not from source
-(Issue #208). `cargo-audit` (`cargo-audit.yml`, `security.yml`),
+(Issue #208). `cargo-audit` (`cargo-audit.yml`),
 `cargo-cyclonedx` (`sbom.yml`), and `cargo-deny` (`ci.yml`) are fetched via
 `taiki-e/install-action` — a released binary downloads in seconds, where
 `cargo install <tool> --locked` recompiled the tool from source on every run
@@ -910,10 +913,22 @@ covered end-to-end by `tests/scripts/prebuilt_tool_install.bats`.
 
 A standalone Cargo Quality workflow (`.github/workflows/cargo-quality.yml`,
 Issue #66) runs `cargo fmt --check` and `cargo clippy -- -D warnings` on
-pull requests against **any** branch (`branches: ["*"]`). `ci.yml` only
-fires for PRs targeting `Develop`, so this dedicated workflow gives feature
-branches and stacked PRs the same fmt + clippy gate without spinning up the
-full CI graph. The workflow is validated by
+pull requests against **any** branch (`branches: ["**"]`). `**` is used
+rather than `*` because GitHub's `*` glob does not match across `/`, so a
+`["*"]` filter would silently skip `milestone/<slug>` sub-issue PRs
+(Issue #392); `**` also matches nested branch names. `ci.yml` fires for PRs
+targeting `Develop` and `milestone/*` (Issue #393) — milestone branch names are
+`milestone/<slug>` with no nested slashes, so the single-level `milestone/*`
+glob gates every sub-issue PR rather than only the rollup PR into `Develop`.
+This dedicated workflow still gives other feature branches and stacked PRs the
+same fmt + clippy gate without spinning up the full CI graph. The Gitleaks
+secret-scanning workflow (`.github/workflows/gitleaks.yml`) carries the same
+`milestone/*` glob (Issue #394) — its previous `["*"]` filter matched only
+top-level branches (GitHub's `*` glob does not span `/`), so milestone
+sub-issue PRs merged into the milestone branch unscanned. The milestone
+filter on both `ci.yml` and `gitleaks.yml` is validated by
+`scripts/check-milestone-branch-filter.sh` (invoked from `quality.sh`) and
+covered end-to-end by `tests/scripts/milestone_branch_filter.bats`. The workflow is validated by
 `scripts/check-cargo-quality-workflow.sh` (invoked from `quality.sh`) and
 covered end-to-end by `tests/scripts/cargo_quality_workflow.bats`.
 
@@ -930,21 +945,25 @@ re-introduces the duplicate ShellCheck step.
 
 A standalone Dependency Review workflow
 (`.github/workflows/dependency-review.yml`, Issue #62) runs
-`actions/dependency-review-action@v4` on every pull request against any
-branch. The action diffs the PR's manifest against the base branch and
-fails the run if any newly introduced dependency carries a known
-vulnerability or disallowed licence — catching supply-chain regressions
-before merge. The reusable `security.yml` workflow runs the same action
-inside the full CI graph; this dedicated workflow gives feature branches
-and stacked PRs the same gate without spinning up CI. The workflow is
-validated by `scripts/check-dependency-review-workflow.sh` (invoked from
-`quality.sh`) and covered end-to-end by
-`tests/scripts/dependency_review_workflow.bats`.
+`actions/dependency-review-action@v5` on every pull request against any branch
+(`branches: ["*", "milestone/**"]`). The action diffs the PR's manifest against
+the base branch and fails the run if any newly introduced dependency carries a
+known vulnerability or disallowed licence — catching supply-chain regressions
+before merge. This is now the **single** dependency-review gate (Issue #399):
+the reusable `security.yml` used to run the same action inside CI too, but that
+duplicated the verdict on the dominant `Develop` / `milestone/*` path, so its
+caller (`ci.yml`) now passes `include-dependency-review: false`. Because the
+standalone workflow is the sole gate, its `pull_request` filter includes
+`milestone/**` so milestone sub-issue PRs are not silently skipped (a bare `*`
+glob does not span `/`). The workflow is validated by
+`scripts/check-dependency-review-workflow.sh` (invoked from `quality.sh`) and
+covered end-to-end by `tests/scripts/dependency_review_workflow.bats`.
 
 A standalone Actionlint workflow (`.github/workflows/actionlint.yml`,
 Issue #195) runs [actionlint](https://github.com/rhysd/actionlint) — the
-standard GitHub Actions linter — on every pull request and on pushes to the
-default branches. actionlint catches workflow regressions that a plain YAML
+standard GitHub Actions linter — on every pull request (including PRs targeting
+`milestone/**` sub-issue branches, Issue #390) and on pushes to the default
+branches. actionlint catches workflow regressions that a plain YAML
 parse misses: invalid `runs-on` labels, broken `${{ }}` expressions, unknown
 `uses:` inputs, and shellcheck findings inside `run:` scripts. The binary is
 downloaded from a version-pinned upstream release by the official

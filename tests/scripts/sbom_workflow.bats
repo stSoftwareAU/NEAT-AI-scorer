@@ -42,6 +42,8 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
       - uses: actions/checkout@v5
         with:
           repository: stSoftwareAU/NEAT-AI-core
@@ -65,7 +67,39 @@ EOF
   [ "$status" -eq 0 ]
   # Issue #360: prove every rule was individually evaluated and passed via the
   # machine-checkable "OK   " marker rather than pinning informational wording.
-  [ "$(grep -c '^OK   ' <<<"$output")" -eq 6 ]
+  [ "$(grep -c '^OK   ' <<<"$output")" -eq 7 ]
+}
+
+@test "fails when the self checkout does not set persist-credentials: false" {
+  write_sbom_workflow "$TMP_WF/sbom.yml"
+  # Drop the `persist-credentials: false` from the self (current repo) checkout.
+  python3 - "$TMP_WF/sbom.yml" <<'PY'
+import sys
+path = sys.argv[1]
+with open(path) as fh:
+    text = fh.read()
+text = text.replace(
+    "      - uses: actions/checkout@v5\n"
+    "        with:\n"
+    "          persist-credentials: false\n",
+    "      - uses: actions/checkout@v5\n",
+    1,
+)
+with open(path, "w") as fh:
+    fh.write(text)
+PY
+  run "$SCRIPT_UNDER_TEST" --workflow "$TMP_WF/sbom.yml"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"persist-credentials: false"* ]]
+}
+
+@test "passes when only the cross-repo checkout omits persist-credentials" {
+  # The NEAT-AI-core checkout carries a `repository:` input, so it is exempt —
+  # the rule targets only the self checkout of the current repository.
+  write_sbom_workflow "$TMP_WF/sbom.yml"
+  run "$SCRIPT_UNDER_TEST" --workflow "$TMP_WF/sbom.yml"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"self checkout sets persist-credentials: false"* ]]
 }
 
 @test "fails when no build trigger is present" {

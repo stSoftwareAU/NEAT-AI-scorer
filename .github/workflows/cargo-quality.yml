@@ -4,9 +4,12 @@ name: Cargo Quality
 #
 # Why a dedicated workflow when ci.yml already runs fmt + clippy?
 #   * ci.yml only triggers on pushes/PRs against `Develop`. This workflow
-#     fires on PRs against ANY branch (`branches: ["*"]`), so feature
+#     fires on PRs against ANY branch (`branches: ["**"]`), so feature
 #     branches and stacked PRs targeting non-Develop bases also get fmt
-#     and clippy coverage.
+#     and clippy coverage. `**` is used rather than `*` because GitHub's
+#     `*` glob does not match across `/`, so `["*"]` would silently skip
+#     milestone/<slug> sub-issue PRs (Issue #392); `**` matches nested
+#     branch names too.
 #   * Keeps a small, fast, single-purpose gate that is cheap to re-run
 #     when iterating on style or lint fixes.
 #
@@ -20,7 +23,7 @@ name: Cargo Quality
 
 on:
   pull_request:
-    branches: ["*"]
+    branches: ["**"]
   workflow_dispatch:
 
 permissions:
@@ -47,24 +50,17 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd  # v5
-
-      # NEAT-AI-core is a path dependency required for `cargo fmt --all`
-      # and `cargo clippy` to resolve the workspace. Mirrors the strategy
-      # used in ci.yml — see the comment there for the path-strategy
-      # rationale.
-      - name: Checkout NEAT-AI-core (path dependency for neat-core)
-        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd  # v5
         with:
-          repository: stSoftwareAU/NEAT-AI-core
-          ref: Develop
-          path: NEAT-AI-core
+          # This job only runs fmt + clippy — it never pushes back to the repo
+          # nor fetches a private submodule, so the GITHUB_TOKEN must not be
+          # persisted to .git/config where a later step could read it (#374).
+          persist-credentials: false
 
-      - name: Link NEAT-AI-core sibling path expected by Cargo
-        run: |
-          set -euo pipefail
-          if [ ! -e "$GITHUB_WORKSPACE/../NEAT-AI-core" ]; then
-            ln -s "$GITHUB_WORKSPACE/NEAT-AI-core" "$GITHUB_WORKSPACE/../NEAT-AI-core"
-          fi
+      # NEAT-AI-core is a path dependency required for `cargo fmt --all` and
+      # `cargo clippy` to resolve the workspace. The checkout + sibling symlink
+      # live in the shared composite action (Issue #401).
+      - name: Set up NEAT-AI-core sibling (path dependency for neat-core)
+        uses: ./.github/actions/setup-neat-core
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8  # stable, frozen 2026-05-18
