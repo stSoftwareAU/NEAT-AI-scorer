@@ -26,7 +26,6 @@ cargo clippy --all-targets --all-features -- \
   -D warnings \
   -D clippy::filter_next \
   -D clippy::collapsible_if
-cargo check --all-targets --all-features
 cargo build --workspace
 cargo test --workspace --all-features --verbose -- --test-threads=2
 RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps

@@ -38,7 +38,6 @@ cargo clippy --all-targets --all-features -- \
   -D warnings \
   -D clippy::filter_next \
   -D clippy::collapsible_if
-cargo check --all-targets --all-features
 cargo build --workspace
 cargo test --workspace --all-features --verbose -- --test-threads=2
 RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
@@ -63,12 +62,17 @@ EOF
   [[ "$output" == *"cargo doc"* ]]
 }
 
-@test "fails when cargo check is missing" {
+# Issue #403: clippy is the strict type-check gate in the CI `quality` job, so a
+# standalone `cargo check` step is redundant and was removed from CI. The
+# matches-CI block must not reintroduce it, or it drifts back from the job.
+@test "fails when a redundant cargo check step is present (Issue #403)" {
   write_aligned_readme "$TMP_DIR/README.md"
-  sed -i.bak '/cargo check/d' "$TMP_DIR/README.md"
+  # Re-add the redundant standalone type-check step CI no longer runs.
+  sed -i.bak 's|^cargo build --workspace$|cargo check --all-targets --all-features\ncargo build --workspace|' "$TMP_DIR/README.md"
   run "$SCRIPT_UNDER_TEST" --readme "$TMP_DIR/README.md"
   [ "$status" -ne 0 ]
-  [[ "$output" == *"cargo check --all-targets --all-features"* ]]
+  [[ "$output" == *"cargo check"* ]]
+  [[ "$output" == *"redundant"* ]]
 }
 
 @test "fails when the workspace debug build is missing" {
