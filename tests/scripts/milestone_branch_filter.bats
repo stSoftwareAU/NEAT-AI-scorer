@@ -131,3 +131,13 @@ EOF
   [ "$status" -eq 0 ]
   [[ "$output" != *"FAIL"* ]]
 }
+
+# Issue #396 — the Semgrep SAST CI quality workflow must also gate milestone
+# PRs. A bare `["*"]` filter matches only slash-free branch names, so
+# `milestone/<slug>` PRs slip through unscanned; the filter must include a
+# `milestone/*` glob.
+@test "the repository Semgrep workflow gates milestone PRs" {
+  run "$SCRIPT_UNDER_TEST" --workflow "${BATS_TEST_DIRNAME}/../../.github/workflows/semgrep.yml"
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"FAIL"* ]]
+}
