@@ -68,6 +68,15 @@ section to the released version with its date.
 
 ### Changed
 
+- **Drop the redundant `cargo check` step from the CI `quality` job (Issue
+  #403).** `cargo clippy` (Run linter) drives the same rustc front-end over the
+  identical `--all-targets --all-features` scope with `-D warnings`, so it is
+  the strict type-check gate — the separate `Check types` step could only pass
+  once clippy already had and did not reuse clippy's artefacts, adding wall-clock
+  to the heaviest job for no coverage. The README "matches CI" block, its
+  alignment guard (`scripts/check-readme-ci-alignment.sh`), and `AGENTS.md` are
+  updated to match; the guard now rejects a re-introduced standalone
+  `cargo check`.
 - **Document the recommended `NEAT_SCORER_READ_BYTES` for large-record GRQ
   hosts (Issue #307).** Swept `NEAT_SCORER_READ_BYTES` ∈ {2, 8, 16, 32, 64} MiB
   on the #296 production fixture (9848-byte records). Larger aligned reads

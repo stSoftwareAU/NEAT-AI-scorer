@@ -146,9 +146,12 @@ jobs:
             -D clippy::filter_next \
             -D clippy::collapsible_if
 
-      - name: Check types
-        run: cargo check --all-targets --all-features
-
+      # No standalone `cargo check` step: the clippy step above drives the same
+      # rustc front-end over the identical `--all-targets --all-features` scope
+      # with `-D warnings`, so it is the strict type-check gate. A separate
+      # `cargo check` could only pass once clippy already had, and clippy's
+      # rustc wrapper means it would not reuse clippy's artefacts either —
+      # pure redundant wall-clock on the heaviest job (Issue #403).
       - name: Build workspace
         run: cargo build --workspace
 
