@@ -58,7 +58,6 @@ canonical_commands=(
   'cargo deny check'
   'cargo fmt --all -- --check'
   'cargo clippy --all-targets --all-features -- -D warnings -D clippy::filter_next -D clippy::collapsible_if'
-  'cargo check --all-targets --all-features'
   'cargo build --workspace'
   'cargo test --workspace --all-features'
   'RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps'
@@ -94,6 +93,15 @@ done
 # must not be the one a contributor copies. CI runs clippy without --workspace.
 if [[ "$collapsed" == *"cargo clippy --workspace"* ]]; then
   echo "FAIL README clippy uses '--workspace'; CI uses '--all-targets --all-features'" >&2
+  fail=1
+fi
+
+# A standalone `cargo check` step is redundant with clippy — clippy drives the
+# same rustc front-end over the same scope with `-D warnings`, so it is the
+# strict type-check gate. CI dropped the separate `cargo check` step (Issue
+# #403); the matches-CI block must not reintroduce it or it drifts from the job.
+if [[ "$collapsed" == *"cargo check"* ]]; then
+  echo "FAIL README block has a redundant 'cargo check' step; CI relies on clippy as the type-check gate (Issue #403)" >&2
   fail=1
 fi
 
