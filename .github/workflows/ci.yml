@@ -96,12 +96,14 @@ jobs:
 
       - name: Link NEAT-AI-core sibling path expected by Cargo
         run: |
+          set -euo pipefail
           if [ ! -e "$GITHUB_WORKSPACE/../NEAT-AI-core" ]; then
             ln -s "$GITHUB_WORKSPACE/NEAT-AI-core" "$GITHUB_WORKSPACE/../NEAT-AI-core"
           fi
 
       - name: Free up runner disk space
         run: |
+          set -euo pipefail
           df -h /
           sudo rm -rf /usr/share/dotnet
           sudo rm -rf /usr/local/lib/android
@@ -225,6 +227,7 @@ jobs:
 
       - name: Link NEAT-AI-core sibling path expected by Cargo
         run: |
+          set -euo pipefail
           if [ ! -e "$GITHUB_WORKSPACE/../NEAT-AI-core" ]; then
             ln -s "$GITHUB_WORKSPACE/NEAT-AI-core" "$GITHUB_WORKSPACE/../NEAT-AI-core"
           fi
@@ -299,12 +302,14 @@ jobs:
 
       - name: Link NEAT-AI-core sibling path expected by Cargo
         run: |
+          set -euo pipefail
           if [ ! -e "$GITHUB_WORKSPACE/../NEAT-AI-core" ]; then
             ln -s "$GITHUB_WORKSPACE/NEAT-AI-core" "$GITHUB_WORKSPACE/../NEAT-AI-core"
           fi
 
       - name: Check bash script syntax
         run: |
+          set -euo pipefail
           EXIT_CODE=0
           while IFS= read -r script; do
             if bash -n "$script"; then
@@ -328,6 +333,7 @@ jobs:
         env:
           SHELLCHECK_OPTS: -s bash
         run: |
+          set -euo pipefail
           shellcheck --version
           scripts=()
           while IFS= read -r script; do
