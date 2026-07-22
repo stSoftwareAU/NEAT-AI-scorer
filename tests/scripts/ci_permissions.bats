@@ -52,7 +52,7 @@ jobs:
     permissions:
       contents: read
       checks: write
-      issues: write
+      pull-requests: write
     uses: ./.github/workflows/security.yml
     if: github.event_name == 'pull_request'
     with:
@@ -83,7 +83,7 @@ jobs:
     permissions:
       contents: read
       checks: write
-      issues: write
+      pull-requests: write
     uses: ./.github/workflows/security.yml
 EOF
   run "$SCRIPT_UNDER_TEST" --workflow "$TMP_WF"
@@ -114,7 +114,7 @@ jobs:
     permissions:
       contents: read
       checks: write
-      issues: write
+      pull-requests: write
     uses: ./.github/workflows/security.yml
 EOF
   run "$SCRIPT_UNDER_TEST" --workflow "$TMP_WF"
@@ -150,13 +150,13 @@ EOF
   [[ "$output" == *"security job must grant 'checks: write'"* ]]
 }
 
-@test "fails when the security job omits issues: write" {
+@test "fails when the security job omits pull-requests: write" {
   write_good_workflow "$TMP_WF"
-  grep -v 'issues: write' "$TMP_WF" >"$TMP_WF.stripped"
+  grep -v 'pull-requests: write' "$TMP_WF" >"$TMP_WF.stripped"
   mv "$TMP_WF.stripped" "$TMP_WF"
   run "$SCRIPT_UNDER_TEST" --workflow "$TMP_WF"
   [ "$status" -ne 0 ]
-  [[ "$output" == *"security job must grant 'issues: write'"* ]]
+  [[ "$output" == *"security job must grant 'pull-requests: write'"* ]]
 }
 
 @test "reports an error when the workflow file does not exist" {

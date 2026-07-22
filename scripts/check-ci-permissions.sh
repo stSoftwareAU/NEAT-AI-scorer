@@ -14,12 +14,16 @@
 #      `*: write` scope at the workflow level.
 #   3. The `security` job — which calls the reusable `security.yml` — declares
 #      its own job-level `permissions:` granting the scopes the reusable
-#      workflow needs (`checks: write`, `issues: write`, and `contents: read`).
-#      This is required because a called workflow's token can only be narrowed,
-#      never elevated, along the caller chain — without the job-level grant the
-#      reusable workflow's own `checks: write` / `issues: write` would be
-#      clamped away by the read-only workflow default and the security
-#      annotations would silently fail.
+#      workflow needs (`checks: write`, `pull-requests: write`, and
+#      `contents: read`). This is required because a called workflow's token can
+#      only be narrowed, never elevated, along the caller chain — without the
+#      job-level grant the reusable workflow's own `checks: write` /
+#      `pull-requests: write` would be clamped away by the read-only workflow
+#      default and the security annotations / dependency-review PR comment would
+#      silently fail. `pull-requests: write` (not `issues: write`) is the scope
+#      the dependency-review action needs to post its `comment-summary-in-pr`
+#      summary; the audit-check action only files issues on non-PR events, which
+#      this PR-gated caller never triggers (Issue #398).
 #
 # The script takes a single optional `--workflow PATH` argument so BATS tests
 # can exercise it against fixtures. With no argument it validates
@@ -246,7 +250,7 @@ if [[ "$(field SECURITY_JOB)" == "1" ]]; then
     fail "security job must declare job-level 'permissions:' — the reusable security.yml needs checks/issues write, and a read-only default would clamp them away"
   fi
 
-  for scope in checks issues; do
+  for scope in checks pull-requests; do
     if [[ "$(scope_value SEC "$scope")" == "write" ]]; then
       ok "security job grants $scope: write"
     else

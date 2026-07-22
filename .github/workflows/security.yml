@@ -9,10 +9,18 @@ on:
         type: boolean
         default: true
 
+# Least-privilege token scope, derived from the steps below (Issue #398):
+#   * checks: write        — rustsec/audit-check annotates the check run.
+#   * pull-requests: write — dependency-review posts its `comment-summary-in-pr`
+#                            summary comment.
+# `issues: write` is deliberately NOT granted: audit-check only files issues on
+# non-PR events (push/schedule) and this workflow's sole caller is PR-gated, so
+# the scope would be dead weight widening the blast radius. A schedule-triggered
+# caller that wants issue filing can grant `issues: write` itself.
 permissions:
   contents: read
   checks: write
-  issues: write
+  pull-requests: write
 
 jobs:
   security:
