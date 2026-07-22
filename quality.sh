@@ -93,6 +93,9 @@ echo "🪄 Validating auto-format PR workflow (Issue #19)..."
 echo "🧭 Validating CI job dependency graph (Issue #23)..."
 ./scripts/check-ci-job-graph.sh
 
+echo "🎯 Validating CI gates milestone PRs (Issue #393)..."
+./scripts/check-milestone-branch-filter.sh
+
 echo "🔢 Validating workflow action versions for Node 24 compat (Issue #24)..."
 ./scripts/check-workflow-action-versions.sh
 
