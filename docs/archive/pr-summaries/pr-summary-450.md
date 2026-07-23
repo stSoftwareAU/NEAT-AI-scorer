@@ -23,8 +23,8 @@ Rewording (same style as the sibling `docs/performance-baseline.md` change, Issu
 | Production **GRQ-cluster** records are 9848 bytes | Production records are 9848 bytes |
 | On **GRQ** hosts / within **GRQ** host RAM headroom | On **production** hosts / within **production** host RAM headroom |
 
-The `NEAT-AI*` dependency-table rows (public repos) and the
-`stSoftwareAU/VibeCoding#1613` reference (tracked separately) are untouched, as the
+The `NEAT-AI*` dependency-table rows (public repos) and the private
+automation-repo reference (tracked separately, Issue #451) are untouched, as the
 issue specifies.
 
 ## Evidence

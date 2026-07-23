@@ -795,8 +795,8 @@ into `quality.sh`) and covered end-to-end by
 
 ### Pre-quality dependency bump (`bump-deps.sh`)
 
-`bump-deps.sh` lives at the repo root and is invoked by the Vibe Coder
-worker before `quality.sh` (per stSoftwareAU/VibeCoding#1613). It refreshes
+`bump-deps.sh` lives at the repo root and is invoked by the automation
+worker before `quality.sh`, per the standing dependency-bump contract. It refreshes
 the Cargo dependency graph in four stages and prints a one-line summary:
 
 1. **Internal — NEAT-AI-core pin.** When any workspace member's `Cargo.toml`
