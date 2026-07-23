@@ -14,7 +14,7 @@ the runs with [`scripts/run-benches.sh`](../scripts/run-benches.sh) or
 | `score_from_json_fused/forward_only` | End-to-end forward-only fused MSE accumulate over a synthetic creature + a `.bin` corpus. | Calls [`accumulate_mse_sum_forward_only_fused`](../rust_scorer/src/stream_score.rs) — the hot path the CLI runs in default mode. |
 | `score_from_creature_dir/creatures/N` | Directory mode, one shared scan + `N` creatures evaluated in parallel (`N=10`, `N=50`). | Calls [`score_from_creature_dir`](../rust_scorer/src/multi_score.rs); future `multi_score.rs` work can be A/B'd against this. |
 | `unpack_and_mse_inner/unpack_then_mse` | Micro-benchmark of the little-endian `f32` unpack + `mse_sum_batch_packed` inner loop on a fixed in-memory chunk (16 K records). | Mirrors the shared inner loop in `unpack_f32s_le` + `mse_sum_batch_packed` so vectorisation work can be measured in isolation. |
-| `production_single_creature/forward_only` | End-to-end forward-only fused MSE accumulate over the **production** GRQ-cluster creature (Issue #296). | Fetches [`network.json`](https://raw.githubusercontent.com/stSoftwareAU/GRQ-cluster/main/network.json) at bench time; **fail-loud** — panics rather than falling back to the synthetic fixture. See [`prod_fixture`](../rust_scorer/src/prod_fixture.rs). |
+| `production_single_creature/forward_only` | End-to-end forward-only fused MSE accumulate over the **production** GRQ-cluster creature (Issue #296). | Requires a **local** `network.json` supplied via `BENCH_PROD_CREATURE` — this public repo ships none and fetches nothing (Issue #448); the bench skips when it is unset and is otherwise **fail-loud** (panics rather than falling back to the synthetic fixture). See [`prod_fixture`](../rust_scorer/src/prod_fixture.rs). |
 | `production_multi_creature/creatures/N` | Directory mode over copies of the production creature (`N=1`, `N=BENCH_PROD_CREATURES`). | The candidate optimisations #297–#299 A/B against this on the real creature, not the synthetic fixture. |
 
 ## Fixture parameters
@@ -665,10 +665,11 @@ unchanged so their numbers remain reproducible at their original fixture sizes.
 
 ### The production creature
 
-Fetched from
-[`stSoftwareAU/GRQ-cluster` → `network.json`](https://raw.githubusercontent.com/stSoftwareAU/GRQ-cluster/main/network.json)
-at bench time (≈ 3 MB — not committed; the evolved creature is re-published, so a
-committed copy would drift silently). Topology observed on this run:
+Supplied as a **local** `network.json` via `BENCH_PROD_CREATURE` (≈ 3 MB — not
+committed and **never fetched**; this public repo is self-contained and reaches
+for no private-repo creature at runtime — Issue #448). The creature lives in a
+private repository; contributors with access provide their own local copy.
+Topology observed on the original run:
 
 | Property | Production creature | Synthetic fixture |
 |---|---:|---:|
@@ -679,11 +680,13 @@ committed copy would drift silently). Topology observed on this run:
 | Distinct squash types | **34** | 1 (`TANH`) |
 | `forwardOnly` | true | true |
 
-The bench is **fail-loud**: if `network.json` cannot be fetched, is empty, fails
-to deserialize, or presents a topology outside the production ranges, the
-fixture panics rather than silently falling back to the synthetic creature (which
-would corrupt every downstream A/B comparison). Before Criterion timing starts it
-also asserts the corpus row count matches the requested `BENCH_PROD_BYTES`.
+The bench is **fail-loud**: when `BENCH_PROD_CREATURE` is unset the production
+benches skip cleanly, but once a local `network.json` is supplied, if it is
+empty, fails to deserialize, or presents a topology outside the production
+ranges, the fixture panics rather than silently falling back to the synthetic
+creature (which would corrupt every downstream A/B comparison). Before Criterion
+timing starts it also asserts the corpus row count matches the requested
+`BENCH_PROD_BYTES`.
 
 ### Corpus sizing
 

@@ -28,14 +28,14 @@
 #   PROFILE_NUM_INPUTS      inputs per record   (default 8)
 #   PROFILE_NUM_OUTPUTS     outputs per record  (default 2)
 #   PROFILE_HIDDEN          hidden neurons      (default 8)
-#   PROFILE_PROD_CREATURE   path to the GRQ-cluster production network.json
-#                           (Issue #296). When set, the real creature is used
-#                           instead of the synthetic MLP; PROFILE_NUM_INPUTS /
-#                           PROFILE_NUM_OUTPUTS are derived from it and the SVGs
-#                           are written with a `-prod` suffix so the synthetic
-#                           captures are not overwritten. Fetch it first with:
-#                             curl -fsSL -o /tmp/grq-network.json \
-#                               https://raw.githubusercontent.com/stSoftwareAU/GRQ-cluster/main/network.json
+#   PROFILE_PROD_CREATURE   path to a LOCAL production network.json (Issue #296).
+#                           When set, the real creature is used instead of the
+#                           synthetic MLP; PROFILE_NUM_INPUTS / PROFILE_NUM_OUTPUTS
+#                           are derived from it and the SVGs are written with a
+#                           `-prod` suffix so the synthetic captures are not
+#                           overwritten. This public repo ships no production
+#                           creature and fetches nothing (Issue #448) — supply
+#                           your own local file.
 #
 # Prerequisites:
 #   cargo install inferno        # collapsed-stack → SVG
@@ -67,8 +67,7 @@ SVG_SUFFIX=""
 if [ -n "$PROD_CREATURE" ]; then
   if [ ! -s "$PROD_CREATURE" ]; then
     echo "❌ PROFILE_PROD_CREATURE=$PROD_CREATURE is missing or empty" >&2
-    echo "   fetch it: curl -fsSL -o \"$PROD_CREATURE\" \\" >&2
-    echo "     https://raw.githubusercontent.com/stSoftwareAU/GRQ-cluster/main/network.json" >&2
+    echo "   supply a LOCAL production network.json — this repo fetches nothing (Issue #448)" >&2
     exit 1
   fi
   # Derive dims from the real creature so the corpus matches it.
