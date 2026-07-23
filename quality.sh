@@ -93,6 +93,9 @@ echo "🔒 Validating SECURITY.md vulnerability disclosure policy (Issue #177)..
 echo "🪄 Validating auto-format PR workflow (Issue #19)..."
 ./scripts/check-auto-format-workflow.sh
 
+echo "🔑 Validating bot-push workflows use ACTIONS_PUSH (Issue #435)..."
+./scripts/check-bot-push-token.sh
+
 echo "🧭 Validating CI job dependency graph (Issue #23)..."
 ./scripts/check-ci-job-graph.sh
 
