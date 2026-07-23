@@ -118,7 +118,7 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.head.ref }}
           fetch-depth: 0
-          token: ${{ secrets.GITHUB_TOKEN }}
+          persist-credentials: false
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
@@ -138,13 +138,17 @@ jobs:
           fi
       - name: Commit and push rustfmt fixes
         if: steps.detect.outputs.changed == 'true'
+        env:
+          GH_PAT: ${{ secrets.ACTIONS_PUSH || secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           msg="$(./scripts/auto-format.sh --commit-message)"
           git commit -am "$msg"
-          git push origin "HEAD:${{ github.event.pull_request.head.ref }}"
+          AUTH_HEADER="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GH_PAT" | base64 -w0)"
+          git -c http.https://github.com/.extraheader="$AUTH_HEADER" \
+            push origin "HEAD:${{ github.event.pull_request.head.ref }}"
 EOF
 }
 
@@ -267,6 +271,43 @@ EOF
   run "$WF_CHECK" --workflow "$TMP_WF/auto-format.yml"
   [ "$status" -ne 0 ]
   [[ "$output" == *"fork"* || "$output" == *"head.repo"* ]]
+}
+
+@test "workflow validator fails when ACTIONS_PUSH push token is missing" {
+  cat >"$TMP_WF/auto-format.yml" <<'EOF'
+name: Auto Format
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+permissions:
+  contents: write
+jobs:
+  auto-format:
+    runs-on: ubuntu-latest
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    steps:
+      - uses: actions/checkout@v4
+      - name: Apply cargo fmt
+        run: |
+          set -euo pipefail
+          cargo fmt --all
+      - name: Detect formatting changes
+        id: detect
+        run: |
+          set -euo pipefail
+          echo "changed=true" >>"$GITHUB_OUTPUT"
+      - name: Commit and push
+        if: steps.detect.outputs.changed == 'true'
+        env:
+          GH_PAT: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          git commit -am "fmt"
+          git push
+EOF
+  run "$WF_CHECK" --workflow "$TMP_WF/auto-format.yml"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"ACTIONS_PUSH"* || "$output" == *"Approve and run"* ]]
 }
 
 @test "real repository auto-format workflow validates cleanly" {

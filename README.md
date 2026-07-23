@@ -854,7 +854,9 @@ the patch component once and pushes that commit back to the PR branch. A
 re-run of CI — or a human-authored bump on the same branch — short-circuits
 the job, so no duplicate bump commits are produced. The underlying logic
 lives in `scripts/version-increment.sh` and is covered by
-`tests/scripts/version_increment.bats`.
+`tests/scripts/version_increment.bats`. Bot pushes authenticate with the
+org-level `ACTIONS_PUSH` PAT (falling back to `GITHUB_TOKEN` when unset) so
+the follow-on PR checks run without an "Approve and run" gate (Issue #435).
 
 PRs also run an auto-format job (`.github/workflows/auto-format.yml`,
 Issue #19). The job runs `cargo fmt --all` on the PR branch; if the working
@@ -863,7 +865,8 @@ and pushed back. When there are no changes the commit step is skipped, so
 re-running on a clean branch is a no-op. Change detection and the commit
 message live in `scripts/auto-format.sh` and are covered by
 `tests/scripts/auto_format.bats`; the workflow itself is validated by
-`scripts/check-auto-format-workflow.sh` (invoked from `quality.sh`).
+`scripts/check-auto-format-workflow.sh` (invoked from `quality.sh`). The same
+`ACTIONS_PUSH` push token pattern applies here (Issue #435).
 
 A standalone Cargo Security Audit workflow (`.github/workflows/cargo-audit.yml`,
 Issue #64) runs a prebuilt `cargo audit` on every PR (against `*` and

@@ -37,8 +37,8 @@ jobs:
     name: Version Bump Guard
     runs-on: ubuntu-latest
     timeout-minutes: 5
-    # Never attempt to push onto a fork's branch — the GITHUB_TOKEN cannot
-    # write there, and bump-on-fork is the PR author's responsibility.
+    # Never attempt to push onto a fork's branch — bump-on-fork is the
+    # PR author's responsibility.
     if: github.event.pull_request.head.repo.full_name == github.repository
     outputs:
       should_bump: ${{ steps.check.outputs.should_bump }}
@@ -49,6 +49,7 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.head.ref }}
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Fetch base ref
         env:
@@ -91,7 +92,9 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.head.ref }}
           fetch-depth: 0
-          token: ${{ secrets.GITHUB_TOKEN }}
+          # Keep the job token off disk; push auth is injected only below
+          # via ACTIONS_PUSH (Issue #435 / NEAT-AI ACTIONS_PUSH pattern).
+          persist-credentials: false
 
       - name: Fetch base ref
         env:
@@ -118,11 +121,19 @@ jobs:
             echo "changed=true" >>"$GITHUB_OUTPUT"
           fi
 
+      # Push with the org-level ACTIONS_PUSH PAT so the resulting
+      # `synchronize` event is attributed to a trusted identity and PR
+      # checks run without the "Awaiting approval / Approve and run" gate
+      # that GITHUB_TOKEN bot pushes create (Issue #435). Fall back to
+      # GITHUB_TOKEN only when the secret is unset. The PAT is passed via
+      # env + a per-command extraheader so it never lives in `.git/config`
+      # (mirrors NEAT-AI update-package-version.yml).
       - name: Commit and push bump
         if: steps.bump.outputs.changed == 'true'
         env:
           PR_HEAD_REF: ${{ github.event.pull_request.head.ref }}
           NEXT_VERSION: ${{ needs.guard.outputs.next_version }}
+          GH_PAT: ${{ secrets.ACTIONS_PUSH || secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           git config user.name "github-actions[bot]"
@@ -131,4 +142,6 @@ jobs:
           git commit -m "chore: auto-bump rust_scorer version to ${NEXT_VERSION}
 
           Closes part of #20 — guarded auto-version increment."
-          git push origin "HEAD:$PR_HEAD_REF"
+          AUTH_HEADER="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GH_PAT" | base64 -w0)"
+          git -c http.https://github.com/.extraheader="$AUTH_HEADER" \
+            push origin "HEAD:$PR_HEAD_REF"

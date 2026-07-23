@@ -35,8 +35,8 @@ jobs:
     name: Auto-format Code
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    # Skip forks — GITHUB_TOKEN cannot push to a fork's branch. Formatting
-    # on fork PRs is the author's responsibility.
+    # Skip forks — neither GITHUB_TOKEN nor ACTIONS_PUSH can push to a
+    # fork's branch. Formatting on fork PRs is the author's responsibility.
     if: github.event.pull_request.head.repo.full_name == github.repository
 
     steps:
@@ -45,7 +45,9 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.head.ref }}
           fetch-depth: 0
-          token: ${{ secrets.GITHUB_TOKEN }}
+          # Keep the job token off disk; push auth is injected only below
+          # via ACTIONS_PUSH (Issue #435 / NEAT-AI ACTIONS_PUSH pattern).
+          persist-credentials: false
 
       # NEAT-AI-core is a path dependency required for `cargo fmt --all` to
       # resolve the workspace. The checkout + sibling symlink live in the
@@ -73,14 +75,24 @@ jobs:
             echo "changed=false" >>"$GITHUB_OUTPUT"
           fi
 
+      # Push with the org-level ACTIONS_PUSH PAT so the resulting
+      # `synchronize` event is attributed to a trusted identity and PR
+      # checks run without the "Awaiting approval / Approve and run" gate
+      # that GITHUB_TOKEN bot pushes create (Issue #435). Fall back to
+      # GITHUB_TOKEN only when the secret is unset. The PAT is passed via
+      # env + a per-command extraheader so it never lives in `.git/config`
+      # (mirrors NEAT-AI update-package-version.yml).
       - name: Commit and push rustfmt fixes
         if: steps.detect.outputs.changed == 'true'
         env:
           PR_HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          GH_PAT: ${{ secrets.ACTIONS_PUSH || secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           msg="$(./scripts/auto-format.sh --commit-message)"
           git commit -am "$msg"
-          git push origin "HEAD:$PR_HEAD_REF"
+          AUTH_HEADER="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GH_PAT" | base64 -w0)"
+          git -c http.https://github.com/.extraheader="$AUTH_HEADER" \
+            push origin "HEAD:$PR_HEAD_REF"

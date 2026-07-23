@@ -12,6 +12,9 @@
 #      job is idempotent — re-running on a clean branch is a no-op.
 #   5. Refuse to push onto a fork's PR branch (the GITHUB_TOKEN cannot
 #      write there anyway; skipping keeps failure messages tidy).
+#   6. Authenticate the push with the org-level ACTIONS_PUSH PAT (with
+#      GITHUB_TOKEN fallback) so bot `synchronize` events re-trigger PR
+#      checks without the "Approve and run" gate (Issue #435).
 set -euo pipefail
 
 usage() {
@@ -119,6 +122,17 @@ if grep -qE 'set[[:space:]]+-euo[[:space:]]+pipefail' "$WORKFLOW"; then
   ok "strict bash (set -euo pipefail) present"
 else
   fail "no 'set -euo pipefail' in run: blocks — failures may be swallowed"
+fi
+
+# 7. Bot push must use ACTIONS_PUSH (org PAT) with GITHUB_TOKEN fallback.
+#    A bare GITHUB_TOKEN push attributes the synchronize event to
+#    github-actions[bot] and leaves required checks "awaiting approval"
+#    (Issue #435). Accept either the expression form or a GH_PAT env that
+#    references ACTIONS_PUSH.
+if grep -qE 'secrets\.ACTIONS_PUSH[[:space:]]*\|\|[[:space:]]*secrets\.GITHUB_TOKEN' "$WORKFLOW"; then
+  ok "push authenticates with ACTIONS_PUSH (GITHUB_TOKEN fallback)"
+else
+  fail "no 'secrets.ACTIONS_PUSH || secrets.GITHUB_TOKEN' — bot pushes will gate PR checks behind Approve and run (Issue #435)"
 fi
 
 exit "$EXIT_CODE"
