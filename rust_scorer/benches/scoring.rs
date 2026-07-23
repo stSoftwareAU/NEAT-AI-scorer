@@ -52,8 +52,7 @@ use rust_scorer::multi_score::{
     score_from_creature_dir_with_early_exit,
 };
 use rust_scorer::prod_fixture::{
-    PRODUCTION_CREATURE_URL, corpus_record_count, fetch_creature_to, load_production_creature,
-    resolve_creature_path,
+    corpus_record_count, load_production_creature, production_creature_path_from_env,
 };
 use rust_scorer::stream_score::accumulate_cost_sum_forward_only_fused;
 
@@ -595,18 +594,16 @@ fn bench_large_creature_cpu_vs_gpu(c: &mut Criterion) {
 // network (≈ 1666 neurons across ≈ 34 squash types, ≈ 21 510 synapses, 2461
 // inputs / 1 output) profiles very differently from pure TANH.
 //
-// Fail-loud: if the creature cannot be fetched / read / deserialized, or its
-// topology is not production-sized, the fixture panics — it never falls back to
-// the synthetic creature, which would corrupt every downstream A/B comparison.
+// This public repo ships no production creature and fetches nothing at bench
+// time (Issue #448). Supply a **local** copy via `BENCH_PROD_CREATURE`; when it
+// is unset the production benches skip cleanly, exactly like the GPU benches
+// skip without an adapter.
+//
+// Fail-loud: once a local creature is supplied, if it cannot be read /
+// deserialized, or its topology is not production-sized, the fixture panics — it
+// never falls back to the synthetic creature, which would corrupt every
+// downstream A/B comparison.
 // ---------------------------------------------------------------------------
-
-/// Workspace root (`.../NEAT-AI-scorer`) — parent of this crate's manifest dir.
-fn workspace_root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .expect("crate manifest dir has a parent")
-        .to_path_buf()
-}
 
 struct ProdFixture {
     _tmp: TempDir,
@@ -619,25 +616,32 @@ struct ProdFixture {
     total_bytes: usize,
 }
 
-/// Lazily build the production fixture once per process, failing loud on any
-/// problem so a broken fixture can never masquerade as a valid measurement.
-fn prod_fixture() -> &'static ProdFixture {
-    static FIX: OnceLock<ProdFixture> = OnceLock::new();
+/// Lazily build the production fixture once per process.
+///
+/// Returns `None` when no local production creature is supplied via
+/// `BENCH_PROD_CREATURE` (the public repo ships none and fetches nothing —
+/// Issue #448), so the production benches skip cleanly. When a local creature
+/// **is** supplied, this fails loud on any problem so a broken fixture can never
+/// masquerade as a valid measurement.
+fn prod_fixture() -> Option<&'static ProdFixture> {
+    static FIX: OnceLock<Option<ProdFixture>> = OnceLock::new();
     FIX.get_or_init(|| {
-        let root = workspace_root();
-        let creature_path = resolve_creature_path(&root);
+        let Some(creature_path) = production_creature_path_from_env() else {
+            eprintln!(
+                "prod_fixture: {} is unset — skipping production benches. \
+                 Set it to a local network.json to run them (nothing is fetched).",
+                rust_scorer::prod_fixture::PROD_CREATURE_ENV,
+            );
+            return None;
+        };
 
-        // Fetch on demand when the cache is cold; an explicit BENCH_PROD_CREATURE
-        // override is expected to already exist (documented offline path).
         if !creature_path.exists() {
-            fetch_creature_to(&creature_path, PRODUCTION_CREATURE_URL).unwrap_or_else(|e| {
-                panic!(
-                    "failed to fetch production creature to {}: {e}\n\
-                     set {} to a pre-downloaded network.json to run offline",
-                    creature_path.display(),
-                    rust_scorer::prod_fixture::PROD_CREATURE_ENV,
-                )
-            });
+            eprintln!(
+                "prod_fixture: {}={} does not exist — skipping production benches.",
+                rust_scorer::prod_fixture::PROD_CREATURE_ENV,
+                creature_path.display(),
+            );
+            return None;
         }
 
         let creature_json = fs::read_to_string(&creature_path).unwrap_or_else(|e| {
@@ -702,7 +706,7 @@ fn prod_fixture() -> &'static ProdFixture {
             creature.synapses.len(),
         );
 
-        ProdFixture {
+        Some(ProdFixture {
             _tmp: tmp,
             creature_json,
             creature,
@@ -711,13 +715,16 @@ fn prod_fixture() -> &'static ProdFixture {
             num_inputs,
             num_outputs,
             total_bytes,
-        }
+        })
     })
+    .as_ref()
 }
 
 /// Single-creature forward-only fused path against the production creature.
 fn bench_production_single(c: &mut Criterion) {
-    let fix = prod_fixture();
+    let Some(fix) = prod_fixture() else {
+        return;
+    };
     let creature = &fix.creature;
     let bin_files = find_bin_files(&fix.data_dir).expect("find bin files");
     let config = TrainingDataConfig {
@@ -753,7 +760,9 @@ fn bench_production_single(c: &mut Criterion) {
 /// are kept small (the production creature is ≈ 1666 neurons) and overridable
 /// via `BENCH_PROD_CREATURES`.
 fn bench_production_multi(c: &mut Criterion) {
-    let fix = prod_fixture();
+    let Some(fix) = prod_fixture() else {
+        return;
+    };
     let mut group = c.benchmark_group("production_multi_creature");
     group.sample_size(10);
     group.measurement_time(Duration::from_secs(20));
@@ -805,7 +814,9 @@ fn bench_production_multi(c: &mut Criterion) {
 /// (parent NEAT-AI#3256): recommend the default flip only if the GPU row is
 /// demonstrably faster with non-overlapping CIs.
 fn bench_production_gpu_vs_cpu(c: &mut Criterion) {
-    let fix = prod_fixture();
+    let Some(fix) = prod_fixture() else {
+        return;
+    };
     let pool_size = env_usize("BENCH_PROD_CREATURES", 4).max(1);
 
     let mut group = c.benchmark_group("production_gpu_vs_cpu");
