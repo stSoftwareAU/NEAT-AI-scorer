@@ -15,13 +15,13 @@ signature change, tracked by a monotonic reallocation-generation counter per
 growable buffer plus the bound scratch size.
 
 This is a correctness-preserving dispatch-overhead reduction. It does **not**
-flip `--gpu auto` routing — production GRQ topology is `ScratchOnly`, which still
+flip `--gpu auto` routing — production topology is `ScratchOnly`, which still
 selects CPU per #317/#319 — it lowers the fixed cost of every GPU dispatch on the
 `--gpu on` and all-private `auto` paths.
 
 The three remaining #322 experiments (64 MiB read default; async readback beyond
 `inflight=2`, blocked by the #319 Metal SIGSEGV; Metal-native micro-benchmark)
-need the proprietary full 521-bin GRQ corpus or are non-shipping spikes, and are
+need the proprietary full 521-bin production corpus or are non-shipping spikes, and are
 tracked in follow-up **#333**.
 
 ### Reuse decision
@@ -58,7 +58,7 @@ wall-time impact scales with dispatch count. Recorded in
 [`docs/performance-baseline.md`](../../performance-baseline.md) under
 "Production GPU dispatch overhead — 12 July 2026".
 
-**Ship-gate note.** #322's full ship gate (≥3 % CPU win on the full 521-bin GRQ
+**Ship-gate note.** #322's full ship gate (≥3 % CPU win on the full 521-bin production
 corpus, combined with #319 + kernel work) governs flipping the production default
 to GPU and needs proprietary data unavailable to the worker. This PR delivers the
 self-contained, measurable dispatch-overhead reduction and tracks the residual

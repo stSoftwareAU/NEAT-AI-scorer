@@ -59,7 +59,7 @@ section to the released version with its date.
   Constant neurons are also rejected by the pre-flight
   (`GpuPrepareError::ConstantNeuron`) — the CPU returns a clamped bias and
   ignores their synapses, which the kernel cannot reproduce, so a creature
-  carrying one (the GRQ creature has 3) falls back to CPU rather than being
+  carrying one (the production creature has 3) falls back to CPU rather than being
   silently mis-scored. CPU↔GPU parity across all 32 point-wise squashes is asserted on Apple M4 /
   Metal by `cpu_vs_gpu_pointwise_squash_coverage`. The CPU path and the
   `auto_should_use_gpu` per-path default are unchanged; a new optional
@@ -67,6 +67,16 @@ section to the released version with its date.
   production squash mix.
 
 ### Changed
+
+- **Reword private-repo mentions in the changelog and archived PR summaries to
+  concept level (Issue #453).** Historical documentation named a private
+  `stSoftwareAU` repository; a public repo must be self-contained, so those
+  incidental mentions now describe the production creature, corpus and hosts by
+  their properties instead. A new guard
+  (`scripts/check-docs-private-repo-refs.sh`, wired into `quality.sh`, with BATS
+  coverage in `tests/scripts/docs_private_repo_refs.bats`) keeps `CHANGELOG.md`
+  and everything under `docs/` clean, completing the README (#450), source
+  (#452) and automation (#451) guards. Documentation only — no code change.
 
 - **Drop the push-to-`Develop` trigger from the CI checker workflow (Issue
   #370).** `ci.yml` runs the heavy test/lint/scan gate; as a *checker* it should
@@ -101,7 +111,7 @@ section to the released version with its date.
   alignment guard (`scripts/check-readme-ci-alignment.sh`), and `AGENTS.md` are
   updated to match; the guard now rejects a re-introduced standalone
   `cargo check`.
-- **Document the recommended `NEAT_SCORER_READ_BYTES` for large-record GRQ
+- **Document the recommended `NEAT_SCORER_READ_BYTES` for large-record production
   hosts (Issue #307).** Swept `NEAT_SCORER_READ_BYTES` ∈ {2, 8, 16, 32, 64} MiB
   on the #296 production fixture (9848-byte records). Larger aligned reads
   recover ~20–24 % on the single-creature and multi-creature production groups
@@ -110,7 +120,7 @@ section to the released version with its date.
   The global default stays **2 MiB** (the gain is record-size specific and the
   sweep host was contended, not the quiet host the merge gate requires); the
   README now documents exporting `NEAT_SCORER_READ_BYTES=33554432` (32 MiB) on
-  GRQ hosts, and `docs/performance-baseline.md` records the sweep table. No code
+  production hosts, and `docs/performance-baseline.md` records the sweep table. No code
   or default change.
 - **Acknowledge the neat-core 0.1 -> 0.2 breaking bump in the version-baseline
   gate (Issue #252).** `neat-core.expected-version` recorded `0.1.46` while the

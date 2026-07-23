@@ -1,5 +1,5 @@
 ## Summary
-Unblocks the `rust_scorer` build against the current `NEAT-AI-core` `Develop` branch (post commit `62a5c92`) and adds a pre-flight binary smoke test that catches API drift between `rust_scorer` and the `neat-core` path dependency at PR time — rather than only when GRQ `option=learn` fails downstream. Closes #11.
+Unblocks the `rust_scorer` build against the current `NEAT-AI-core` `Develop` branch (post commit `62a5c92`) and adds a pre-flight binary smoke test that catches API drift between `rust_scorer` and the `neat-core` path dependency at PR time — rather than only when the production trainer's `option=learn` fails downstream. Closes #11.
 
 Two upstream breakages resolved in the scorer:
 

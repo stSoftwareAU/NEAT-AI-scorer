@@ -1,9 +1,9 @@
-# [perf] Expand GPU squash coverage so the production GRQ creature can run on Metal/Vulkan
+# [perf] Expand GPU squash coverage so the production creature can run on Metal/Vulkan
 
 ## Summary
 
 The GPU `forward_mse_batched` / `forward_mse_scratch` WGSL kernels only inlined
-four activations (IDENTITY / RELU / LOGISTIC / TANH), so the production GRQ
+four activations (IDENTITY / RELU / LOGISTIC / TANH), so the production
 creature — spanning ~34 squash types — fell back to CPU on **~95.8 %** of its
 neurons and could not use the GPU path at all (Scorer#299, negative).
 
@@ -20,16 +20,16 @@ from `{0,1,6,7}` to `0..=31`, and the pre-flight now reports a point-wise
 production creature as GPU-hostable. The pre-flight also now **rejects constant
 neurons** (`GpuPrepareError::ConstantNeuron`): the CPU returns a clamped bias for
 them and ignores their synapses, which the sum-then-squash kernel cannot
-reproduce — so a creature carrying one (the real GRQ creature has 3) falls back
+reproduce — so a creature carrying one (the real production creature has 3) falls back
 to CPU rather than being silently mis-scored.
 
-Whether directory-mode GPU should *default* on for the real GRQ creature is a
+Whether directory-mode GPU should *default* on for the real production creature is a
 separate, benchmark-gated decision. The pre-existing per-path
 `auto_should_use_gpu` logic (#82/#83) is unchanged and the CPU path does not
 regress, so this coverage work stands on its own regardless of that decision
-(exactly as the issue frames it). The production A/B gate needs the GRQ
+(exactly as the issue frames it). The production A/B gate needs the production
 `network.json` + a multi-GiB corpus, which were **not reachable in this
-environment** (the `GRQ-cluster/main/network.json` URL returned `404`); that
+environment** (the production `network.json` URL returned `404`); that
 final default decision is left for a host with production data — see the
 "production GPU" note in `docs/performance-baseline.md`.
 
@@ -59,7 +59,7 @@ test result: ok. 7 passed; 0 failed
 
 ### GPU-vs-CPU A/B — synthetic mixed-squash creature
 
-The real GRQ creature was unreachable, so the A/B uses a synthetic
+The real production creature was unreachable, so the A/B uses a synthetic
 directory-mode creature whose hidden layer cycles the production squash mix
 (`BENCH_SCORING_HIDDEN_SQUASH=MIXED`: GELU/SELU/SINE/ABSOLUTE/BENT_IDENTITY/
 Cube/HARD_TANH/…). This exercises exactly the coverage the shader now hosts and
@@ -77,8 +77,8 @@ transcendental-heavy, so scalar CPU libm dominates per-neuron cost while the GPU
 evaluates activations in parallel. (Before this PR the `gpu_score_from_creature_dir`
 bench could not even run the mixed creature — `BatchedRunner::new` rejected the
 unsupported squashes.) These synthetic numbers do **not** replace the production
-GRQ A/B (issue benchmark gate), which needs the real `network.json` + multi-GiB
-corpus on a host with GRQ-cluster access; they confirm the coverage unblocks the
+production A/B (issue benchmark gate), which needs the real `network.json` + multi-GiB
+corpus on a host with production corpus access; they confirm the coverage unblocks the
 GPU path and does not regress CPU.
 
 ### Data flow
@@ -107,7 +107,7 @@ flowchart LR
     `32..=37` aggregate still yields `UnsupportedSquash`.
   - `build_batched_network_data_rejects_constant_neuron` (new) — a constant
     neuron yields `GpuPrepareError::ConstantNeuron` (CPU fallback), guarding
-    against silently mis-scoring the 3 constant neurons in the GRQ creature.
+    against silently mis-scoring the 3 constant neurons in the production creature.
 - **`rust_scorer/tests/gpu_preflight_tdd.rs`**
   - `preflight_returns_typed_error_for_unsupported_squash` — updated from
     GAUSSIAN (now hostable) to MEAN (an aggregate, still unsupported). Business

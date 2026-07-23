@@ -14,7 +14,7 @@ kernels now select the reduction from a new `cost_kind` header field:
   host-side `sqrt` at finalisation).
 - `MAE` (this change) accumulates **absolute** error on the identical forward
   pass — GPU-hosted on both the private-array and the >256-neuron scratch
-  kernels used by production GRQ creatures.
+  kernels used by production creatures.
 
 The `cost_kind` value comes from a new `CostKind::gpu_error_code()` (0 = squared,
 1 = absolute) written into the previously-unused header padding slot, so no new

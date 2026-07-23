@@ -246,7 +246,7 @@ pub fn auto_should_use_gpu(path: ScoringPath, cost: crate::cost::CostKind) -> bo
         // #81 — negative result. CPU+PGO wins on the single-creature path.
         ScoringPath::SingleCreature => false,
         // #82 — synthetic all-private pools at N=50 / 200 MB beat CPU+PGO.
-        // GRQ production pools with scratch-sized creatures are handled by
+        // Production pools with scratch-sized creatures are handled by
         // [`auto_should_use_gpu_directory`] once the creature dir is known.
         ScoringPath::CreatureDirectory => true,
     }
@@ -254,7 +254,7 @@ pub fn auto_should_use_gpu(path: ScoringPath, cost: crate::cost::CostKind) -> bo
 
 /// Whether [`GpuMode::Auto`] should pick GPU for a specific creature directory.
 ///
-/// Uses a cheap CPU-only topology probe so mixed/scratch-required GRQ pools
+/// Uses a cheap CPU-only topology probe so mixed/scratch-required production pools
 /// that lose to CPU on M4/M5 full-corpus runs stay on the fused CPU path
 /// without creating a `wgpu` device (Issue #317).
 pub fn auto_should_use_gpu_directory(
@@ -267,7 +267,7 @@ pub fn auto_should_use_gpu_directory(
     match crate::multi_score::gpu_directory_topology_for_dir(creatures_dir) {
         Some(DirectoryGpuTopology::AllPrivate) => true,
         // M4/M5 production A/B: even with dual-kernel + 32 MiB reads, mixed
-        // and scratch-only GRQ pools remain slower than CPU on full corpus.
+        // and scratch-only production pools remain slower than CPU on full corpus.
         Some(DirectoryGpuTopology::Mixed | DirectoryGpuTopology::ScratchOnly) => false,
         // Load/compile deferred — attempt GPU; scoring path surfaces errors.
         None => true,
@@ -291,13 +291,13 @@ pub fn auto_topology_fallback_note(
     match crate::multi_score::gpu_directory_topology_for_dir(creatures_dir) {
         Some(DirectoryGpuTopology::Mixed) => Some(
             "[gpu] auto fallback to CPU directory mode: mixed creature pool \
-             (private + scratch kernels) is faster on CPU for GRQ-scale full-corpus scoring; \
+             (private + scratch kernels) is faster on CPU for production-scale full-corpus scoring; \
              rerun with --gpu off to skip GPU detection"
                 .to_string(),
         ),
         Some(DirectoryGpuTopology::ScratchOnly) => Some(
             "[gpu] auto fallback to CPU directory mode: scratch-kernel creatures \
-             are faster on CPU for GRQ-scale full-corpus scoring; \
+             are faster on CPU for production-scale full-corpus scoring; \
              rerun with --gpu off to skip GPU detection"
                 .to_string(),
         ),

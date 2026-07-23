@@ -1,5 +1,5 @@
 //! Issue #319 — pipelined GPU directory scoring (`inflight_chunks == 2`) with the
-//! scratch kernel and GRQ-scale read buffers must complete multi-`.bin` corpora
+//! scratch kernel and production-scale read buffers must complete multi-`.bin` corpora
 //! without Metal SIGSEGV. The scorer clamps scratch/mixed pools to synchronous
 //! dispatches; this test guards parity across that boundary.
 
@@ -114,7 +114,7 @@ fn scratch_multi_bin_pipelined_matches_synchronous() {
 
     // Enough bytes per read to span multiple chunks per shard and a file
     // boundary, without allocating an ~8M-float unpack buffer (small test
-    // creatures use 40 B/record vs GRQ's 9848 B).
+    // creatures use 40 B/record vs production's ~9848 B).
     let record_bytes = (NUM_INPUTS + NUM_OUTPUTS) * 4;
     let read_bytes = record_bytes * 64 * 64;
     unsafe {

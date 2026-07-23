@@ -28,14 +28,14 @@
 #   PROFILE_NUM_INPUTS      inputs per record   (default 8)
 #   PROFILE_NUM_OUTPUTS     outputs per record  (default 2)
 #   PROFILE_HIDDEN          hidden neurons      (default 8)
-#   PROFILE_PROD_CREATURE   path to the GRQ-cluster production network.json
-#                           (Issue #296). When set, the real creature is used
-#                           instead of the synthetic MLP; PROFILE_NUM_INPUTS /
-#                           PROFILE_NUM_OUTPUTS are derived from it and the SVGs
-#                           are written with a `-prod` suffix so the synthetic
-#                           captures are not overwritten. Fetch it first with:
-#                             curl -fsSL -o /tmp/grq-network.json \
-#                               https://raw.githubusercontent.com/stSoftwareAU/GRQ-cluster/main/network.json
+#   PROFILE_PROD_CREATURE   path to a LOCAL production network.json (Issue #296).
+#                           When set, the real creature is used instead of the
+#                           synthetic MLP; PROFILE_NUM_INPUTS / PROFILE_NUM_OUTPUTS
+#                           are derived from it and the SVGs are written with a
+#                           `-prod` suffix so the synthetic captures are not
+#                           overwritten. This public repo ships no production
+#                           creature and fetches nothing (Issue #448) — supply
+#                           your own local file.
 #
 # Prerequisites:
 #   cargo install inferno        # collapsed-stack → SVG
@@ -60,15 +60,14 @@ NUM_OUTPUTS="${PROFILE_NUM_OUTPUTS:-2}"
 HIDDEN="${PROFILE_HIDDEN:-8}"
 
 # Issue #296: production creature mode. When PROFILE_PROD_CREATURE points at the
-# GRQ-cluster network.json, derive the input/output width from it and tag the
+# production creature's network.json, derive the input/output width from it and tag the
 # output SVGs with `-prod` so the synthetic captures are preserved.
 PROD_CREATURE="${PROFILE_PROD_CREATURE:-}"
 SVG_SUFFIX=""
 if [ -n "$PROD_CREATURE" ]; then
   if [ ! -s "$PROD_CREATURE" ]; then
     echo "❌ PROFILE_PROD_CREATURE=$PROD_CREATURE is missing or empty" >&2
-    echo "   fetch it: curl -fsSL -o \"$PROD_CREATURE\" \\" >&2
-    echo "     https://raw.githubusercontent.com/stSoftwareAU/GRQ-cluster/main/network.json" >&2
+    echo "   supply a LOCAL production network.json — this repo fetches nothing (Issue #448)" >&2
     exit 1
   fi
   # Derive dims from the real creature so the corpus matches it.
@@ -136,7 +135,7 @@ record_bytes = values_per_record * 4
 n_records = max(1, total_bytes // record_bytes)
 
 def make_creature():
-    # Issue #296: use the real GRQ-cluster creature when provided.
+    # Issue #296: use the real production creature when provided.
     if prod_creature:
         with open(prod_creature) as f:
             return json.load(f)

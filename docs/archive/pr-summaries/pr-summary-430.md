@@ -9,7 +9,7 @@ module tree), the compiler's `dead_code` lint never analysed its `pub` items, so
 the unreferenced export sat undetected. Closes #430.
 
 The constant recorded production-corpus provenance (`training_data_files = 520`
-from GRQ-cluster `performance.csv`). That figure is **already** documented in
+from the production `performance.csv`). That figure is **already** documented in
 `docs/performance-baseline.md` (Corpus sizing section, line 692), so deleting the
 code loses no information — no doc move was required. This mirrors the #429
 removal of the adjacent `PRODUCTION_CORPUS_BYTES` constant.

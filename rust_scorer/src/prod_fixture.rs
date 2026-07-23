@@ -2,7 +2,7 @@
 //!
 //! The Criterion suite in [`benches/scoring.rs`](../../benches/scoring.rs) must
 //! gate every candidate optimisation (#297–#299) against the **production**
-//! creature — the evolved GRQ-cluster network — not the synthetic 8→8→2 MLP
+//! creature — the evolved production network — not the synthetic 8→8→2 MLP
 //! fixture. The production creature profiles very differently: ≈ 1666 neurons
 //! across ≈ 34 distinct squash types and ≈ 21 510 synapses over 2461 inputs,
 //! versus 10 neurons of pure `TANH`.
@@ -18,38 +18,29 @@
 //!
 //! The pure functions here ([`parse_production_creature`],
 //! [`check_production_topology`], [`load_production_creature`],
-//! [`corpus_record_count`]) are unit-tested; the network fetch
-//! ([`fetch_creature_to`]) shells out to `curl` and is exercised manually via
-//! `./scripts/run-benches.sh`.
+//! [`corpus_record_count`]) are unit-tested. The production creature itself is
+//! **not** shipped and is **never fetched** by this public repo — it lives in a
+//! private repository. A contributor supplies their own local copy via the
+//! [`PROD_CREATURE_ENV`] environment variable; when it is unset the production
+//! benches skip cleanly (see `./scripts/run-benches.sh`).
 
 use std::fmt;
-use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::path::PathBuf;
 
 use neat_core::creature::{CreatureExport, parse_creature_json};
 
-/// Raw URL of the production GRQ-cluster creature.
+/// Environment variable pointing at a **local** production `network.json`.
 ///
-/// Fetched at bench time rather than committed — the file is ≈ 3 MB and the
-/// evolved creature is re-published (see the repo's `fetch.txt` date stamp), so
-/// pinning a copy in-tree would drift silently.
-pub const PRODUCTION_CREATURE_URL: &str =
-    "https://raw.githubusercontent.com/stSoftwareAU/GRQ-cluster/main/network.json";
-
-/// Environment variable pointing at a pre-downloaded production `network.json`.
-///
-/// When set, the bench loads from this path and skips the network fetch — the
-/// documented way to reproduce offline / in an air-gapped environment.
+/// The public repo ships no production creature and fetches nothing at bench
+/// time. Set this to a local path to run the production benches; leave it unset
+/// to skip them. This is the only way to point the benches at a production
+/// creature — there is no remote default.
 pub const PROD_CREATURE_ENV: &str = "BENCH_PROD_CREATURE";
-
-/// Default on-disk cache location (relative to the workspace root) for the
-/// fetched creature, so repeated bench runs pay the download once.
-pub const DEFAULT_CACHE_REL_PATH: &str = "target/bench-fixtures/grq-cluster-network.json";
 
 // --- Expected production topology ranges -------------------------------------
 //
 // Ranges (not exact equality) so the assertion survives ordinary evolution of
-// the GRQ-cluster creature while still rejecting a trivially small stand-in
+// the production creature while still rejecting a trivially small stand-in
 // such as the synthetic 8→8→2 fixture (10 neurons, 8 inputs).
 
 /// Minimum plausible input width for the production creature (observed 2461).
@@ -65,7 +56,7 @@ pub const MIN_SYNAPSES: usize = 8_000;
 /// Upper bound on production synapse count.
 pub const MAX_SYNAPSES: usize = 120_000;
 
-// --- Production corpus sizing (from GRQ-cluster performance.csv) --------------
+// --- Production corpus sizing (from the production performance.csv) ----------
 
 /// Default corpus size the production bench builds when `BENCH_PROD_BYTES` is
 /// unset — a runnable slice (64 MiB) of the ≈ 19.4 GiB production corpus. The
@@ -169,58 +160,18 @@ pub fn corpus_record_count(total_bytes: usize, num_inputs: usize, num_outputs: u
     (total_bytes / record_bytes).max(1)
 }
 
-/// Resolve the on-disk path the production creature should be read from.
+/// Resolve the **local** production creature path from [`PROD_CREATURE_ENV`].
 ///
-/// Honours [`PROD_CREATURE_ENV`] when set; otherwise returns
-/// `workspace_root/`[`DEFAULT_CACHE_REL_PATH`].
+/// Returns `Some(path)` only when the variable is set to a non-empty value;
+/// otherwise `None`, signalling the caller to skip the production benches. There
+/// is deliberately **no** default (remote or on-disk): the public repo is
+/// self-contained and never reaches for a private-repo creature at runtime.
 #[must_use]
-pub fn resolve_creature_path(workspace_root: &Path) -> PathBuf {
+pub fn production_creature_path_from_env() -> Option<PathBuf> {
     match std::env::var(PROD_CREATURE_ENV) {
-        Ok(p) if !p.trim().is_empty() => PathBuf::from(p),
-        _ => workspace_root.join(DEFAULT_CACHE_REL_PATH),
+        Ok(p) if !p.trim().is_empty() => Some(PathBuf::from(p)),
+        _ => None,
     }
-}
-
-/// Fetch the production creature to `dest` via `curl`, failing loud.
-///
-/// Uses `curl --fail` so an HTTP error (404/5xx) is a non-zero exit rather than
-/// a written error page, and verifies the destination is non-empty afterwards.
-/// Returns an error string (never falls back) on any failure.
-pub fn fetch_creature_to(dest: &Path, url: &str) -> Result<(), String> {
-    if let Some(parent) = dest.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|e| format!("cannot create cache dir {}: {e}", parent.display()))?;
-    }
-
-    let status = Command::new("curl")
-        .args([
-            "--fail",
-            "--silent",
-            "--show-error",
-            "--location",
-            "--output",
-        ])
-        .arg(dest)
-        .arg(url)
-        .status()
-        .map_err(|e| format!("failed to run curl (is it installed?): {e}"))?;
-
-    if !status.success() {
-        return Err(format!(
-            "curl exited with {status} fetching {url} — cannot benchmark the production creature"
-        ));
-    }
-
-    let len = std::fs::metadata(dest)
-        .map_err(|e| format!("fetched creature missing at {}: {e}", dest.display()))?
-        .len();
-    if len == 0 {
-        return Err(format!(
-            "fetched creature at {} is empty — refusing to benchmark",
-            dest.display()
-        ));
-    }
-    Ok(())
 }
 
 #[cfg(test)]
@@ -332,14 +283,35 @@ mod tests {
         assert_eq!(corpus_record_count(1, 2461, 1), 1);
     }
 
+    // Business-logic change (Issue #448): the private-repo fetch and its on-disk
+    // cache default were deleted, so `resolve_creature_path` (which returned a
+    // default cache path) no longer exists. Its replacement,
+    // `production_creature_path_from_env`, resolves *only* a local override and
+    // returns `None` when unset — there is no remote or on-disk default. This
+    // test replaces the former `resolve_creature_path_prefers_env_override`.
     #[test]
-    fn resolve_creature_path_prefers_env_override() {
-        // SAFETY: single-threaded test; restored below.
-        unsafe { std::env::set_var(PROD_CREATURE_ENV, "/tmp/custom-prod.json") };
-        let p = resolve_creature_path(Path::new("/workspace"));
-        assert_eq!(p, PathBuf::from("/tmp/custom-prod.json"));
+    fn production_creature_path_reads_local_env_only() {
+        // SAFETY: single-threaded test; each case restores the variable.
         unsafe { std::env::remove_var(PROD_CREATURE_ENV) };
-        let p = resolve_creature_path(Path::new("/workspace"));
-        assert_eq!(p, PathBuf::from("/workspace").join(DEFAULT_CACHE_REL_PATH));
+        assert_eq!(
+            production_creature_path_from_env(),
+            None,
+            "unset must yield None (production benches skip; no private-repo default)"
+        );
+
+        unsafe { std::env::set_var(PROD_CREATURE_ENV, "   ") };
+        assert_eq!(
+            production_creature_path_from_env(),
+            None,
+            "blank must yield None"
+        );
+
+        unsafe { std::env::set_var(PROD_CREATURE_ENV, "/tmp/custom-prod.json") };
+        assert_eq!(
+            production_creature_path_from_env(),
+            Some(PathBuf::from("/tmp/custom-prod.json"))
+        );
+
+        unsafe { std::env::remove_var(PROD_CREATURE_ENV) };
     }
 }

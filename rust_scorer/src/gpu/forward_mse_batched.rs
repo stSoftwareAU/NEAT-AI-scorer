@@ -944,7 +944,7 @@ pub enum DirectoryGpuTopology {
 /// Clamp requested pipelined in-flight dispatches for directory-mode GPU scoring.
 ///
 /// `inflight_chunks == 2` overlaps host unpack with GPU readback on a worker
-/// thread. For scratch/mixed pools (large SSBO activations, GRQ-scale
+/// thread. For scratch/mixed pools (large SSBO activations, production-scale
 /// `32 MiB` reads), that combination has been observed to **SIGSEGV on Metal**
 /// when a streamed chunk spans a `.bin` file boundary (Issue #319). Keep those
 /// pools on the synchronous path (`1`); all-private synthetic benches may still
@@ -1321,7 +1321,7 @@ mod tests {
     }
 
     /// Issue #312: constant neurons return a clamped bias and ignore their
-    /// synapses on the GPU (the real GRQ creature has 3), so a creature
+    /// synapses on the GPU (the real production creature has 3), so a creature
     /// containing one is now GPU-hostable and its `is_constant` flag is
     /// serialised for the kernel. Its squash discriminant is irrelevant — the
     /// flag short-circuits the squash branch — so even an otherwise-unhosted

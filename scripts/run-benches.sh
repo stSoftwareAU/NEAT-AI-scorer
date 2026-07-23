@@ -19,13 +19,15 @@
 #   BENCH_SCORING_HIDDEN  hidden neurons per synthetic creature (default 8)
 #
 # Production creature bench (Issue #296) — `production_single_creature` /
-# `production_multi_creature`. These fetch the GRQ-cluster production
-# `network.json` (≈ 3 MB) at bench time and build a synthetic corpus sized to
-# match it. The fetch caches under `target/bench-fixtures/`; the bench is
-# fail-loud — it panics (never falls back to the synthetic fixture) if the
-# creature cannot be fetched / read / deserialized or is not production-sized.
-#   BENCH_PROD_CREATURE   path to a pre-downloaded network.json (skips fetch;
-#                         use for offline / air-gapped reproduction)
+# `production_multi_creature`. This public repo ships no production creature and
+# **fetches nothing** at bench time (Issue #448): supply your own local
+# `network.json` via BENCH_PROD_CREATURE and the bench builds a synthetic corpus
+# sized to match it. When BENCH_PROD_CREATURE is unset the production benches
+# skip cleanly. Once a local creature is supplied the bench is fail-loud — it
+# panics (never falls back to the synthetic fixture) if the creature cannot be
+# read / deserialized or is not production-sized.
+#   BENCH_PROD_CREATURE   path to a local network.json (required to run the
+#                         production benches; unset skips them — nothing fetched)
 #   BENCH_PROD_BYTES      total bytes per production .bin corpus (default 64 MiB;
 #                         the full production corpus is 20 845 703 976 bytes /
 #                         520 files — see docs/performance-baseline.md)
@@ -49,7 +51,7 @@ echo "   BENCH_SCORING_BYTES=${BENCH_SCORING_BYTES:-16777216 (default)}"
 echo "   BENCH_SCORING_INPUTS=${BENCH_SCORING_INPUTS:-8 (default)}"
 echo "   BENCH_SCORING_OUTPUTS=${BENCH_SCORING_OUTPUTS:-2 (default)}"
 echo "   BENCH_SCORING_HIDDEN=${BENCH_SCORING_HIDDEN:-8 (default)}"
-echo "   BENCH_PROD_CREATURE=${BENCH_PROD_CREATURE:-<fetch GRQ-cluster network.json>}"
+echo "   BENCH_PROD_CREATURE=${BENCH_PROD_CREATURE:-<unset — production benches skipped; supply a local network.json>}"
 echo "   BENCH_PROD_BYTES=${BENCH_PROD_BYTES:-67108864 (default 64 MiB)}"
 echo "   BENCH_PROD_CREATURES=${BENCH_PROD_CREATURES:-4 (default)}"
 echo
