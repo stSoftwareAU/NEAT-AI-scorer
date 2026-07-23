@@ -60,7 +60,7 @@ NUM_OUTPUTS="${PROFILE_NUM_OUTPUTS:-2}"
 HIDDEN="${PROFILE_HIDDEN:-8}"
 
 # Issue #296: production creature mode. When PROFILE_PROD_CREATURE points at the
-# GRQ-cluster network.json, derive the input/output width from it and tag the
+# production creature's network.json, derive the input/output width from it and tag the
 # output SVGs with `-prod` so the synthetic captures are preserved.
 PROD_CREATURE="${PROFILE_PROD_CREATURE:-}"
 SVG_SUFFIX=""
@@ -135,7 +135,7 @@ record_bytes = values_per_record * 4
 n_records = max(1, total_bytes // record_bytes)
 
 def make_creature():
-    # Issue #296: use the real GRQ-cluster creature when provided.
+    # Issue #296: use the real production creature when provided.
     if prod_creature:
         with open(prod_creature) as f:
             return json.load(f)

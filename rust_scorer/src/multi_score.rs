@@ -943,7 +943,7 @@ pub fn gpu_directory_topology_for_dir(
 /// * `2` — pipelined; chunk `N+1`'s host unpack overlaps chunk `N`'s GPU
 ///   compute via a worker thread fed by a bounded channel. Higher values are
 ///   accepted but capped to `2` so device memory stays bounded. Scratch/mixed
-///   pools are forced to `1` — pipelining those kernels at GRQ-scale read
+///   pools are forced to `1` — pipelining those kernels at production-scale read
 ///   sizes can SIGSEGV on Metal across `.bin` file boundaries (Issue #319).
 ///
 /// Returns the same per-creature `BTreeMap<String, ScoreResult>` as the CPU

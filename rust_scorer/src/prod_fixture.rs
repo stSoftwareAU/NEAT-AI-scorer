@@ -2,7 +2,7 @@
 //!
 //! The Criterion suite in [`benches/scoring.rs`](../../benches/scoring.rs) must
 //! gate every candidate optimisation (#297–#299) against the **production**
-//! creature — the evolved GRQ-cluster network — not the synthetic 8→8→2 MLP
+//! creature — the evolved production network — not the synthetic 8→8→2 MLP
 //! fixture. The production creature profiles very differently: ≈ 1666 neurons
 //! across ≈ 34 distinct squash types and ≈ 21 510 synapses over 2461 inputs,
 //! versus 10 neurons of pure `TANH`.
@@ -40,7 +40,7 @@ pub const PROD_CREATURE_ENV: &str = "BENCH_PROD_CREATURE";
 // --- Expected production topology ranges -------------------------------------
 //
 // Ranges (not exact equality) so the assertion survives ordinary evolution of
-// the GRQ-cluster creature while still rejecting a trivially small stand-in
+// the production creature while still rejecting a trivially small stand-in
 // such as the synthetic 8→8→2 fixture (10 neurons, 8 inputs).
 
 /// Minimum plausible input width for the production creature (observed 2461).
@@ -56,7 +56,7 @@ pub const MIN_SYNAPSES: usize = 8_000;
 /// Upper bound on production synapse count.
 pub const MAX_SYNAPSES: usize = 120_000;
 
-// --- Production corpus sizing (from GRQ-cluster performance.csv) --------------
+// --- Production corpus sizing (from the production performance.csv) ----------
 
 /// Default corpus size the production bench builds when `BENCH_PROD_BYTES` is
 /// unset — a runnable slice (64 MiB) of the ≈ 19.4 GiB production corpus. The
