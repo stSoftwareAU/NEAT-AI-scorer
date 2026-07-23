@@ -14,7 +14,7 @@ the runs with [`scripts/run-benches.sh`](../scripts/run-benches.sh) or
 | `score_from_json_fused/forward_only` | End-to-end forward-only fused MSE accumulate over a synthetic creature + a `.bin` corpus. | Calls [`accumulate_mse_sum_forward_only_fused`](../rust_scorer/src/stream_score.rs) — the hot path the CLI runs in default mode. |
 | `score_from_creature_dir/creatures/N` | Directory mode, one shared scan + `N` creatures evaluated in parallel (`N=10`, `N=50`). | Calls [`score_from_creature_dir`](../rust_scorer/src/multi_score.rs); future `multi_score.rs` work can be A/B'd against this. |
 | `unpack_and_mse_inner/unpack_then_mse` | Micro-benchmark of the little-endian `f32` unpack + `mse_sum_batch_packed` inner loop on a fixed in-memory chunk (16 K records). | Mirrors the shared inner loop in `unpack_f32s_le` + `mse_sum_batch_packed` so vectorisation work can be measured in isolation. |
-| `production_single_creature/forward_only` | End-to-end forward-only fused MSE accumulate over the **production** GRQ-cluster creature (Issue #296). | Requires a **local** `network.json` supplied via `BENCH_PROD_CREATURE` — this public repo ships none and fetches nothing (Issue #448); the bench skips when it is unset and is otherwise **fail-loud** (panics rather than falling back to the synthetic fixture). See [`prod_fixture`](../rust_scorer/src/prod_fixture.rs). |
+| `production_single_creature/forward_only` | End-to-end forward-only fused MSE accumulate over the **production**-scale creature (Issue #296). | Requires a **local** `network.json` supplied via `BENCH_PROD_CREATURE` — this public repo ships none and fetches nothing (Issue #448); the bench skips when it is unset and is otherwise **fail-loud** (panics rather than falling back to the synthetic fixture). See [`prod_fixture`](../rust_scorer/src/prod_fixture.rs). |
 | `production_multi_creature/creatures/N` | Directory mode over copies of the production creature (`N=1`, `N=BENCH_PROD_CREATURES`). | The candidate optimisations #297–#299 A/B against this on the real creature, not the synthetic fixture. |
 
 ## Fixture parameters
@@ -39,7 +39,7 @@ Cross-links [NEAT-AI#3256](https://github.com/stSoftwareAU/NEAT-AI/issues/3256)
 (production evolution wall-clock).
 
 **Hostable?** **Yes (point-wise squashes).** Before #305 the GPU kernels
-inlined only IDENTITY / RELU / LOGISTIC / TANH, so a production GRQ creature
+inlined only IDENTITY / RELU / LOGISTIC / TANH, so a production creature
 mixing ~34 squash types fell back to CPU on **~95.8 %** of its neurons
 (Scorer#299, negative). Both kernels' `activate()` now inline **every
 point-wise activation** (`SquashType` 0..=31), matching the CPU `apply_squash`
@@ -53,9 +53,9 @@ cleanly.
 asserts CPU↔GPU MSE agreement across all 32 point-wise squashes on Apple M4 /
 Metal (relative error < 1e-3).
 
-**CPU vs GPU medians — synthetic mixed-squash directory A/B.** The real GRQ
-`network.json` was unreachable in this environment
-(`GRQ-cluster/main/network.json` → HTTP 404), so the A/B uses a synthetic
+**CPU vs GPU medians — synthetic mixed-squash directory A/B.** The real
+production `network.json` was unreachable in this environment (the private
+production creature is not available to the unattended worker), so the A/B uses a synthetic
 directory creature whose hidden layer cycles the production squash mix
 (`BENCH_SCORING_HIDDEN_SQUASH=MIXED`). Host: Apple M4 (10 cores), 24 GB, macOS;
 fixture `BENCH_SCORING_BYTES=16777216` (16 MiB), `BENCH_SCORING_HIDDEN=32`.
@@ -68,17 +68,17 @@ fixture `BENCH_SCORING_BYTES=16777216` (16 MiB), `BENCH_SCORING_HIDDEN=32`.
 On this shape the GPU wins comfortably: the mixed squash set is
 transcendental-heavy, so scalar CPU libm dominates per-neuron cost while the
 GPU evaluates every `(creature, record)` activation in parallel. This is
-indicative (synthetic) — the real GRQ decision must still run the production
+indicative (synthetic) — the real production decision must still run the production
 A/B — but it confirms the coverage both **unblocks** the GPU path for
 mixed-squash creatures and does **not** regress CPU (the CPU path is unchanged).
 
-**Decision (the "default to GPU on GRQ" call):** *pending production data.* The
+**Decision (the "default to GPU on the production creature" call):** *pending production data.* The
 mergeable deliverable here is the **coverage** (the creature becomes hostable)
 and CPU↔GPU parity — the CPU path is untouched, so this does not regress CPU and
 merges on its own merits per the issue. Flipping the `auto` default for the real
-GRQ creature requires the production `network.json` + a multi-GiB corpus run of
+production creature requires the production `network.json` + a multi-GiB corpus run of
 the `production_multi_creature` A/B (issue's benchmark gate), which a host with
-GRQ-cluster access must run. `auto_should_use_gpu` (#82/#83) is unchanged by
+access to the private production creature must run. `auto_should_use_gpu` (#82/#83) is unchanged by
 this PR.
 
 Reproduce the synthetic A/B:
@@ -88,8 +88,8 @@ BENCH_SCORING_HIDDEN_SQUASH=MIXED BENCH_SCORING_HIDDEN=32 BENCH_SCORING_BYTES=16
   cargo bench -p rust_scorer --bench scoring -- creature_dir
 ```
 
-> **Superseded for the GRQ default decision by the #312 section below**, which
-> ran the A/B against the **real** GRQ `network.json` (aggregates + constant
+> **Superseded for the production-creature default decision by the #312 section below**, which
+> ran the A/B against the **real** production `network.json` (aggregates + constant
 > neurons now host) instead of the synthetic mixed-squash stand-in.
 
 ## Production GPU aggregates + constant neurons — 10 July 2026 (Issue #312)
@@ -98,13 +98,13 @@ Cross-links [NEAT-AI#3256](https://github.com/stSoftwareAU/NEAT-AI/issues/3256)
 (production evolution wall-clock); resolves the "pending production data" note
 in the #305 section above.
 
-**Hostable? Now yes — the *whole* GRQ creature.** #305 hosted the point-wise
-squashes but left the GRQ creature CPU-bound because it also carries aggregate
+**Hostable? Now yes — the *whole* production creature.** #305 hosted the point-wise
+squashes but left the production creature CPU-bound because it also carries aggregate
 neurons and constant neurons. #312 taught both WGSL kernels to reduce the three
 aggregate squashes **MINIMUM (32) / MAXIMUM (33) / IF (34)** inline (min / max /
 synapse-type branch, matching `neat_core::batch_scoring::neuron_activation_scalar`)
 and to host **constant neurons** (clamped bias, synapses ignored). The real
-GRQ-cluster creature (1666 neurons, 33 distinct squashes — IF ×6, MINIMUM ×4,
+production creature (1666 neurons, 33 distinct squashes — IF ×6, MINIMUM ×4,
 MAXIMUM ×2, 3 constant neurons, no HYPOT/HYPOTv2/MEAN) is therefore now fully
 GPU-hostable. `SynapseGpu` gained a `synapse_type` field and `NeuronGpu` an
 `is_constant` flag for this.
@@ -117,7 +117,7 @@ plus `cpu_vs_gpu_real_prod_creature_when_available` which scores the actual
 `network.json` when `BENCH_PROD_CREATURE` is set
 ([`tests/gpu_multi_score_parity.rs`](../rust_scorer/tests/gpu_multi_score_parity.rs)).
 
-**CPU vs GPU — real GRQ directory A/B (`production_gpu_vs_cpu`).** Host: Apple
+**CPU vs GPU — real production directory A/B (`production_gpu_vs_cpu`).** Host: Apple
 M4 Pro / Metal; corpus `BENCH_PROD_BYTES=16777216` (16 MiB / 1703 records),
 production 2461-input / 1-output creature. Criterion lower / median / upper
 (95% CI):
@@ -134,22 +134,22 @@ the GPU loses by 1.7×; by `N=50` — a realistic evolution population — the G
 pulls ahead by ~9 % with non-overlapping CIs. The break-even sits between the
 two.
 
-**Decision (the "default to GPU on GRQ" call):** *the hosting work merges; the
+**Decision (the "default to GPU on the production creature" call):** *the hosting work merges; the
 `auto` default is not flipped in this PR.* The mergeable deliverable is that the
-real GRQ creature is now GPU-hostable with verified CPU↔GPU parity, and the CPU
+real production creature is now GPU-hostable with verified CPU↔GPU parity, and the CPU
 path is untouched (no CPU regression). The A/B is a **crossover**, not a clean
 win: GPU is faster only above a population-size break-even (~9 % at `N=50`) and
 slower below it, so a blanket default flip would regress small-pool runs.
-Encoding a population-size-aware `auto_should_use_gpu` threshold for GRQ is left
+Encoding a population-size-aware `auto_should_use_gpu` threshold for the production creature is left
 to the parent [NEAT-AI#3256](https://github.com/stSoftwareAU/NEAT-AI/issues/3256)
 wall-clock decision, since it changes the #82/#83 default heuristic (unchanged
 here).
 
-Reproduce the real-GRQ A/B (point `BENCH_PROD_CREATURE` at a downloaded
+Reproduce the real-production A/B (point `BENCH_PROD_CREATURE` at a local
 `network.json`):
 
 ```bash
-BENCH_PROD_CREATURE=/path/to/GRQ-cluster/network.json \
+BENCH_PROD_CREATURE=/path/to/production/network.json \
   BENCH_PROD_BYTES=16777216 BENCH_PROD_CREATURES=50 \
   cargo bench -p rust_scorer --bench scoring -- production_gpu_vs_cpu
 ```
@@ -160,7 +160,7 @@ Cross-links production `learn.sh` (omits `--gpu` → default `Auto`) and
 [NEAT-AI#3256](https://github.com/stSoftwareAU/NEAT-AI/issues/3256).
 
 **Host:** Apple M4 (10 cores), 24 GB, macOS; release `rust_scorer`.
-**Creatures:** 63 staged GRQ production JSON (2461 inputs, ~1666 hidden,
+**Creatures:** 63 staged production JSON (2461 inputs, ~1666 hidden,
 scratch-sized total neuron count). **Corpus:** `.trainData-binary_115` at
 **100 % data** (no `--sample-rate`).
 
@@ -168,9 +168,9 @@ scratch-sized total neuron count). **Corpus:** `.trainData-binary_115` at
 
 | Change | Effect |
 |---|---|
-| Dual-kernel directory GPU (`forward_mse_batched` + `forward_mse_scratch` in one I/O pass) | Helps mixed small+large pools; **no GRQ win** — every production creature exceeds the 256-neuron private cap because inputs count toward total neurons |
+| Dual-kernel directory GPU (`forward_mse_batched` + `forward_mse_scratch` in one I/O pass) | Helps mixed small+large pools; **no production-creature win** — every production creature exceeds the 256-neuron private cap because inputs count toward total neurons |
 | Auto read buffer (`read_tuning::default_training_read_bytes`) | When `NEAT_SCORER_READ_BYTES` is unset and records ≥ 8000 B, default **32 MiB** (was 2 MiB); `readBufLen` ≈ 33.5 MiB, GPU dispatch count drops on large corpora |
-| Topology-aware `auto_should_use_gpu_directory` | `Auto` uses GPU only for **AllPrivate** pools; **Mixed** and **ScratchOnly** (GRQ production) stay on CPU |
+| Topology-aware `auto_should_use_gpu_directory` | `Auto` uses GPU only for **AllPrivate** pools; **Mixed** and **ScratchOnly** (production) stay on CPU |
 
 **Full-rate A/B (2 largest `.bin` files, ~37 k records, N=63):**
 
@@ -208,7 +208,7 @@ with the script in the PR #317 branch notes).
 
 **Issue #319 (fixed):** the full-corpus segfault was **not** scratch SSBO OOM at
 init — it reproduced with N=1 on two `.bin` shards when
-`NEAT_SCORER_READ_BYTES=32 MiB` (GRQ auto default) and the directory GPU path
+`NEAT_SCORER_READ_BYTES=32 MiB` (production auto default) and the directory GPU path
 used **`inflight_chunks=2`** (pipelined worker thread). Smaller reads (2–16 MiB)
 and synchronous dispatches (`inflight=1`) completed. Root cause: overlapping host
 unpack with scratch-kernel `map_async` readback across a streamed **file
@@ -223,11 +223,11 @@ beats CPU. Subset times linearly project full-corpus CPU (2.56 s × 2250226/3698
 full corpus at N≥1 with the 32 MiB auto read default; production `learn.sh`
 omits `--gpu` and never hits that path.
 
-**Decision:** GPU remains **~3× slower** than CPU on GRQ-scale full-corpus
+**Decision:** GPU remains **~3× slower** than CPU on production-scale full-corpus
 scoring even after dual-kernel + 32 MiB reads. **`Auto` / omit → CPU** for
 scratch-only and mixed topologies; **`--gpu on`** still forces GPU for debug
 (subset only on current Metal builds). All-private synthetic pools at N=50 /
-200 MB (#82) remain GPU under `Auto`. **Do not re-benchmark GPU for GRQ
+200 MB (#82) remain GPU under `Auto`. **Do not re-benchmark GPU for
 production** unless creature topology or kernel architecture changes materially.
 
 Reproduce the subset A/B:
@@ -659,7 +659,7 @@ flowchart LR
 
 The measuring stick for the [#295](https://github.com/stSoftwareAU/NEAT-AI-scorer/issues/295)
 "verified speedups on production" milestone. Every candidate optimisation
-(#297–#299) is gated against the **production** GRQ-cluster creature, not the
+(#297–#299) is gated against the **production**-scale creature, not the
 synthetic 8→8→2 fixture the older sections above use. The older sections stay
 unchanged so their numbers remain reproducible at their original fixture sizes.
 
@@ -690,7 +690,7 @@ timing starts it also asserts the corpus row count matches the requested
 
 ### Corpus sizing
 
-The **full** production training corpus (from GRQ-cluster `performance.csv`) is
+The **full** production training corpus (from the production `performance.csv`) is
 `training_data_size_bytes = 20 845 703 976` (≈ 19.4 GiB) across
 `training_data_files = 520`. That is impractical to materialise on an unattended
 worker, so the bench builds a synthetic corpus of `BENCH_PROD_BYTES` bytes
@@ -867,18 +867,18 @@ merge gate, but the **global default stays 2 MiB** and no auto-tuner ships:
 - The optimum is narrow and record-size specific, and this run was captured on
   a **contended** host rather than the quiet host the gate asks for — not a
   sound basis for fixing a global constant.
-- Instead, the recommended env for large-record GRQ hosts is documented in the
+- Instead, the recommended env for large-record production hosts is documented in the
   README ("Large-record hosts: raise `NEAT_SCORER_READ_BYTES`"): export
   `NEAT_SCORER_READ_BYTES=33554432` (32 MiB), or `16777216` (16 MiB) for most
   of the gain at half the transient buffer.
 - **Peak RSS:** the read buffer is per-scan, not per-worker (single shared
   scan), so 32 MiB adds ≤ ~64 MiB transient buffer (pipelined double-buffer),
-  not 32 MiB × worker count — well within GRQ host headroom.
+  not 32 MiB × worker count — well within production host headroom.
 
 Reproduce:
 
 ```bash
-export BENCH_PROD_CREATURE=/path/to/GRQ-cluster/network.json
+export BENCH_PROD_CREATURE=/path/to/production/network.json
 export BENCH_PROD_BYTES=134217728   # 128 MiB — a few multiples of the 64 MiB read cap
 export BENCH_PROD_CREATURES=4
 for b in 2097152 8388608 16777216 33554432 67108864; do
@@ -917,12 +917,12 @@ few-chunk full corpus. **Correctness is unchanged:** the reused bind group serve
 identical results (`gpu_bind_group_reuse::reused_bind_group_preserves_cpu_parity`
 plus the existing CPU↔GPU parity suite).
 
-**Scope note.** This does **not** flip `--gpu auto` routing — production GRQ
+**Scope note.** This does **not** flip `--gpu auto` routing — the production
 topology is `ScratchOnly`, which still selects CPU per #317/#319. It reduces
 dispatch overhead on every GPU run (`--gpu on`, and the all-private `auto` path).
 The remaining #322 experiments (1: 64 MiB read default; 3: async readback beyond
 `inflight=2`, blocked by the #319 Metal SIGSEGV; 4: Metal-native micro-benchmark)
-need the full 521-bin GRQ corpus / are non-shipping spikes and are tracked in a
+need the full 521-bin production corpus / are non-shipping spikes and are tracked in a
 follow-up.
 
 1. Run `./scripts/run-benches.sh` (default fixture) and record the median +
