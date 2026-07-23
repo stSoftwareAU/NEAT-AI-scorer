@@ -3,11 +3,11 @@
 ## Summary
 
 Adds a **production-scale benchmark fixture** that gates candidate optimisations
-against the real GRQ-cluster creature instead of the synthetic 8→8→2 fixture, and
+against the real production creature instead of the synthetic 8→8→2 fixture, and
 re-baselines the scorer from it. Closes #296.
 
 - New library module [`rust_scorer/src/prod_fixture.rs`](../../../rust_scorer/src/prod_fixture.rs)
-  loads the GRQ-cluster production `network.json` **fail-loud**: it parses,
+  loads the production `network.json` **fail-loud**: it parses,
   topology-checks against production ranges, and returns a hard error (which the
   bench turns into a panic) if the fixture is empty, fails to deserialize, or is
   not production-sized. It **never falls back** to the synthetic fixture, which

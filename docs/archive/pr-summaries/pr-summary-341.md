@@ -2,7 +2,7 @@
 
 ## Summary
 
-Documents the new `RMSE` cost so users and GRQ operators can discover and request
+Documents the new `RMSE` cost so users and production operators can discover and request
 it, and records the change. The `RMSE` variant, its CPU dispatch (#338) and its
 GPU support via the shared MSE kernel (#339) already landed on the milestone
 branch; this PR consolidates the **hand-written** documentation those sub-issues

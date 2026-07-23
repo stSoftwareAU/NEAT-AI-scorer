@@ -138,6 +138,9 @@ echo "🕵️  Validating README names no private repository (Issue #450)..."
 echo "🕵️  Validating sources/scripts/AGENTS.md name no private repository (Issue #452)..."
 ./scripts/check-source-private-repo-refs.sh
 
+echo "🕵️  Validating CHANGELOG and docs name no private repository (Issue #453)..."
+./scripts/check-docs-private-repo-refs.sh
+
 echo "🕵️  Validating the tree names no private automation repository (Issue #451)..."
 ./scripts/check-private-automation-repo-refs.sh
 
