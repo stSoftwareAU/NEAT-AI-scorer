@@ -120,7 +120,7 @@ flag wins over the `NEAT_SCORER_GPU` environment variable.
 
 | Mode    | Behaviour                                                                                                       | `gpuBackend` value                                  |
 |---------|-----------------------------------------------------------------------------------------------------------------|-----------------------------------------------------|
-| `auto`  | **Default since Issue #83.** Use GPU on directory paths with **AllPrivate** topology (≤256 total neurons per creature); fall back to CPU for scratch/mixed GRQ-scale pools (#317), GPU-unsupported costs (any cost other than MSE/RMSE/MAE), missing adapters, or failed pre-flight. Prints one stderr note when declining GPU for topology. | `"metal"` / `"vulkan"` / `"dx12"` / `"gl"` / `"cpu-fallback"` |
+| `auto`  | **Default since Issue #83.** Use GPU on directory paths with **AllPrivate** topology (≤256 total neurons per creature); fall back to CPU for scratch/mixed production-scale pools (#317), GPU-unsupported costs (any cost other than MSE/RMSE/MAE), missing adapters, or failed pre-flight. Prints one stderr note when declining GPU for topology. | `"metal"` / `"vulkan"` / `"dx12"` / `"gl"` / `"cpu-fallback"` |
 | `on`    | Require a compatible GPU; exit non-zero with a clear message when none is found (no silent fallback). Forces the GPU path even where bench evidence does not support it. | `"metal"` / `"vulkan"` / `"dx12"` / `"gl"`          |
 | `off`   | Skip GPU detection entirely; run the CPU pipeline.                                                             | `"cpu-fallback"`                                    |
 
@@ -159,7 +159,7 @@ neuron count) routes straight to the CPU pipeline without ever spinning up —
 or tearing down — a GPU context, so the fallback always returns valid JSON
 and exits cleanly. Since Issue #182 the 256-neuron cap is no longer a reason
 to fall back (see below). Issue #317 adds a **topology probe** before GPU
-device creation: GRQ-scale creatures (total neurons >256, including inputs)
+device creation: production-scale creatures (total neurons >256, including inputs)
 classify as **ScratchOnly** and `Auto` stays on CPU — full-corpus M4 A/B
 showed CPU ~3× faster than scratch GPU even with dual-kernel dispatch and
 32 MiB read chunks. `--gpu on` still runs the scratch kernel for debug.
@@ -179,7 +179,7 @@ requires editing that function plus the matching row in the docs table
 |------------------------------------|-------------------------|----------------|--------------|
 | `score_from_json_fused` (single)   | GPU loses               | **CPU**        | Issue #81 (negative result) |
 | `score_from_creature_dir` (N=50, AllPrivate) | **GPU −32.4 %** (Metal) | **GPU**        | Issue #82 PR summary |
-| `score_from_creature_dir` (N=63, GRQ scratch) | **CPU ~3× faster** (full corpus) | **CPU** | Issue #317 |
+| `score_from_creature_dir` (N=63, production scratch) | **CPU ~3× faster** (full corpus) | **CPU** | Issue #317 |
 
 `Auto` selects per **path** (single vs directory), not per N — at N=10 the
 per-dispatch overhead dominates, but at the issue-target corpus the
@@ -252,7 +252,7 @@ selecting the positive or negative sum on the condition sign. This matches
 `neat_core::batch_scoring::neuron_activation_scalar` exactly, so `SynapseGpu`
 now carries a `synapse_type` field. **Constant neurons** are hosted too
 (flagged by `NeuronGpu.is_constant`): the kernel returns their clamped bias and
-ignores their synapses. Together these make the real GRQ-cluster creature
+ignores their synapses. Together these make the real production creature
 (aggregates + three constant neurons) fully GPU-hostable. The remaining three
 aggregates **HYPOT / HYPOTv2 / MEAN (35..=37)** are still unhosted and force a
 clean CPU fallback via `squash_supported`.
@@ -327,7 +327,7 @@ forward pass and then reduce a per-record loss selected by the shader's
   both are GPU-supported at identical speed.
 - `MAE` (Issue #316) accumulates the **absolute-error sum** on the same forward
   pass, so it is GPU-hosted on both kernels — including the > 256-neuron scratch
-  path used by production GRQ creatures — at MSE-class speed.
+  path used by production-scale creatures — at MSE-class speed.
 
 Every **other** (non-`MSE`, non-`RMSE`, non-`MAE`) `--cost` selection forces the
 CPU pipeline:
@@ -339,7 +339,7 @@ CPU pipeline:
   informational `[gpu] auto fallback ...` line to stderr naming the
   cost as the reason (Issue #205), so the CPU choice is not silent;
   MSE / RMSE / MAE (GPU-supported costs) print nothing extra. (An
-  `AllPrivate` pool runs on GPU; `Mixed`/`ScratchOnly` GRQ-scale pools still
+  `AllPrivate` pool runs on GPU; `Mixed`/`ScratchOnly` production-scale pools still
   fall back to CPU for **topology** reasons per Issue #317, independent of cost.)
 - Under `--gpu on` a GPU-unsupported cost is a hard error before any scoring
   runs (no silent downgrade — `--gpu on` is a strict requirement).
@@ -418,7 +418,7 @@ score stays stable:
 | `0.1`           | 150,000        | 0.021 s    | 5.67×    |
 
 > **Production gate (needs production data + a human).** Lighting this up on the
-> real GRQ corpus is gated on ≥ 5 % `evolveDir` wall-clock **and** rank
+> real production corpus is gated on ≥ 5 % `evolveDir` wall-clock **and** rank
 > correlation (Spearman/pairwise) of subsample vs full ≥ 0.95, published on
 > NEAT-AI#3256 / #3257. The scorer does **not** auto-release — the consumer bumps
 > to a released scorer through the normal dependency-bump flow once a human cuts
@@ -445,11 +445,11 @@ In directory mode, output is a top-level object keyed by creature filename stem,
 
 ```json
 {
-  "GRQ-10-1": {
+  "creature-10-1": {
     "score": 0.9999998,
     "error": 0.0
   },
-  "GRQ-12-1": {
+  "creature-12-1": {
     "score": 0.9999998,
     "error": 0.0
   }
@@ -544,7 +544,7 @@ warning.
 ### Large-record hosts: raise `NEAT_SCORER_READ_BYTES` (Issue #307)
 
 The default `NEAT_SCORER_READ_BYTES` (2 MiB) is tuned for the synthetic
-small-record fixtures. **Production GRQ-cluster records are 9848 bytes**
+small-record fixtures. **Production records are 9848 bytes**
 (2461 inputs + 1 output, `f32`), so a 2 MiB chunk holds only ~213 records —
 too few to amortise the per-chunk Rayon dispatch across the worker pool. A
 sweep on the #296 production fixture (see
@@ -565,7 +565,7 @@ back-to-back on one Apple Silicon host; absolute times are host-load
 sensitive, so the table reports the relative improvement each cell held across
 repeated interleaved runs.)
 
-On GRQ hosts with these large records, export a bigger chunk before scoring:
+On production hosts with these large records, export a bigger chunk before scoring:
 
 ```bash
 # ~24 % faster forward-only scoring on 9848-byte production records.
@@ -577,7 +577,7 @@ buffer. The read buffer is **per-scan, not per-worker** — directory mode runs
 a single shared scan and partitions the unpacked records across the worker
 pool — so a 32 MiB setting adds at most ~64 MiB of transient buffer (the
 pipelined path double-buffers), not 32 MiB × worker count. That stays well
-within GRQ host RAM headroom.
+within production host RAM headroom.
 
 The global default is intentionally **left at 2 MiB**: the gain is specific to
 large (> ~1 KiB) records, and raising it globally would enlarge the buffer for
