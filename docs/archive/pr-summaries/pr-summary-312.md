@@ -1,11 +1,11 @@
 ## Summary
 
 GPU-host the aggregate squash neurons **MINIMUM (32) / MAXIMUM (33) / IF (34)**
-and **constant neurons** in both WGSL kernels so the real GRQ-cluster creature
+and **constant neurons** in both WGSL kernels so the real production creature
 runs on Metal/Vulkan. **Closes #312.**
 
-Before this change `--gpu auto` kept the real GRQ creature on CPU: hosting is
-gated per-creature (`build_batched_network_data`), and the GRQ creature contains
+Before this change `--gpu auto` kept the real production creature on CPU: hosting is
+gated per-creature (`build_batched_network_data`), and the production creature contains
 neuron forms the kernel's sum-then-squash path could not express — `IF` (×6,
 aggregates by synapse *type*), `MINIMUM` (×4) / `MAXIMUM` (×2) (min/max of
 `w·act`, not a sum), and 3 **constant** neurons (clamped bias, synapses ignored).
@@ -67,15 +67,15 @@ rather than skip).
 - `cpu_vs_gpu_minimum_aggregate`, `cpu_vs_gpu_maximum_aggregate`,
   `cpu_vs_gpu_if_aggregate` — one aggregate per creature.
 - `cpu_vs_gpu_mixed_aggregates_and_constant_neuron` — MIN + MAX + IF + constant
-  in one creature (the GRQ mix).
-- `cpu_vs_gpu_real_prod_creature_when_available` — scores the **actual** GRQ
+  in one creature (the production mix).
+- `cpu_vs_gpu_real_prod_creature_when_available` — scores the **actual** production
   `network.json` (1666 neurons, IF ×6 / MIN ×4 / MAX ×2, 3 constant neurons)
   when `BENCH_PROD_CREATURE` is set. Ran green against the local creature.
 
 All 11 GPU parity tests + 16 host unit tests pass; `./quality.sh` passes clean
 (shellcheck, fmt, clippy, check, build, test, rustdoc, release build).
 
-**Production GRQ A/B (`production_gpu_vs_cpu`, 16 MiB corpus / 1703 records):**
+**Production A/B (`production_gpu_vs_cpu`, 16 MiB corpus / 1703 records):**
 
 | Pool `N` | CPU median | GPU median | GPU vs CPU |
 |---|---|---|---|
@@ -86,7 +86,7 @@ The GPU amortises across the creature pool (one dispatch scores every
 `(creature, record)` pair): it loses by 1.7× at a small pool but pulls ahead by
 ~9 % at a realistic evolution population (`N=50`), with a break-even in between.
 
-**Default decision:** the hosting work merges on its own merits (real GRQ
+**Default decision:** the hosting work merges on its own merits (real production
 creature now hostable with verified parity, CPU path untouched). The A/B is a
 **crossover**, not a clean win, so the `--gpu auto` default is *not* flipped
 here — a population-size-aware `auto_should_use_gpu` threshold is left to the
@@ -100,8 +100,8 @@ Added / modified in `rust_scorer/tests/gpu_multi_score_parity.rs`:
 
 - `cpu_vs_gpu_minimum_aggregate`, `cpu_vs_gpu_maximum_aggregate`,
   `cpu_vs_gpu_if_aggregate` — aggregate parity on a real adapter.
-- `cpu_vs_gpu_mixed_aggregates_and_constant_neuron` — combined GRQ mix.
-- `cpu_vs_gpu_real_prod_creature_when_available` — real GRQ `network.json`
+- `cpu_vs_gpu_mixed_aggregates_and_constant_neuron` — combined production mix.
+- `cpu_vs_gpu_real_prod_creature_when_available` — real production `network.json`
   parity, gated on `BENCH_PROD_CREATURE`.
 
 Added / modified host unit tests in `rust_scorer/src/gpu/forward_mse_batched.rs`:
@@ -121,4 +121,4 @@ Added / modified host unit tests in `rust_scorer/src/gpu/forward_mse_batched.rs`
   (37) since MINIMUM (32) is now hosted.
 
 Added `rust_scorer/benches/scoring.rs::bench_production_gpu_vs_cpu` — the real
-GRQ CPU↔GPU A/B used for the numbers above.
+production CPU↔GPU A/B used for the numbers above.

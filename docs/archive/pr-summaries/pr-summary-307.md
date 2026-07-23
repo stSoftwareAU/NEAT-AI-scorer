@@ -1,7 +1,7 @@
 ## Summary
 
 Swept `NEAT_SCORER_READ_BYTES` ∈ {2, 8, 16, 32, 64} MiB against the #296
-**production** GRQ-cluster creature (9848-byte records: 2461 inputs + 1 output,
+**production** creature (9848-byte records: 2461 inputs + 1 output,
 `f32`) to answer whether larger aligned read chunks beat the 2 MiB default. They
 do — larger reads recover **~20–24 %** on the single- and multi-creature
 production scoring paths, with the sweet spot at **16–32 MiB**. This is a
@@ -13,7 +13,7 @@ no auto-tuner ships: the optimum is narrow and record-size specific, and the
 sweep ran on a **contended** worker host rather than the quiet Apple Silicon
 host the merge gate requires — not a sound basis for fixing a global constant.
 Instead this PR takes the issue's explicitly-sanctioned outcome: **document the
-recommended env for GRQ hosts**. It is not a negative result — there is a
+recommended env for production hosts**. It is not a negative result — there is a
 measurable, repeatable gain; we simply choose the documentation route over a
 default flip.
 
@@ -29,7 +29,7 @@ sweep below (Criterion, `bench` profile: release + LTO + `codegen-units = 1`),
 captured with the production fixture:
 
 ```bash
-export BENCH_PROD_CREATURE=/path/to/GRQ-cluster/network.json
+export BENCH_PROD_CREATURE=/path/to/production/network.json
 export BENCH_PROD_BYTES=134217728   # 128 MiB → 13 628 records (a few × the 64 MiB read cap)
 export BENCH_PROD_CREATURES=4
 for b in 2097152 8388608 16777216 33554432 67108864; do
@@ -81,7 +81,7 @@ large-record production hosts and the default is unchanged.
 The read buffer is **per-scan, not per-worker** (single shared scan; workers get
 partitioned slices of the unpacked records). A 32 MiB setting therefore adds
 ≤ ~64 MiB transient buffer (the pipelined path double-buffers), **not** 32 MiB ×
-worker count — well within GRQ host RAM headroom.
+worker count — well within production host RAM headroom.
 
 ## Test Plan
 

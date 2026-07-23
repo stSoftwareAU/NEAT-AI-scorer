@@ -14,7 +14,7 @@ The work spans two repos, per the issue scope:
    upstream config validation accepts `costName: "RMSE"` and passes it through
    `NeatOptions.costName` unchanged.
 2. **This repo (scorer):** the sync-verification test + comment updates below.
-3. **End-to-end release + GRQ bump (human-gated):** tracked in
+3. **End-to-end release + production consumer bump (human-gated):** tracked in
    `stSoftwareAU/NEAT-AI#3342`. Per the release-gating rule the NEAT-AI release
    and the downstream bump are a human action — this PR does **not** auto-merge
    or publish anything.
@@ -53,7 +53,7 @@ and the upstream Deno suite.
 
 ```mermaid
 flowchart LR
-    A["GRQ<br/>costName: RMSE"] --> B["NEAT-AI TS<br/>BUILT_IN_COST_NAMES<br/>(NEAT-AI#3341)"]
+    A["Production consumer<br/>costName: RMSE"] --> B["NEAT-AI TS<br/>BUILT_IN_COST_NAMES<br/>(NEAT-AI#3341)"]
     B --> C["rust_scorer<br/>--cost RMSE"]
     C --> D["MSE kernel + host sqrt<br/>(#339)"]
     B -. "drift-detecting mirror" .- E["cost.rs sync test<br/>(this PR, #340)"]

@@ -52,17 +52,19 @@ fi
 # prose is unaffected.
 PRIVATE_PATTERN='\bGRQ(-cluster)?\b'
 
-# This guard — and its README-scoped sibling from Issue #450 — necessarily
-# spell the names they forbid; everything else in scope must stay clean.
+# This guard — and its README-scoped (#450) and docs-scoped (#453) siblings —
+# necessarily spell the names they forbid; everything else in scope must stay
+# clean.
 SELF="$(basename "${BASH_SOURCE[0]}")"
 SIBLING_GUARD="scripts/check-readme-private-repo-refs.sh"
+DOCS_GUARD="scripts/check-docs-private-repo-refs.sh"
 
 # In-scope files: Rust sources, shell scripts and the agent guidance file.
-# Historical records (CHANGELOG, archived PR summaries) are deliberately out
-# of scope — they document what was said at the time.
+# Historical records (CHANGELOG, archived PR summaries) are covered by
+# `check-docs-private-repo-refs.sh` (Issue #453).
 in_scope() {
   case "$1" in
-    "scripts/$SELF" | "$SIBLING_GUARD") return 1 ;;
+    "scripts/$SELF" | "$SIBLING_GUARD" | "$DOCS_GUARD") return 1 ;;
     *.rs | scripts/*.sh | AGENTS.md) return 0 ;;
     *) return 1 ;;
   esac
