@@ -1,7 +1,8 @@
 ## Summary
 
 Adds `bump-deps.sh` at the repo root, the pre-`quality.sh` Cargo dependency
-refresher invoked by the Vibe Coder worker per stSoftwareAU/VibeCoding#1613.
+refresher invoked by the automation worker per the standing dependency-bump
+contract.
 The script runs four stages and prints a one-line summary:
 
 1. **Internal — NEAT-AI-core pin.** Resolves `gh api repos/stSoftwareAU/NEAT-AI-core/commits/Develop --jq .sha` and rewrites the `rev = "..."` field in any workspace `Cargo.toml` that pins `neat-core` via `git+rev`. The current sibling-clone `path = "..."` layout has no SHA to advance, so this step is a no-op until someone switches to a `git+rev` pin.

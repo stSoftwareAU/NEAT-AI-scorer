@@ -135,6 +135,9 @@ echo "📖 Validating README 'matches CI' block aligns with the CI quality job (
 echo "🕵️  Validating README names no private repository (Issue #450)..."
 ./scripts/check-readme-private-repo-refs.sh
 
+echo "🕵️  Validating the tree names no private automation repository (Issue #451)..."
+./scripts/check-private-automation-repo-refs.sh
+
 echo "📝 Running codespell preflight (mirrors CI spell-check job)..."
 if ! ./scripts/spell-check.sh; then
   echo "spell-check: FAILED — fix the typos above or update .codespellrc (see README)."

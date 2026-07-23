@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # bump-deps.sh — refresh Cargo dependencies before quality.sh (Issue #55).
 #
-# Invoked by the Vibe Coder worker before quality.sh per the contract in
-# stSoftwareAU/VibeCoding#1613:
+# Invoked by the automation worker before quality.sh, per the standing
+# dependency-bump contract:
 #
 #   1. Internal: NEAT-AI-core pin — bump to upstream Develop HEAD if a
 #      `rev = "..."` pin exists in any workspace member's Cargo.toml. If
