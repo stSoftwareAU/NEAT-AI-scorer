@@ -7,7 +7,7 @@
 
 const DEFAULT_READ_BYTES: usize = 2 * 1024 * 1024;
 
-/// GRQ-scale records (~2461 inputs + 1 output ≈ 9848 bytes/record) amortise
+/// Production-scale records (~2461 inputs + 1 output ≈ 9848 bytes/record) amortise
 /// poorly at the 2 MiB default — each read yields only ~213 records and one
 /// GPU dispatch per chunk. Issue #307 / production tuning: when the env var is
 /// unset, use a larger default so omit/`auto` callers get fewer chunks.
@@ -85,7 +85,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn default_read_bytes_scales_for_grq_records() {
+    fn default_read_bytes_scales_for_production_records() {
         assert_eq!(default_training_read_bytes(256), DEFAULT_READ_BYTES);
         assert_eq!(
             default_training_read_bytes(LARGE_RECORD_BYTES_THRESHOLD),

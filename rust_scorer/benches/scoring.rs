@@ -107,7 +107,7 @@ const MIXED_SQUASHES: &[&str] = &[
 /// `BENCH_SCORING_HIDDEN_SQUASH` selects the activation so the GPU-vs-CPU
 /// directory A/B can exercise the production squash set the shader now hosts.
 /// The default `TANH` preserves historical baselines; `MIXED` cycles
-/// [`MIXED_SQUASHES`] across the hidden neurons to mimic a real GRQ creature.
+/// [`MIXED_SQUASHES`] across the hidden neurons to mimic a real production creature.
 fn bench_hidden_squash(h: usize) -> String {
     match std::env::var("BENCH_SCORING_HIDDEN_SQUASH").ok().as_deref() {
         None | Some("") | Some("TANH") => "TANH".to_string(),
@@ -587,10 +587,10 @@ fn bench_large_creature_cpu_vs_gpu(c: &mut Criterion) {
 }
 
 // ---------------------------------------------------------------------------
-// Issue #296 — production-scale fixture (GRQ-cluster creature).
+// Issue #296 — production-scale fixture (evolved production creature).
 //
 // Every candidate optimisation (#297–#299) is gated against the **production**
-// creature, not the synthetic 8→8→2 fixture above. The evolved GRQ-cluster
+// creature, not the synthetic 8→8→2 fixture above. The evolved production
 // network (≈ 1666 neurons across ≈ 34 squash types, ≈ 21 510 synapses, 2461
 // inputs / 1 output) profiles very differently from pure TANH.
 //
@@ -805,7 +805,7 @@ fn bench_production_multi(c: &mut Criterion) {
     group.finish();
 }
 
-/// Issue #312: production GRQ-cluster creature CPU↔GPU A/B. The real creature
+/// Issue #312: production-scale creature CPU↔GPU A/B. The real creature
 /// carries the aggregate squashes (MINIMUM/MAXIMUM/IF) and constant neurons
 /// that #312 taught the kernels to host, so — unlike `bench_production_multi`,
 /// which stays CPU-only — this directly compares directory-mode GPU against the

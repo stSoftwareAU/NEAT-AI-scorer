@@ -55,7 +55,7 @@ fn large_creature(input: usize, output: usize, hidden: usize) -> String {
 }
 
 /// Issue #180 / #182 / #317: `--gpu auto` over scratch-sized creatures must
-/// complete cleanly. Issue #317 routes GRQ-scale / above-cap pools to CPU under
+/// complete cleanly. Issue #317 routes production-scale / above-cap pools to CPU under
 /// Auto (faster on M4/M5 full corpus); `--gpu on` still uses the scratch kernel.
 #[test]
 fn gpu_auto_directory_above_private_cap_scores_cleanly() {
@@ -388,10 +388,10 @@ fn directory_mode_auto_unsupported_cost_notes_cpu_fallback() {
     );
 }
 
-/// Issue #317: GRQ-scale input width (>256 total neurons) forces scratch topology;
+/// Issue #317: production-scale input width (>256 total neurons) forces scratch topology;
 /// `--gpu auto` (default) must stay on CPU and print the topology fallback note.
 #[test]
-fn directory_mode_auto_grq_scale_topology_uses_cpu() {
+fn directory_mode_auto_production_scale_topology_uses_cpu() {
     let bin = env!("CARGO_BIN_EXE_rust_scorer");
     let tmp = tempfile::tempdir().expect("create tempdir");
     let creatures_dir = tmp.path().join("creatures");
@@ -399,9 +399,10 @@ fn directory_mode_auto_grq_scale_topology_uses_cpu() {
     std::fs::create_dir(&creatures_dir).expect("create creatures dir");
     std::fs::create_dir(&data_dir).expect("create data dir");
 
-    // 2461 inputs + 1 hidden + 1 output — same total-neuron scale as production GRQ.
+    // 2461 inputs + 1 hidden + 1 output — same total-neuron scale as the
+    // production creature.
     std::fs::write(
-        creatures_dir.join("grq-scale.json"),
+        creatures_dir.join("production-scale.json"),
         large_creature(2461, 1, 1),
     )
     .expect("write creature");
@@ -414,16 +415,16 @@ fn directory_mode_auto_grq_scale_topology_uses_cpu() {
         .expect("spawn scorer (default auto)");
     assert!(
         output.status.success(),
-        "auto GRQ-scale run must succeed, stderr:\n{}",
+        "auto production-scale run must succeed, stderr:\n{}",
         String::from_utf8_lossy(&output.stderr),
     );
     let parsed: serde_json::Value =
         serde_json::from_slice(&output.stdout).expect("stdout must be JSON");
-    let entry = parsed.get("grq-scale").expect("missing key");
+    let entry = parsed.get("production-scale").expect("missing key");
     assert_eq!(
         entry.get("gpuBackend").and_then(|v| v.as_str()),
         Some("cpu-fallback"),
-        "GRQ-scale Auto must use CPU",
+        "production-scale Auto must use CPU",
     );
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(

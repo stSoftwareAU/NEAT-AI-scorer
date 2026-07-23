@@ -220,7 +220,7 @@ fn run_parity_squash(hidden_squash: &str, num_creatures: usize, hidden: usize, n
 }
 
 /// Issue #305: every point-wise squash the shader now inlines must score within
-/// tolerance of the CPU path. Covers the production GRQ blockers named in the
+/// tolerance of the CPU path. Covers the production blockers named in the
 /// issue (ABSOLUTE, BENT_IDENTITY, SELU, SINE, GELU, CUBE, HARD_TANH, …) plus
 /// the rest of the 0..=31 set.
 #[test]
@@ -429,7 +429,7 @@ fn cpu_vs_gpu_if_aggregate() {
     run_parity_json("IF", &json, 4, 512);
 }
 
-/// Issue #312: the real GRQ-cluster creature (aggregates + constant neurons)
+/// Issue #312: the real production creature (aggregates + constant neurons)
 /// must now be GPU-hostable and score within tolerance of the CPU path. Gated
 /// on `BENCH_PROD_CREATURE` pointing at a downloaded `network.json` (the 3 MB
 /// evolved creature is not committed), and skipped when no GPU is present, so
@@ -452,14 +452,14 @@ fn cpu_vs_gpu_real_prod_creature_when_available() {
     };
     // Smaller corpus / pool than the bench — this is a correctness gate, not a
     // timing run — but still exercises the full aggregate + constant mix.
-    run_parity_json("GRQ-prod", &json, 2, 128);
+    run_parity_json("production", &json, 2, 128);
 }
 
 #[test]
 fn cpu_vs_gpu_mixed_aggregates_and_constant_neuron() {
     // One creature carrying every Issue #312 blocker at once: a MINIMUM, a
     // MAXIMUM, an IF hidden neuron, plus a constant neuron — mirroring the real
-    // GRQ-cluster creature's mix. Output sums the four hidden activations.
+    // production creature's mix. Output sums the four hidden activations.
     let json = r#"{
         "input":4,"output":1,"forwardOnly":true,"semanticVersion":"4.0.0",
         "neurons":[

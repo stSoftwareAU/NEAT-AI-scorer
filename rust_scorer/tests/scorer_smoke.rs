@@ -4,7 +4,8 @@
 //! consisting of an identity creature and a 32-byte packed `f32` data file.
 //!
 //! Purpose: catch **API drift between `rust_scorer` and the path-dependency
-//! `neat-core`** at PR time, instead of only when GRQ training fails downstream.
+//! `neat-core`** at PR time, instead of only when production training fails
+//! downstream.
 //! If the scorer fails to compile against the sibling `neat-core`, this test
 //! never even runs (Cargo would fail earlier). If the scorer compiles but the
 //! CLI contract / JSON output changes shape, this test fails loudly.
