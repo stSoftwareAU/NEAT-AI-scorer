@@ -132,6 +132,9 @@ echo "🛟 Validating risk-bearing multi-line run: blocks open with set -euo pip
 echo "📖 Validating README 'matches CI' block aligns with the CI quality job (Issue #212)..."
 ./scripts/check-readme-ci-alignment.sh
 
+echo "🕵️  Validating README names no private repository (Issue #450)..."
+./scripts/check-readme-private-repo-refs.sh
+
 echo "📝 Running codespell preflight (mirrors CI spell-check job)..."
 if ! ./scripts/spell-check.sh; then
   echo "spell-check: FAILED — fix the typos above or update .codespellrc (see README)."
