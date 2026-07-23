@@ -100,7 +100,7 @@ list_candidates() {
 matches="$(scan_matches)"
 
 if [ -n "$matches" ]; then
-  echo "❌ Sources name a private repository (Issue #452):" >&2
+  echo "❌ Source tree names a private repository (Issue #452):" >&2
   echo "$matches" >&2
   echo >&2
   echo "   Reword to concept level — describe the production creature, corpus" >&2
