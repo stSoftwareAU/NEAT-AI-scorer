@@ -85,6 +85,36 @@ EOF
   [[ "$output" == *"Usage:"* ]]
 }
 
+@test "ignores an unrelated repository checked out inside the tree" {
+  # CI checks the sibling NEAT-AI-core repo out inside the workspace; its
+  # content is not ours to reword, so a tracked-files scan must skip it.
+  git -C "$TMP_DIR" init -q
+  git -C "$TMP_DIR" config user.email ci@example.com
+  git -C "$TMP_DIR" config user.name CI
+  printf 'clean\n' >"$TMP_DIR/README.md"
+  git -C "$TMP_DIR" add README.md
+  git -C "$TMP_DIR" commit -qm "seed"
+
+  mkdir -p "$TMP_DIR/NEAT-AI-core"
+  printf 'Per %s.\n' "$PRIVATE_SLUG" >"$TMP_DIR/NEAT-AI-core/bump-deps.sh"
+
+  run "$SCRIPT_UNDER_TEST" --root "$TMP_DIR"
+  [ "$status" -eq 0 ]
+}
+
+@test "still fails on a tracked file naming the private repo in a git tree" {
+  git -C "$TMP_DIR" init -q
+  git -C "$TMP_DIR" config user.email ci@example.com
+  git -C "$TMP_DIR" config user.name CI
+  printf 'Per %s.\n' "$PRIVATE_SLUG" >"$TMP_DIR/README.md"
+  git -C "$TMP_DIR" add README.md
+  git -C "$TMP_DIR" commit -qm "seed"
+
+  run "$SCRIPT_UNDER_TEST" --root "$TMP_DIR"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"README.md"* ]]
+}
+
 @test "the shipped tree passes the guard" {
   run "$SCRIPT_UNDER_TEST"
   [ "$status" -eq 0 ]

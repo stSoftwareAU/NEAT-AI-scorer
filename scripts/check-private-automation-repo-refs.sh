@@ -52,10 +52,41 @@ PRIVATE_PATTERN='\bstSoftwareAU/VibeCoding\b'
 # stay clean.
 SELF="$(basename "${BASH_SOURCE[0]}")"
 
-if matches="$(grep -rInE "$PRIVATE_PATTERN" "$ROOT" \
-  --exclude-dir=.git \
-  --exclude-dir=target \
-  --exclude="$SELF")"; then
+# Scan only the files this repository owns. CI checks the sibling
+# NEAT-AI-core repo out *inside* the workspace (the in-workspace path
+# strategy), and that unrelated tree carries the slug — scanning it made the
+# guard fail on content this repo cannot fix. When ROOT is the top level of a
+# git work tree, enumerate tracked files; otherwise (synthetic test trees)
+# fall back to a recursive scan.
+scan_matches() {
+  local top=""
+  top="$(git -C "$ROOT" rev-parse --show-toplevel 2>/dev/null || true)"
+
+  if [ -n "$top" ] && [ "$top" -ef "$ROOT" ]; then
+    local files=()
+    local file=""
+    while IFS= read -r -d '' file; do
+      [ "$file" = "scripts/$SELF" ] && continue
+      files+=("$file")
+    done < <(git -C "$ROOT" ls-files -z)
+
+    # `|| true`: grep exits 1 when it matches nothing, which is the clean
+    # case here. The caller treats empty output as "no private references".
+    [ ${#files[@]} -eq 0 ] && return 0
+    # -H so a single-file match still reports its path.
+    (cd "$ROOT" && grep -HInE "$PRIVATE_PATTERN" -- "${files[@]}") || true
+    return
+  fi
+
+  grep -rInE "$PRIVATE_PATTERN" "$ROOT" \
+    --exclude-dir=.git \
+    --exclude-dir=target \
+    --exclude="$SELF" || true
+}
+
+matches="$(scan_matches)"
+
+if [ -n "$matches" ]; then
   echo "❌ Tree names a private repository (Issue #451):" >&2
   echo "$matches" >&2
   echo >&2
