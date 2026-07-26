@@ -214,11 +214,16 @@ print(f"{statistics.median(float(x) for x in sys.argv[1:]):.2f}")' \
   else
     delta="n/a"
     if [ -n "$CPU_MEDIAN" ]; then
+      # A CPU median of 0.00s means the run finished below the timer's
+      # resolution, so a percentage is undefined — say so rather than dividing
+      # by zero (which would abort the whole benchmark under `set -e`).
       delta="$(python3 -c '
 import sys
 cpu, other = float(sys.argv[1]), float(sys.argv[2])
-pct = (cpu - other) / cpu * 100.0
-print(f"{pct:+.1f}% vs CPU")' "$CPU_MEDIAN" "$median")"
+if cpu <= 0.0:
+    print("n/a (CPU median 0.00s — below timer resolution)")
+else:
+    print(f"{(cpu - other) / cpu * 100.0:+.1f}% vs CPU")' "$CPU_MEDIAN" "$median")"
       echo "   gpu ${mode} vs gpu off: ${delta}"
     fi
     RESULT_LINES="${RESULT_LINES}| \`--gpu ${mode}\` | ${median} | ${backend} | ${delta} |"$'\n'
