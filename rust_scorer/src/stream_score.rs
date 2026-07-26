@@ -19,7 +19,6 @@ use crate::cost::{CostKind, accumulate_cost_sum};
 use crate::read_tuning::{MAX_READ_BYTES, training_read_target_bytes_from_env};
 use crate::sampling::SampleSpec;
 use crate::stream_io::run_io_loop;
-use neat_core::creature::CreatureExport;
 use neat_core::network::CompiledNetwork;
 use neat_core::training_bin_stream::for_each_read_chunk;
 use neat_core::training_data::TrainingDataConfig;
@@ -145,7 +144,6 @@ fn partition_packed_records(
 ///         CostKind::Mse,
 ///         &bin_files,
 ///         &config,
-///         &creature,
 ///         &mut network,
 ///     )
 ///     .unwrap();
@@ -153,21 +151,20 @@ fn partition_packed_records(
 /// println!("mean error = {mean_error}");
 /// ```
 // `#[allow(dead_code)]`: the full-rate wrapper is the library entry point used
-// by benches/tests; the CLI binary calls the `_sampled` variant directly, so its
-// self-contained module tree never invokes this delegator.
+// by `src/bin/cost_scan_bench.rs` and `benches/scoring.rs`; the CLI binary
+// calls the `_sampled` variant directly, so its self-contained module tree
+// never invokes this delegator. Consumers re-verified in the Issue #470 audit.
 #[allow(dead_code)]
 pub fn accumulate_cost_sum_forward_only_fused(
     cost: CostKind,
     bin_files: &[std::path::PathBuf],
     config: &TrainingDataConfig,
-    creature: &CreatureExport,
     network: &mut CompiledNetwork,
 ) -> Result<(f64, usize, usize, usize, f64), String> {
     accumulate_cost_sum_forward_only_fused_sampled(
         cost,
         bin_files,
         config,
-        creature,
         network,
         SampleSpec::full(),
     )
@@ -183,11 +180,17 @@ pub fn accumulate_cost_sum_forward_only_fused(
 /// count); a sub-rate `sample` returns the loss sum and count over the **kept**
 /// records only, so `loss_sum / record_count` is still the mean error over the
 /// scored subset.
+///
+/// Issue #470 vestigial-parameter sweep: the former `_creature:
+/// &CreatureExport` argument was dropped from both entry points. It had been
+/// unread since the fused path started driving the pre-compiled
+/// `CompiledNetwork` directly — `config` already carries the input/output
+/// widths the reader needs, so the export was pure dead weight at every call
+/// site.
 pub fn accumulate_cost_sum_forward_only_fused_sampled(
     cost: CostKind,
     bin_files: &[std::path::PathBuf],
     config: &TrainingDataConfig,
-    _creature: &CreatureExport,
     network: &mut CompiledNetwork,
     sample: SampleSpec,
 ) -> Result<(f64, usize, usize, usize, f64), String> {

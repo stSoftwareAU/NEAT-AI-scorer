@@ -424,9 +424,11 @@ impl BatchedRunner {
         Ok(Self::from_data(ctx, &data, networks.len() as u32, cost))
     }
 
-    /// Construct a runner from already-serialised batched data. Used by tests
+    /// Construct a runner from already-serialised batched data, for callers
     /// that want to drive the kernel without building a full `CompiledNetwork`
-    /// pool.
+    /// pool. Issue #470 audit: the only in-tree caller today is
+    /// [`BatchedRunner::new`]; `num_creatures` stays explicit because it is the
+    /// dispatch height and every other field of the runner is derived from it.
     ///
     /// `cost` selects the per-record loss the kernel accumulates (Issue #316):
     /// squared error for MSE/RMSE, absolute error for MAE. Only a
