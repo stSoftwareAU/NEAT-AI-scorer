@@ -53,6 +53,10 @@ pub const ENCELADUS_SQUASHES: &[&str] = &[
 /// (`input_hidden + hidden_output`) can differ from `target_synapses` only when
 /// the request is outside the representable range; callers that need the exact
 /// figure should sum the pair.
+// Issue #470 vestigial-parameter sweep: every in-tree caller passes
+// `num_outputs = 1` (the Enceladus shape), but the parameter is genuinely read
+// — it sets the `hidden → output` edge count — and keeping it generic keeps
+// this fixture symmetrical with `prod_fixture`. Not a vestige.
 #[must_use]
 pub fn plan_synapses(
     num_inputs: usize,

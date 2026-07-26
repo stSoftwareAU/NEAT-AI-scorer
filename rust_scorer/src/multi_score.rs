@@ -491,6 +491,13 @@ where
 fn score_from_creature_dir_cpu(
     creatures_dir: &Path,
     data_path: &Path,
+    // Issue #470 vestigial-parameter sweep: every CPU-path call site (`main.rs`,
+    // the benches and the CPU legs of the parity tests) passes
+    // `GpuBackendLabel::CpuFallback`, but the parameter must stay. It is read
+    // into `ScoreResult::gpu_backend` — i.e. it is the value serialised as the
+    // `gpuBackend` JSON field — and the label is threaded rather than hard-coded
+    // so the CPU and GPU directory paths keep one shared reporting seam
+    // (`score_from_creature_dir_gpu_impl` passes a real adapter label here).
     gpu_backend: GpuBackendLabel,
     cost: CostKind,
     mut on_chunk: Option<&mut EarlyExitCallback<'_>>,
@@ -1018,9 +1025,9 @@ pub fn score_from_creature_dir_gpu(
 /// Same single-pass GPU envelope, but only the deterministic subsample selected
 /// by `sample` is dispatched to the kernel. `SampleSpec::full()` reproduces the
 /// full-corpus GPU result exactly.
-// `#[allow(dead_code)]`: library API used by the CLI's sampled path and by
-// tests/benches; the binary's self-contained module tree may not call it.
-#[allow(dead_code)]
+// Issue #470 dead-code audit: no `#[allow(dead_code)]` here — the binary's
+// own module tree reaches this function (`main.rs` GPU directory path), as do
+// `tests/gpu_sample_rate_parity.rs` and the Criterion bench.
 pub fn score_from_creature_dir_gpu_sampled(
     creatures_dir: &Path,
     data_path: &Path,

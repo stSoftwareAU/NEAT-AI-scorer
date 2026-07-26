@@ -128,7 +128,10 @@ pub enum GpuBackendLabel {
 
 impl GpuBackendLabel {
     /// Stable serialised label as a `&'static str`. Matches the JSON form.
-    #[allow(dead_code)] // used by tests; consumed by callers once GPU kernels land.
+    // `#[allow(dead_code)]`: consumed by `tests/gpu_mae_parity.rs` (backend
+    // gating); the binary serialises the label through `serde`, not this
+    // accessor. Consumer re-verified in the Issue #470 audit.
+    #[allow(dead_code)]
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Metal => "metal",
@@ -183,10 +186,11 @@ impl std::error::Error for GpuInitError {}
 
 /// A successfully-initialised GPU context ready to drive kernels.
 ///
-/// For Issue #80 nothing consumes `device`/`queue` yet — they exist so the
-/// follow-up GPU kernel work in #81 can plug straight in without churning
-/// this module's public API.
-#[allow(dead_code)] // device/queue used by follow-up GPU kernel issues (#81+).
+/// Every field is live: `device`/`queue` are consumed by the batched and
+/// scratch kernels in [`crate::gpu::forward_mse_batched`], and `backend`
+/// feeds the `gpuBackend` JSON field. The Issue #80 `#[allow(dead_code)]`
+/// placeholder was retired in the Issue #470 audit once those consumers
+/// landed.
 pub struct GpuContext {
     /// The initialised `wgpu` logical device used to allocate kernel resources.
     pub device: wgpu::Device,
@@ -298,6 +302,13 @@ pub fn auto_should_use_gpu_directory(
 /// Takes the same shared probe as [`auto_should_use_gpu_directory`].
 pub fn auto_topology_fallback_note(
     mode: GpuMode,
+    // Issue #470 vestigial-parameter sweep: every current call site passes
+    // `ScoringPath::CreatureDirectory`, so the guard below cannot fire today.
+    // The parameter stays deliberately — it mirrors the sibling
+    // [`auto_cost_fallback_note`] signature (which *is* exercised with
+    // `SingleCreature`), and `main.rs` picks the note helper by mode, not by
+    // path, so a future single-creature GPU kernel must not silently inherit
+    // the directory-topology note.
     path: ScoringPath,
     cost: crate::cost::CostKind,
     probe: Option<crate::multi_score::DirectoryGpuProbe>,

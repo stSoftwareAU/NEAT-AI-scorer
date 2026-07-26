@@ -408,6 +408,11 @@ fn run(cli: &Cli) -> Result<RunOutput, String> {
 fn score_from_json(
     creature_json: &str,
     data_path: &Path,
+    // Issue #470 vestigial-parameter sweep: always `CpuFallback` today because
+    // Issue #81 closed single-creature GPU as a negative result. Kept because
+    // it is read into `ScoreResult::gpu_backend` (the `gpuBackend` JSON field)
+    // and keeps one reporting seam shared with the directory paths, so a future
+    // single-creature kernel flips the label in one place.
     gpu_backend: GpuBackendLabel,
     // Issue #121 — resolved cost selector. Dispatched through the fused
     // streaming path for `forwardOnly` creatures and through a per-record
@@ -471,7 +476,6 @@ fn score_from_json(
                     cost,
                     &bin_files,
                     &config,
-                    &creature,
                     &mut network,
                     *sample,
                 )?;
