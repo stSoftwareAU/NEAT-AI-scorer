@@ -58,13 +58,23 @@ if ! command -v python3 > /dev/null 2>&1; then
 fi
 
 # Split the comma-separated creature list (bash 3.2 compatible).
+# Parameter expansion only — never assign IFS globally, which would change word
+# splitting for every later unquoted expansion in this script.
 CREATURES=()
-OLD_IFS="$IFS"
-IFS=','
-for p in $CREATURE_SPEC; do
+REMAINING="$CREATURE_SPEC"
+while [ -n "$REMAINING" ]; do
+  case "$REMAINING" in
+    *,*)
+      p="${REMAINING%%,*}"
+      REMAINING="${REMAINING#*,}"
+      ;;
+    *)
+      p="$REMAINING"
+      REMAINING=''
+      ;;
+  esac
   [ -n "$p" ] && CREATURES+=("$p")
 done
-IFS="$OLD_IFS"
 
 if [ "${#CREATURES[@]}" -eq 0 ]; then
   echo "❌ BENCH_SHALLOW_CREATURE contained no usable path: ${CREATURE_SPEC}" >&2
