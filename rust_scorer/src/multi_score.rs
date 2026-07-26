@@ -905,15 +905,25 @@ pub fn gpu_directory_compatible(creatures_dir: &Path) -> Result<(), GpuPrepareEr
     build_batched_network_data(&networks, num_inputs, num_outputs).map(|_| ())
 }
 
-/// CPU-only pre-flight topology probe for `--gpu auto` (Issue #317).
+/// CPU-only pre-flight classification of a creature directory for `--gpu auto`
+/// (Issues #317, #467).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DirectoryGpuProbe {
+    /// Which kernel(s) the pool needs.
+    pub topology: crate::gpu::forward_mse_batched::DirectoryGpuTopology,
+    /// Every creature is shallow — see
+    /// [`crate::gpu::forward_mse_batched::directory_pool_is_shallow`].
+    pub shallow: bool,
+}
+
+/// CPU-only pre-flight probe for `--gpu auto` (Issues #317, #467).
 ///
 /// Returns `None` when creatures cannot be loaded/compiled — defer to the
 /// scoring path for the precise error. Otherwise classifies the pool so
 /// [`crate::gpu::auto_should_use_gpu_directory`] can skip GPU on topologies
-/// that lose to CPU on Apple Silicon production workloads.
-pub fn gpu_directory_topology_for_dir(
-    creatures_dir: &Path,
-) -> Option<crate::gpu::forward_mse_batched::DirectoryGpuTopology> {
+/// that lose to CPU on Apple Silicon production workloads, while still picking
+/// GPU for the shallow scratch pools that win (Issue #467).
+pub fn gpu_directory_probe_for_dir(creatures_dir: &Path) -> Option<DirectoryGpuProbe> {
     let loaded = load_creatures_from_dir(creatures_dir).ok()?;
     if loaded.is_empty() {
         return None;
@@ -922,9 +932,10 @@ pub fn gpu_directory_topology_for_dir(
     for c in &loaded {
         networks.push(compile_creature(&c.creature).ok()?);
     }
-    Some(crate::gpu::forward_mse_batched::directory_gpu_topology(
-        &networks,
-    ))
+    Some(DirectoryGpuProbe {
+        topology: crate::gpu::forward_mse_batched::directory_gpu_topology(&networks),
+        shallow: crate::gpu::forward_mse_batched::directory_pool_is_shallow(&networks),
+    })
 }
 
 /// Issue #82 — GPU-backed multi-creature scoring path.

@@ -15,6 +15,25 @@ section to the released version with its date.
 
 ## [Unreleased]
 
+### Changed
+
+- **`--gpu auto` routes shallow scratch pools to GPU (Issue #467).** Issue #317
+  kept every `ScratchOnly` directory pool on CPU based on the **deep**
+  production shape (~1666 hidden). A creature with thousands of inputs but only
+  a handful of hidden neurons — the 2461-input / 19-hidden Enceladus shape — is
+  scratch-routed only because inputs count towards `num_neurons`, and it is
+  **45–50 % faster on GPU** at N=50–63 on an Apple M4 Pro (`--gpu on` 2.95 s vs
+  `--gpu off` 5.44 s at N=50; 3.52 s vs 7.08 s at N=63), well clear of the ≥ 3 %
+  win gate. `auto` now keeps GPU for a scratch-only pool whose creatures all
+  have ≤ 256 **non-input** neurons (`MAX_SHALLOW_NON_INPUT_NEURONS` /
+  `directory_pool_is_shallow`) and prints no topology fallback note for them;
+  deep scratch-only and mixed pools are unchanged. `auto` also now runs the
+  creature-loading topology probe **once** (shared between the routing decision
+  and the fallback note) instead of twice. New harness
+  [`scripts/bench-shallow-gpu.sh`](./scripts/bench-shallow-gpu.sh) reproduces
+  the A/B; numbers and the threshold validation sweep are in
+  [`docs/performance-baseline.md`](./docs/performance-baseline.md).
+
 ### Added
 
 - **`RMSE` cost function — `--cost RMSE` (Issue #337).** Adds Root Mean Squared

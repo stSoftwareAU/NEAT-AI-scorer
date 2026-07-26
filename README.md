@@ -120,7 +120,7 @@ flag wins over the `NEAT_SCORER_GPU` environment variable.
 
 | Mode    | Behaviour                                                                                                       | `gpuBackend` value                                  |
 |---------|-----------------------------------------------------------------------------------------------------------------|-----------------------------------------------------|
-| `auto`  | **Default since Issue #83.** Use GPU on directory paths with **AllPrivate** topology (≤256 total neurons per creature); fall back to CPU for scratch/mixed production-scale pools (#317), GPU-unsupported costs (any cost other than MSE/RMSE/MAE), missing adapters, or failed pre-flight. Prints one stderr note when declining GPU for topology. | `"metal"` / `"vulkan"` / `"dx12"` / `"gl"` / `"cpu-fallback"` |
+| `auto`  | **Default since Issue #83.** Use GPU on directory paths with **AllPrivate** topology (≤256 total neurons per creature) **or a shallow scratch-only pool** (≤256 *non-input* neurons per creature — Issue #467); fall back to CPU for **deep** scratch/mixed production-scale pools (#317), GPU-unsupported costs (any cost other than MSE/RMSE/MAE), missing adapters, or failed pre-flight. Prints one stderr note when declining GPU for topology. | `"metal"` / `"vulkan"` / `"dx12"` / `"gl"` / `"cpu-fallback"` |
 | `on`    | Require a compatible GPU; exit non-zero with a clear message when none is found (no silent fallback). Forces the GPU path even where bench evidence does not support it. | `"metal"` / `"vulkan"` / `"dx12"` / `"gl"`          |
 | `off`   | Skip GPU detection entirely; run the CPU pipeline.                                                             | `"cpu-fallback"`                                    |
 
@@ -139,9 +139,9 @@ flowchart TD
     CLI[--gpu / NEAT_SCORER_GPU] --> Mode{GpuMode}
     Mode -->|Off| CPU[CPU pipeline]
     Mode -->|Auto + single creature<br/>#81 negative| CPU
-    Mode -->|Auto + directory| Topo{Topology probe #317<br/>AllPrivate?}
-    Topo -->|Mixed / ScratchOnly| CPU
-    Topo -->|AllPrivate| Preflight{CPU pre-flight #180<br/>set hostable?<br/>MSE · shape · squash}
+    Mode -->|Auto + directory| Topo{Topology probe #317 / #467<br/>AllPrivate, or<br/>shallow ScratchOnly?}
+    Topo -->|Mixed / deep ScratchOnly| CPU
+    Topo -->|AllPrivate or<br/>shallow ScratchOnly| Preflight{CPU pre-flight #180<br/>set hostable?<br/>MSE · shape · squash}
     Mode -->|On| Adapter[wgpu adapter<br/>selection]
     Preflight -->|no — never makes a GPU device| CPU
     Preflight -->|yes| Adapter
@@ -164,6 +164,15 @@ classify as **ScratchOnly** and `Auto` stays on CPU — full-corpus M4 A/B
 showed CPU ~3× faster than scratch GPU even with dual-kernel dispatch and
 32 MiB read chunks. `--gpu on` still runs the scratch kernel for debug.
 
+Issue #467 narrows that skip to **deep** pools. A creature with thousands of
+inputs but only a handful of hidden neurons (the 2461-input / 19-hidden
+Enceladus shape) is scratch-routed purely because inputs count towards
+`num_neurons`, yet it is **45–50 % faster on GPU** at N=50–63 on an M4 Pro. So a
+scratch-only pool whose creatures all have ≤256 **non-input** neurons
+(`MAX_SHALLOW_NON_INPUT_NEURONS`) keeps the GPU path and prints no fallback note;
+deep pools behave exactly as #317 left them. Numbers and the reproduce command
+are in [`docs/performance-baseline.md`](docs/performance-baseline.md).
+
 ### GPU acceleration (Issue #83)
 
 End-to-end benchmarking at `BENCH_SCORING_BYTES=200000000` showed the
@@ -180,6 +189,7 @@ requires editing that function plus the matching row in the docs table
 | `score_from_json_fused` (single)   | GPU loses               | **CPU**        | Issue #81 (negative result) |
 | `score_from_creature_dir` (N=50, AllPrivate) | **GPU −32.4 %** (Metal) | **GPU**        | Issue #82 PR summary |
 | `score_from_creature_dir` (N=63, production scratch) | **CPU ~3× faster** (full corpus) | **CPU** | Issue #317 |
+| `score_from_creature_dir` (N=50–63, shallow scratch — Enceladus) | **GPU 45–50 % faster** (M4 Pro) | **GPU** | Issue #467 |
 
 `Auto` selects per **path** (single vs directory), not per N — at N=10 the
 per-dispatch overhead dominates, but at the issue-target corpus the
@@ -339,7 +349,8 @@ CPU pipeline:
   informational `[gpu] auto fallback ...` line to stderr naming the
   cost as the reason (Issue #205), so the CPU choice is not silent;
   MSE / RMSE / MAE (GPU-supported costs) print nothing extra. (An
-  `AllPrivate` pool runs on GPU; `Mixed`/`ScratchOnly` production-scale pools still
+  `AllPrivate` pool — and, since Issue #467, a **shallow** `ScratchOnly` pool —
+  runs on GPU; `Mixed` and **deep** `ScratchOnly` production-scale pools still
   fall back to CPU for **topology** reasons per Issue #317, independent of cost.)
 - Under `--gpu on` a GPU-unsupported cost is a hard error before any scoring
   runs (no silent downgrade — `--gpu on` is a strict requirement).

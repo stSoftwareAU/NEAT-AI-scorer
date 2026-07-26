@@ -53,6 +53,19 @@ pub const WG_SIZE_X: u32 = 64;
 /// runtime-sized `storage` buffer and so has no compile-time neuron cap.
 pub const MAX_NEURONS_PER_CREATURE: u32 = 256;
 
+/// Largest **non-input** neuron count for a scratch-kernel creature to count as
+/// *shallow* (Issue #467).
+///
+/// Inputs count towards `num_neurons`, so a creature with thousands of inputs
+/// and a handful of hidden neurons still exceeds [`MAX_NEURONS_PER_CREATURE`]
+/// and routes to `forward_mse_scratch`. Those shallow scratch pools behave
+/// nothing like the deep production shape #317 measured: the M4 Pro A/B in
+/// `docs/performance-baseline.md` (Issue #467) has GPU ~29 % faster than CPU on
+/// the 2461-input / 19-hidden Enceladus creature, so `--gpu auto` routes them to
+/// GPU. The bound reuses the private-kernel cap because the same 256-neuron
+/// figure was validated at the boundary in that sweep.
+pub const MAX_SHALLOW_NON_INPUT_NEURONS: u32 = 256;
+
 /// Absolute sanity ceiling on per-creature neuron count (Issue #182). The
 /// scratch kernel has no architectural cap, but a corrupt creature claiming an
 /// absurd neuron count would demand a nonsensical scratch allocation — reject
@@ -974,6 +987,24 @@ pub fn directory_gpu_topology(networks: &[CompiledNetwork]) -> DirectoryGpuTopol
     }
 }
 
+/// Whether every creature in the pool is **shallow** — Issue #467.
+///
+/// "Shallow" means the non-input neuron count (`num_neurons - num_inputs`) is
+/// within [`MAX_SHALLOW_NON_INPUT_NEURONS`]. Such creatures still exceed the
+/// private-kernel cap once their inputs are counted, so they run on
+/// `forward_mse_scratch`, but they carry far less per-record kernel work than
+/// the deep production shape and beat CPU on Apple Silicon (Issue #467).
+///
+/// An empty pool is **not** shallow: there is no evidence to justify GPU, and
+/// the caller must not read "no creatures" as "GPU is faster".
+pub fn directory_pool_is_shallow(networks: &[CompiledNetwork]) -> bool {
+    !networks.is_empty()
+        && networks.iter().all(|net| {
+            let non_input = net.num_neurons.saturating_sub(net.num_inputs);
+            u32::try_from(non_input).unwrap_or(u32::MAX) <= MAX_SHALLOW_NON_INPUT_NEURONS
+        })
+}
+
 /// Directory-mode GPU runners — may hold private and/or scratch kernels when the
 /// creature pool is mixed so small creatures avoid the scratch-kernel tax.
 pub struct DirectoryGpuRunners {
@@ -1403,6 +1434,93 @@ mod tests {
             scratch_bytes <= budget,
             "scratch ({scratch_bytes} bytes) must fit the {budget}-byte budget",
         );
+    }
+
+    /// Sparse creature: `hidden` non-input neurons, each fed by a couple of
+    /// inputs, all feeding one output. Keeps the synapse count low so wide-input
+    /// shapes stay cheap to build in a unit test (the dense
+    /// [`synthetic_creature`] helper would emit `num_inputs * hidden` synapses).
+    fn sparse_creature(num_inputs: usize, hidden: usize) -> CompiledNetwork {
+        let mut neurons: Vec<String> = Vec::new();
+        for h in 0..hidden {
+            neurons.push(format!(
+                r#"{{"type":"hidden","uuid":"hidden-{h}","bias":0.05,"squash":"TANH"}}"#
+            ));
+        }
+        neurons
+            .push(r#"{"type":"output","uuid":"output-0","bias":0.0,"squash":"IDENTITY"}"#.into());
+
+        let mut synapses: Vec<String> = Vec::new();
+        for h in 0..hidden {
+            let i = h % num_inputs;
+            synapses.push(format!(
+                r#"{{"fromUUID":"input-{i}","toUUID":"hidden-{h}","weight":0.1}}"#
+            ));
+            synapses.push(format!(
+                r#"{{"fromUUID":"hidden-{h}","toUUID":"output-0","weight":0.1}}"#
+            ));
+        }
+        if hidden == 0 {
+            synapses.push(r#"{"fromUUID":"input-0","toUUID":"output-0","weight":0.1}"#.into());
+        }
+        let json = format!(
+            r#"{{"input":{num_inputs},"output":1,"forwardOnly":true,"semanticVersion":"4.0.0","neurons":[{}],"synapses":[{}]}}"#,
+            neurons.join(","),
+            synapses.join(","),
+        );
+        let creature = parse_creature_json(&json).expect("parse creature");
+        compile_creature(&creature).expect("compile")
+    }
+
+    /// Issue #467 — the Enceladus shape (2461 inputs, 19 hidden, 1 output) is
+    /// scratch-routed because inputs count towards `num_neurons`, yet it is
+    /// shallow and beats CPU on GPU.
+    #[test]
+    fn directory_pool_is_shallow_accepts_enceladus_shape() {
+        let net = sparse_creature(2461, 19);
+        assert!(
+            net.num_neurons > MAX_NEURONS_PER_CREATURE as usize,
+            "the Enceladus shape must still route to the scratch kernel"
+        );
+        assert!(directory_pool_is_shallow(std::slice::from_ref(&net)));
+        assert_eq!(
+            directory_gpu_topology(std::slice::from_ref(&net)),
+            DirectoryGpuTopology::ScratchOnly
+        );
+    }
+
+    /// Issue #467 — the deep production shape (~1666 hidden) stays non-shallow,
+    /// preserving the #317 CPU decision.
+    #[test]
+    fn directory_pool_is_shallow_rejects_deep_production_shape() {
+        let net = sparse_creature(2461, 1666);
+        assert!(!directory_pool_is_shallow(&[net]));
+    }
+
+    /// Issue #467 — the boundary is inclusive at
+    /// [`MAX_SHALLOW_NON_INPUT_NEURONS`] non-input neurons (hidden + output).
+    #[test]
+    fn directory_pool_is_shallow_boundary_is_inclusive() {
+        let hidden = MAX_SHALLOW_NON_INPUT_NEURONS as usize - 1;
+        let at_cap = sparse_creature(2461, hidden);
+        assert_eq!(
+            at_cap.num_neurons - at_cap.num_inputs,
+            MAX_SHALLOW_NON_INPUT_NEURONS as usize
+        );
+        assert!(directory_pool_is_shallow(&[at_cap]));
+
+        let over_cap = sparse_creature(2461, hidden + 1);
+        assert!(!directory_pool_is_shallow(&[over_cap]));
+    }
+
+    /// Issue #467 — one deep creature disqualifies the whole pool, and an empty
+    /// pool is never reported as shallow (no evidence ≠ GPU is faster).
+    #[test]
+    fn directory_pool_is_shallow_requires_every_creature() {
+        let shallow = sparse_creature(2461, 19);
+        let deep = sparse_creature(2461, 1666);
+        assert!(!directory_pool_is_shallow(&[shallow, deep]));
+        assert!(!directory_pool_is_shallow(&[]));
     }
 
     #[test]

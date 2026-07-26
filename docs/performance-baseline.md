@@ -17,6 +17,12 @@ the runs with [`scripts/run-benches.sh`](../scripts/run-benches.sh) or
 | `production_single_creature/forward_only` | End-to-end forward-only fused MSE accumulate over the **production**-scale creature (Issue #296). | Requires a **local** `network.json` supplied via `BENCH_PROD_CREATURE` — this public repo ships none and fetches nothing (Issue #448); the bench skips when it is unset and is otherwise **fail-loud** (panics rather than falling back to the synthetic fixture). See [`prod_fixture`](../rust_scorer/src/prod_fixture.rs). |
 | `production_multi_creature/creatures/N` | Directory mode over copies of the production creature (`N=1`, `N=BENCH_PROD_CREATURES`). | The candidate optimisations #297–#299 A/B against this on the real creature, not the synthetic fixture. |
 
+CLI-level GPU-vs-CPU wall-clock A/Bs live outside Criterion:
+[`scripts/bench-shallow-gpu.sh`](../scripts/bench-shallow-gpu.sh) (Issue #467)
+times `--gpu off` / `on` / `auto` on a **shallow** creature pool against a
+locally generated corpus at the caller's record width. It skips cleanly when
+`BENCH_SHALLOW_CREATURE` is unset — see the Issue #467 section below.
+
 ## Fixture parameters
 
 | Variable | Default | Description |
@@ -32,6 +38,87 @@ Defaults are kept conservative so `cargo bench` finishes in a few minutes on
 typical dev hardware; sweep upwards via `BENCH_SCORING_BYTES` for the full
 target. **Always re-run the baseline at the same `BENCH_SCORING_BYTES`** — the
 absolute numbers below are fixture-size-specific.
+
+## Shallow-creature GPU A/B — 26 July 2026 (Issue #467)
+
+**Positive result: GPU wins on shallow creatures.** The #317 "scratch topology
+loses to CPU" rule was measured on the **deep** production shape (~1666 hidden).
+The shallow Enceladus shape — 2461 inputs → 19 hidden → 1 output, 22 221
+synapses — is also scratch-routed (inputs count towards `num_neurons`), but it
+beats CPU decisively, so `--gpu auto` now keeps shallow scratch pools on GPU.
+
+**Host:** Apple M4 Pro (12 CPU cores: 8P + 4E), 24 GB, macOS; release
+`rust_scorer`. **Creatures:** `Enceladus.json` + `Enceladus-Terminal.json`
+(round-robined into the pool). **Corpus:** synthetic, generated at production
+record width — 2462 `f32` = **9848 B/record**, 37 000 records over 4 `.bin` shards
+(364 376 000 bytes). The full 521-bin corpus is unavailable in the worker
+environment (the #333 blocker), so the corpus is generated locally; this repo
+ships no creature and fetches nothing (Issue #448).
+
+Reproduce (median of 5 per mode):
+
+```bash
+BENCH_SHALLOW_CREATURE=/path/to/Enceladus.json,/path/to/Enceladus-Terminal.json \
+  BENCH_SHALLOW_N=63 ./scripts/bench-shallow-gpu.sh
+```
+
+### Wall-clock A/B (median of 5, interleaved runs)
+
+| `N` | Mode | Wall | `gpuBackend` | vs `--gpu off` |
+|---|---|---|---|---|
+| 50 | `--gpu off` | 5.44 s | `cpu-fallback` | CPU floor |
+| 50 | `--gpu on` | **2.95 s** | `metal` | **45.8 % faster** |
+| 50 | `auto` — before #467 | 6.90 s | `cpu-fallback` | 26.8 % slower |
+| 50 | `auto` — after #467 | **4.19 s** | `metal` | **23.0 % faster** |
+| 63 | `--gpu off` | 7.08 s | `cpu-fallback` | CPU floor |
+| 63 | `--gpu on` | **3.52 s** | `metal` | **50.3 % faster** |
+| 63 | `auto` — before #467 | 8.93 s | `cpu-fallback` | 26.1 % slower |
+| 63 | `auto` — after #467 | **5.22 s** | `metal` | **26.3 % faster** |
+
+`--gpu on` clears the ≥ 3 % win gate from #323 by an order of magnitude at both
+population sizes. Kernel: `forward_mse_scratch`, 12 dispatches,
+`gpuInflightChunks: 1` (the #319 clamp still applies), `readBufLen` 33 552 136
+(32 MiB auto default for ≥ 8000 B records).
+
+`auto` is slower than `--gpu on` because it still pays the CPU-only pre-flight
+(topology probe + `gpu_directory_compatible`), which loads and compiles all 50–63
+creatures — ~2.7 MB of JSON each. Issue #467 removed one of the two redundant
+topology probes (the fallback note and the routing decision now share one), which
+is most of the `auto` before → after gain beyond the kernel switch itself.
+
+**Parity:** worst relative `error` delta between `--gpu off` and `--gpu on`
+across the 50-creature pool was **2.6 × 10⁻⁸** — within the #81 CPU↔GPU
+tolerance.
+
+### Threshold validation — where does the win stop?
+
+`auto` routes a scratch pool to GPU only when every creature is **shallow**
+(non-input neurons ≤ `MAX_SHALLOW_NON_INPUT_NEURONS` = 256). Sparse synthetic
+creatures at 2461 inputs with the synapse count held at ~22 k, N=50, same corpus
+(median of 3):
+
+| Non-input neurons | `--gpu off` | `--gpu on` | GPU vs CPU |
+|---|---|---|---|
+| 20 (Enceladus-like) | 4.74 s | **2.52 s** | 46.8 % faster |
+| 257 (just over the cap) | 4.47 s | **2.71 s** | 39.4 % faster |
+| 1025 | 5.35 s | **3.20 s** | 40.2 % faster |
+| 1667 (production depth) | 6.63 s | **2.56 s** | 61.4 % faster |
+
+Neuron depth alone did **not** flip the result on this host once synapse count
+was held constant, so the 256 cap is deliberately **conservative**: it is well
+inside the region where the win is measured, and it leaves the #317 decision for
+the real production creature (real creature, real 521-bin corpus, base M4)
+untouched. Anything above the cap keeps the existing CPU route and its stderr
+note.
+
+### Decision (Issue #467)
+
+* GPU **helps** the shallow Enceladus shape → the GPU code is **kept** (#323
+  deletion path not taken; user-confirmed on the issue).
+* `--gpu auto` routes **shallow** scratch-only pools to GPU; deep scratch-only
+  and mixed pools still fall back to CPU per #317.
+* #333's remaining production-topology experiments are moot for this decision
+  and that issue is closed.
 
 ## Production GPU coverage — 9 July 2026 (Issue #305)
 
