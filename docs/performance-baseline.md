@@ -331,6 +331,88 @@ target/release/rust_scorer            /tmp/neat-prod-creatures /tmp/neat-bench-d
 production `learn.sh` path: full-corpus evidence on M4 shows CPU wins at
 N=63, so the heuristic is topology-based rather than N-threshold.
 
+## Shallow-creature GPU vs CPU — 26 July 2026 (Issue #467, negative result)
+
+Cross-links [#333](https://github.com/stSoftwareAU/NEAT-AI-scorer/issues/333)
+(remains open, human-gated), [#317](https://github.com/stSoftwareAU/NEAT-AI-scorer/issues/317)
+(production-shape CPU winner) and [#323](https://github.com/stSoftwareAU/NEAT-AI-scorer/issues/323)
+(delete-GPU-code decision — unchanged by this result).
+
+**Question.** #317 measured CPU ~3× faster than GPU on the *deep* production
+shape (~1666 hidden). Issue #467 asks whether the GPU helps the **shallow**
+`Enceladus` island shape instead — far less per-record work, but the same
+scratch-kernel routing. If GPU won by the ≥3 % wall-clock gate (#323) at
+N=50–63 the GPU code would be kept and #333's production experiments closed as
+moot; otherwise the negative result is recorded and #333 stays open.
+
+**The shallow creatures** (from a private sample repository — not
+committed or fetched here):
+
+| Property | `Enceladus` | `Enceladus-Terminal` |
+|---|---:|---:|
+| Inputs / outputs | 2461 / 1 | 2461 / 1 |
+| Hidden neurons | 16 | 19 |
+| Synapses | 12 171 | 12 177 |
+| Squash mix | 13 point-wise (LogSigmoid, LeakyReLU, Softplus, ReLU, ELU, BENT_IDENTITY, SELU, ABSOLUTE, ReLU6, Mish, SOFTSIGN, ArcTan, TANH) | + MAXIMUM / IF aggregates + IDENTITY |
+| GPU-hostable? | Yes (all point-wise) | Yes (aggregates host since #312) |
+| Topology class | **ScratchOnly** (2461 inputs > 256 private cap) | **ScratchOnly** |
+
+Both exceed the 256-neuron private cap because **inputs count** toward it, so
+both route to `forward_mse_scratch` — the same kernel the deep production
+creature uses. The only variable versus #317 is the far lighter hidden layer.
+
+**Host:** Apple M4 (10 cores), 24 GB, macOS 26.5 / Metal 4; release
+`rust_scorer`. **Corpus:** synthetic production-record-size data (2461 inputs / 1
+output → 9848 B/record), 64 MiB (6814 records). The full 521-bin corpus is
+unavailable to the unattended worker (the #333 blocker), so bench data is
+generated at record size — fully autonomous.
+
+**Real-creature CLI wall-clock A/B** (`--gpu off` vs `--gpu on`, median of the
+binary's own `timeTaken` over 5 runs):
+
+| Shape | `N` | CPU (`--gpu off`) | GPU (`--gpu on`, metal) | GPU vs CPU |
+|---|---|---|---|---|
+| `Enceladus` | 50 | **0.371 s** | 0.811 s | **+119 % (2.19× slower)** |
+| `Enceladus` | 63 | **0.479 s** | 0.972 s | **+103 % (2.03× slower)** |
+| `Enceladus-Terminal` | 50 | **0.451 s** | 0.779 s | **+73 % (1.73× slower)** |
+| `Enceladus-Terminal` | 63 | **0.625 s** | 0.981 s | **+57 % (1.57× slower)** |
+
+**Reproducible synthetic confirmation** — the committed `shallow_gpu_vs_cpu`
+Criterion group scores a synthetic stand-in of the `Enceladus` topology (built
+by [`shallow_fixture`](../rust_scorer/src/shallow_fixture.rs), so no private
+creature is needed). Corpus 32 MiB; Criterion median:
+
+| `N` | CPU | GPU | GPU vs CPU |
+|---|---|---|---|
+| 50 | **324 ms** | 444 ms | **+37 % slower** |
+| 63 | **379 ms** | 522 ms | **+38 % slower** |
+
+```bash
+BENCH_SHALLOW_CREATURES=50 \
+  cargo bench -p rust_scorer --bench scoring -- shallow_gpu_vs_cpu
+```
+
+**Decision (negative result — GPU does not help).** The GPU is slower than CPU
+in **every** shape × `N` configuration; the ≥3 % win gate is not met (the sign
+is reversed). The scratch kernel's fixed per-dispatch and readback cost still
+dominates even though the shallow forward pass is light, so — exactly as for the
+deep production shape (#317) — CPU wins. Consequences:
+
+* **`--gpu auto` routing is unchanged.** Both shallow shapes are ScratchOnly, so
+  `auto_should_use_gpu_directory` already routes them to CPU (verified: `--gpu
+  auto` reports `gpuBackend: cpu-fallback` and prints the topology fallback
+  note, matching the `--gpu off` winner). No routing edit is warranted.
+* **#333 stays open and human-gated** — the remaining production-topology
+  experiments are not made moot; a shallow-shape GPU win would have closed them,
+  but there is none.
+* **The #323 delete-GPU-code decision is unchanged by this issue** (`--gpu on`
+  still forces GPU for debugging; the shallow benches join the standing
+  "CPU wins on scratch topology" evidence).
+
+**Do not re-benchmark GPU for shallow creatures** unless the creature topology
+(sub-256 total neurons → private kernel) or the scratch kernel architecture
+changes materially.
+
 ## Baseline — 25 April 2026
 
 | Field | Value |

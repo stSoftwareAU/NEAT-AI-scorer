@@ -586,6 +586,98 @@ fn bench_large_creature_cpu_vs_gpu(c: &mut Criterion) {
     group.finish();
 }
 
+/// Issue #467: shallow-creature CPU vs GPU comparison. The `Enceladus` island
+/// shape (2461 inputs → 16 hidden → 1 output, ≈ 12 180 point-wise synapses)
+/// exceeds the 256-neuron private cap (inputs count) so it routes to the GPU
+/// `forward_mse_scratch` kernel, exactly like the deep production creature, but
+/// does far less per-record work. This group A/Bs `score_from_creature_dir`
+/// (CPU, `--gpu off`) against `score_from_creature_dir_gpu` (`--gpu on`) on a
+/// synthetic stand-in built by [`rust_scorer::shallow_fixture`], so the negative
+/// result is reproducible without the private `Enceladus` creature.
+///
+/// Sized via `BENCH_SHALLOW_HIDDEN` (default 16), `BENCH_SHALLOW_SYNAPSES`
+/// (default 12180), `BENCH_SHALLOW_CREATURES` (default 50 — a realistic island
+/// population; set 63 to match the #317 sweep) and `BENCH_SHALLOW_BYTES`
+/// (default 32 MiB). When no GPU adapter is present the GPU row is skipped so
+/// CPU-only CI runners still pass.
+fn bench_shallow_gpu_vs_cpu(c: &mut Criterion) {
+    let hidden = env_usize("BENCH_SHALLOW_HIDDEN", 16).max(1);
+    let synapses = env_usize("BENCH_SHALLOW_SYNAPSES", 12_180);
+    let n_creatures = env_usize("BENCH_SHALLOW_CREATURES", 50).max(1);
+    let total_bytes = env_usize("BENCH_SHALLOW_BYTES", 32 * 1024 * 1024);
+    // The Enceladus record shape: 2461 inputs / 1 output.
+    let num_inputs = env_usize("BENCH_SHALLOW_INPUTS", 2461).max(1);
+    let num_outputs = 1;
+
+    let tmp = TempDir::new().expect("tempdir");
+    let creatures_dir = tmp.path().join("creatures");
+    fs::create_dir_all(&creatures_dir).unwrap();
+    let data_dir = tmp.path().join("data");
+    fs::create_dir_all(&data_dir).unwrap();
+
+    let json = rust_scorer::shallow_fixture::shallow_creature_json(
+        num_inputs,
+        num_outputs,
+        hidden,
+        synapses,
+    );
+    for n in 0..n_creatures {
+        fs::write(creatures_dir.join(format!("creature-{n:03}.json")), &json).unwrap();
+    }
+    write_synthetic_bin(&data_dir, num_inputs, num_outputs, total_bytes);
+
+    let mut group = c.benchmark_group("shallow_gpu_vs_cpu");
+    group.sample_size(10);
+    group.measurement_time(Duration::from_secs(20));
+    group.throughput(Throughput::Bytes(total_bytes as u64));
+
+    // CPU path (`--gpu off`).
+    group.bench_function(BenchmarkId::new("cpu", n_creatures), |b| {
+        b.iter(|| {
+            let result = score_from_creature_dir(
+                &creatures_dir,
+                &data_dir,
+                GpuBackendLabel::CpuFallback,
+                CostKind::default(),
+            )
+            .expect("cpu shallow-creature score");
+            black_box(result);
+        });
+    });
+
+    // GPU path (`--gpu on`, `forward_mse_scratch`).
+    let backend = resolve_backend(GpuMode::Auto).unwrap_or(GpuBackendLabel::CpuFallback);
+    if backend == GpuBackendLabel::CpuFallback {
+        eprintln!("shallow_gpu_vs_cpu: no GPU adapter — skipping GPU row");
+        group.finish();
+        return;
+    }
+    let ctx = match select_adapter() {
+        Ok(Some(c)) => Arc::new(c),
+        _ => {
+            eprintln!("shallow_gpu_vs_cpu: select_adapter returned no context");
+            group.finish();
+            return;
+        }
+    };
+    group.bench_function(BenchmarkId::new("gpu", n_creatures), |b| {
+        let ctx = ctx.clone();
+        b.iter(|| {
+            let result = score_from_creature_dir_gpu(
+                &creatures_dir,
+                &data_dir,
+                backend,
+                ctx.clone(),
+                2,
+                CostKind::default(),
+            )
+            .expect("gpu shallow-creature score");
+            black_box(result);
+        });
+    });
+    group.finish();
+}
+
 // ---------------------------------------------------------------------------
 // Issue #296 — production-scale fixture (evolved production creature).
 //
@@ -953,6 +1045,7 @@ criterion_group!(
     bench_gpu_score_from_creature_dir,
     bench_gpu_pipelining_toggle,
     bench_large_creature_cpu_vs_gpu,
+    bench_shallow_gpu_vs_cpu,
     bench_production_single,
     bench_production_multi,
     bench_production_gpu_vs_cpu,
