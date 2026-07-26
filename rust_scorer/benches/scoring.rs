@@ -255,7 +255,6 @@ fn bench_score_from_json_fused(c: &mut Criterion) {
                     CostKind::Mse,
                     &bin_files,
                     &config,
-                    &creature,
                     &mut net,
                 )
                 .expect("fused MSE accumulate");
@@ -836,7 +835,6 @@ fn bench_production_single(c: &mut Criterion) {
                     CostKind::Mse,
                     &bin_files,
                     &config,
-                    creature,
                     &mut net,
                 )
                 .expect("fused MSE accumulate");

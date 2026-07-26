@@ -124,9 +124,10 @@ impl CostKind {
     /// assert_eq!(CostKind::from_cli("MSE").unwrap(), CostKind::Mse);
     /// assert!(CostKind::from_cli("FOO").is_err());
     /// ```
-    // Consumed by unit tests and downstream callers (`NeatOptions.costName`
-    // pass-through, dispatch landing in #119-3); the bin target itself
-    // relies on clap, not this helper.
+    // `#[allow(dead_code)]`: public library API for `NeatOptions.costName`
+    // pass-through, exercised by the doctest above and by the `cost::tests`
+    // unit tests; the bin target parses `--cost` through clap's `ValueEnum`,
+    // not this helper. Consumers re-verified in the Issue #470 audit.
     #[allow(dead_code)]
     pub fn from_cli(raw: &str) -> Result<Self, InvalidCostName> {
         // Exact-match parsing — the TypeScript names are upper-case, so we

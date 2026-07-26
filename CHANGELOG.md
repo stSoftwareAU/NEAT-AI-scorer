@@ -15,6 +15,23 @@ section to the released version with its date.
 
 ## [Unreleased]
 
+### Removed
+
+- **Scorer-local dead-code audit (Issue #470).** Re-ran the superseded
+  `neat-core` API check across `rust_scorer/{src,tests,benches}` — **0 hits**
+  for `score_records` / `score_records_parallel`; scoring still goes through
+  the fused packed path (`neat_core::loss::mse_sum_batch_packed` and its
+  `mae_`/`mape_` siblings). Verified every `#[allow(dead_code)]` site against
+  the consumer its comment names and cleared what no longer held: the
+  `env_tuning` / `read_tuning` module copies in
+  `rust_scorer/src/bin/cost_scan_bench.rs` were declared but never referenced
+  and have been deleted, and the now-reachable `GpuContext` and
+  `score_from_creature_dir_gpu_sampled` lost their vestigial attributes (21 →
+  17 sites). Also dropped the never-read `creature: &CreatureExport` parameter
+  from `stream_score::accumulate_cost_sum_forward_only_fused` and its
+  `_sampled` variant — `TrainingDataConfig` already carries the input/output
+  widths the fused reader needs. No behaviour change.
+
 ### Changed
 
 - **`--gpu auto` routes shallow scratch pools to GPU (Issue #467).** Issue #317

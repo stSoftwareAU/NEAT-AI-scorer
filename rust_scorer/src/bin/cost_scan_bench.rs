@@ -27,12 +27,12 @@
 //! existing `float_scan_bench` defaults to 7 runs, this bin defaults to 5 so
 //! a 6-cost sweep stays within ~1 minute on a small corpus.
 
-#[path = "../env_tuning.rs"]
-#[allow(dead_code)] // helper module shared with read_tuning; only the parser is used here.
-mod env_tuning;
-#[path = "../read_tuning.rs"]
-#[allow(dead_code)] // selectively used by the bench; the rest mirrors float_scan_bench.
-mod read_tuning;
+// Issue #470 dead-code audit: the `env_tuning` / `read_tuning` module copies
+// `float_scan_bench` needs were declared here too but never referenced — this
+// bench drives the library entry point
+// `rust_scorer::stream_score::accumulate_cost_sum_forward_only_fused`, which
+// applies the crate's own read tuning internally. Both `mod` declarations (and
+// the `#[allow(dead_code)]` attributes that masked them) have been removed.
 
 use std::fs;
 use std::path::PathBuf;
@@ -113,7 +113,7 @@ fn run_one_cost(
     // Warm-up run: validates the cost is dispatchable and primes caches.
     let mut net = compile_creature(&creature).map_err(|e| e.to_string())?;
     let (warm_sum, warm_records, _, _, _) =
-        accumulate_cost_sum_forward_only_fused(cost, bin_files, config, &creature, &mut net)?;
+        accumulate_cost_sum_forward_only_fused(cost, bin_files, config, &mut net)?;
 
     let mut times = Vec::with_capacity(runs);
     let mut checksum = warm_sum;
@@ -125,7 +125,7 @@ fn run_one_cost(
         let mut net = compile_creature(&creature).map_err(|e| e.to_string())?;
         let t0 = Instant::now();
         let (sum, n_records, _, _, _) =
-            accumulate_cost_sum_forward_only_fused(cost, bin_files, config, &creature, &mut net)?;
+            accumulate_cost_sum_forward_only_fused(cost, bin_files, config, &mut net)?;
         let elapsed_ms = t0.elapsed().as_secs_f64() * 1000.0;
         times.push(elapsed_ms);
         checksum = sum;
