@@ -54,6 +54,34 @@ fn large_creature(input: usize, output: usize, hidden: usize) -> String {
     )
 }
 
+/// Sparse wide-input creature — `input` inputs, `hidden` hidden neurons each fed
+/// by one input, all feeding one output. Unlike [`large_creature`] the synapse
+/// count is O(hidden), so wide-input **deep** shapes stay cheap to write
+/// (Issue #467).
+fn sparse_wide_creature(input: usize, hidden: usize) -> String {
+    let mut neurons = Vec::new();
+    let mut synapses = Vec::new();
+    for h in 0..hidden {
+        neurons.push(format!(
+            r#"{{"type":"hidden","uuid":"hidden-{h}","bias":0.01,"squash":"TANH"}}"#
+        ));
+        let i = h % input;
+        synapses.push(format!(
+            r#"{{"fromUUID":"input-{i}","toUUID":"hidden-{h}","weight":0.02}}"#
+        ));
+        synapses.push(format!(
+            r#"{{"fromUUID":"hidden-{h}","toUUID":"output-0","weight":0.03}}"#
+        ));
+    }
+    neurons
+        .push(r#"{"type":"output","uuid":"output-0","bias":0.0,"squash":"IDENTITY"}"#.to_string());
+    format!(
+        r#"{{"input":{input},"output":1,"forwardOnly":true,"neurons":[{}],"synapses":[{}]}}"#,
+        neurons.join(","),
+        synapses.join(","),
+    )
+}
+
 /// Issue #180 / #182 / #317: `--gpu auto` over scratch-sized creatures must
 /// complete cleanly. Issue #317 routes production-scale / above-cap pools to CPU under
 /// Auto (faster on M4/M5 full corpus); `--gpu on` still uses the scratch kernel.
@@ -388,10 +416,14 @@ fn directory_mode_auto_unsupported_cost_notes_cpu_fallback() {
     );
 }
 
-/// Issue #317: production-scale input width (>256 total neurons) forces scratch topology;
+/// Issue #317: a **deep** production-scale creature forces scratch topology;
 /// `--gpu auto` (default) must stay on CPU and print the topology fallback note.
+///
+/// Issue #467 retargeted this test: the shape it used originally (2461 inputs,
+/// **1** hidden) is now classified *shallow* and legitimately routes to GPU, so
+/// the creature here carries 300 non-input neurons — past the shallow cap.
 #[test]
-fn directory_mode_auto_production_scale_topology_uses_cpu() {
+fn directory_mode_auto_deep_scratch_topology_uses_cpu() {
     let bin = env!("CARGO_BIN_EXE_rust_scorer");
     let tmp = tempfile::tempdir().expect("create tempdir");
     let creatures_dir = tmp.path().join("creatures");
@@ -399,11 +431,12 @@ fn directory_mode_auto_production_scale_topology_uses_cpu() {
     std::fs::create_dir(&creatures_dir).expect("create creatures dir");
     std::fs::create_dir(&data_dir).expect("create data dir");
 
-    // 2461 inputs + 1 hidden + 1 output — same total-neuron scale as the
-    // production creature.
+    // 2461 inputs + 300 hidden + 1 output: scratch topology (total neurons well
+    // past the 256 shader cap) *and* deep (301 non-input neurons > the shallow
+    // cap), so Issue #317's CPU route applies.
     std::fs::write(
         creatures_dir.join("production-scale.json"),
-        large_creature(2461, 1, 1),
+        sparse_wide_creature(2461, 300),
     )
     .expect("write creature");
     write_training_data(&data_dir, &[(vec![0.0; 2461], vec![0.5])]);
@@ -432,6 +465,62 @@ fn directory_mode_auto_production_scale_topology_uses_cpu() {
             && stderr.contains("scratch-kernel"),
         "expected topology fallback note, got: {stderr}",
     );
+}
+
+/// Issue #467: a **shallow** scratch pool (wide inputs, few non-input neurons —
+/// the Enceladus shape) must not be pushed onto CPU for topology reasons under
+/// `--gpu auto`. The observable that holds on every host, GPU or not, is that no
+/// topology fallback note is printed; on a GPU host the run also reports a real
+/// backend and the scratch kernel.
+#[test]
+fn directory_mode_auto_shallow_scratch_topology_keeps_gpu() {
+    let bin = env!("CARGO_BIN_EXE_rust_scorer");
+    let tmp = tempfile::tempdir().expect("create tempdir");
+    let creatures_dir = tmp.path().join("creatures");
+    let data_dir = tmp.path().join("data");
+    std::fs::create_dir(&creatures_dir).expect("create creatures dir");
+    std::fs::create_dir(&data_dir).expect("create data dir");
+
+    // 2461 inputs + 19 hidden + 1 output: scratch topology (inputs count) but
+    // only 20 non-input neurons, so the pool is shallow.
+    std::fs::write(
+        creatures_dir.join("shallow.json"),
+        sparse_wide_creature(2461, 19),
+    )
+    .expect("write creature");
+    write_training_data(&data_dir, &[(vec![0.0; 2461], vec![0.5])]);
+
+    let output = Command::new(bin)
+        .arg(&creatures_dir)
+        .arg(&data_dir)
+        .output()
+        .expect("spawn scorer (default auto)");
+    assert!(
+        output.status.success(),
+        "auto shallow-scratch run must succeed, stderr:\n{}",
+        String::from_utf8_lossy(&output.stderr),
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !stderr.contains("[gpu] auto fallback to CPU directory mode: deep scratch-kernel"),
+        "shallow scratch pools must not print the deep-topology fallback note, got: {stderr}",
+    );
+
+    let parsed: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("stdout must be JSON");
+    let entry = parsed.get("shallow").expect("missing key");
+    let backend = entry
+        .get("gpuBackend")
+        .and_then(|v| v.as_str())
+        .expect("gpuBackend must be present");
+    if backend != "cpu-fallback" {
+        // GPU host: the shallow pool runs on the scratch kernel.
+        assert_eq!(
+            entry.get("gpuKernel").and_then(|v| v.as_str()),
+            Some("forward_mse_scratch"),
+            "shallow scratch pool must use the scratch kernel on backend {backend}",
+        );
+    }
 }
 
 #[test]

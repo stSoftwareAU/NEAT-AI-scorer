@@ -291,11 +291,19 @@ fn run(cli: &Cli) -> Result<RunOutput, String> {
         {
             eprintln!("{note}");
         }
+        // Issue #467: the topology probe loads and compiles every creature, so
+        // run it once and share it between the fallback note and the routing
+        // decision below. Only `auto` with a GPU-hosted cost consults it.
+        let dir_probe = if matches!(mode, GpuMode::Auto) && cli.cost.gpu_supported() {
+            multi_score::gpu_directory_probe_for_dir(creature_path.as_ref())
+        } else {
+            None
+        };
         if let Some(note) = gpu::auto_topology_fallback_note(
             mode,
             ScoringPath::CreatureDirectory,
             cli.cost,
-            creature_path.as_ref(),
+            dir_probe,
         ) {
             eprintln!("{note}");
         }
@@ -306,7 +314,7 @@ fn run(cli: &Cli) -> Result<RunOutput, String> {
         let want_gpu_for_directory = match mode {
             GpuMode::Off => false,
             GpuMode::On => true,
-            GpuMode::Auto => gpu::auto_should_use_gpu_directory(creature_path.as_ref(), cli.cost),
+            GpuMode::Auto => gpu::auto_should_use_gpu_directory(dir_probe, cli.cost),
         };
         if want_gpu_for_directory {
             // Resolve the GPU context for this directory. Under `--gpu on` it

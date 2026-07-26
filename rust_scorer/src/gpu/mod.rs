@@ -257,18 +257,34 @@ pub fn auto_should_use_gpu(path: ScoringPath, cost: crate::cost::CostKind) -> bo
 /// Uses a cheap CPU-only topology probe so mixed/scratch-required production pools
 /// that lose to CPU on M4/M5 full-corpus runs stay on the fused CPU path
 /// without creating a `wgpu` device (Issue #317).
+///
+/// Issue #467 narrows that skip: a scratch-only pool whose creatures are all
+/// **shallow** (non-input neurons within
+/// [`forward_mse_batched::MAX_SHALLOW_NON_INPUT_NEURONS`]) is GPU-favourable —
+/// the Enceladus A/B in `docs/performance-baseline.md` measured GPU ~29 % faster
+/// than CPU — so those pools keep the GPU path. Only deep scratch pools (the
+/// #317 production shape) and mixed pools fall back.
+/// Takes an already-computed probe: it loads and compiles every creature in the
+/// directory, so the CLI runs
+/// [`crate::multi_score::gpu_directory_probe_for_dir`] **once** and shares the
+/// result with [`auto_topology_fallback_note`] instead of paying for it twice
+/// (Issue #467 — the tax is material for wide-input creature pools).
 pub fn auto_should_use_gpu_directory(
-    creatures_dir: &std::path::Path,
+    probe: Option<crate::multi_score::DirectoryGpuProbe>,
     cost: crate::cost::CostKind,
 ) -> bool {
     if !auto_should_use_gpu(ScoringPath::CreatureDirectory, cost) {
         return false;
     }
-    match crate::multi_score::gpu_directory_topology_for_dir(creatures_dir) {
-        Some(DirectoryGpuTopology::AllPrivate) => true,
-        // M4/M5 production A/B: even with dual-kernel + 32 MiB reads, mixed
-        // and scratch-only production pools remain slower than CPU on full corpus.
-        Some(DirectoryGpuTopology::Mixed | DirectoryGpuTopology::ScratchOnly) => false,
+    match probe {
+        Some(probe) => match probe.topology {
+            DirectoryGpuTopology::AllPrivate => true,
+            // Issue #467 — shallow scratch pools (Enceladus shape) beat CPU.
+            DirectoryGpuTopology::ScratchOnly if probe.shallow => true,
+            // M4/M5 production A/B: even with dual-kernel + 32 MiB reads, mixed
+            // and deep scratch-only pools remain slower than CPU on full corpus.
+            DirectoryGpuTopology::Mixed | DirectoryGpuTopology::ScratchOnly => false,
+        },
         // Load/compile deferred — attempt GPU; scoring path surfaces errors.
         None => true,
     }
@@ -276,11 +292,15 @@ pub fn auto_should_use_gpu_directory(
 
 /// Issue #317: stderr note when `--gpu auto` skips GPU for a topology that
 /// benchmarks slower than CPU on Apple Silicon production workloads.
+///
+/// Issue #467: shallow scratch pools keep the GPU path, so they print nothing —
+/// the note must only appear when GPU was actually declined.
+/// Takes the same shared probe as [`auto_should_use_gpu_directory`].
 pub fn auto_topology_fallback_note(
     mode: GpuMode,
     path: ScoringPath,
     cost: crate::cost::CostKind,
-    creatures_dir: &std::path::Path,
+    probe: Option<crate::multi_score::DirectoryGpuProbe>,
 ) -> Option<String> {
     if !matches!(mode, GpuMode::Auto)
         || path != ScoringPath::CreatureDirectory
@@ -288,7 +308,11 @@ pub fn auto_topology_fallback_note(
     {
         return None;
     }
-    match crate::multi_score::gpu_directory_topology_for_dir(creatures_dir) {
+    // Issue #467 — a shallow scratch pool runs on GPU; no fallback happened.
+    if probe.is_some_and(|p| p.shallow && p.topology == DirectoryGpuTopology::ScratchOnly) {
+        return None;
+    }
+    match probe.map(|p| p.topology) {
         Some(DirectoryGpuTopology::Mixed) => Some(
             "[gpu] auto fallback to CPU directory mode: mixed creature pool \
              (private + scratch kernels) is faster on CPU for production-scale full-corpus scoring; \
@@ -296,7 +320,7 @@ pub fn auto_topology_fallback_note(
                 .to_string(),
         ),
         Some(DirectoryGpuTopology::ScratchOnly) => Some(
-            "[gpu] auto fallback to CPU directory mode: scratch-kernel creatures \
+            "[gpu] auto fallback to CPU directory mode: deep scratch-kernel creatures \
              are faster on CPU for production-scale full-corpus scoring; \
              rerun with --gpu off to skip GPU detection"
                 .to_string(),
@@ -567,41 +591,116 @@ mod tests {
         ));
     }
 
+    /// A sparse scratch-routed creature: `num_inputs` inputs, `hidden` hidden
+    /// neurons in a chain-free fan-in, one output. `hidden` controls the
+    /// non-input neuron count that Issue #467's shallow test keys off.
+    fn scratch_creature_json(num_inputs: usize, hidden: usize) -> String {
+        let mut neurons: Vec<String> = Vec::new();
+        let mut synapses: Vec<String> = Vec::new();
+        for h in 0..hidden {
+            neurons.push(format!(
+                r#"{{"type":"hidden","uuid":"h{h}","bias":0.0,"squash":"IDENTITY"}}"#
+            ));
+            let i = h % num_inputs;
+            synapses.push(format!(
+                r#"{{"fromUUID":"input-{i}","toUUID":"h{h}","weight":1.0}}"#
+            ));
+            synapses.push(format!(
+                r#"{{"fromUUID":"h{h}","toUUID":"o0","weight":1.0}}"#
+            ));
+        }
+        neurons.push(r#"{"type":"output","uuid":"o0","bias":0.0,"squash":"IDENTITY"}"#.into());
+        format!(
+            r#"{{"input":{num_inputs},"output":1,"forwardOnly":true,"neurons":[{}],"synapses":[{}]}}"#,
+            neurons.join(","),
+            synapses.join(","),
+        )
+    }
+
+    fn creature_dir(tmp: &tempfile::TempDir, json: &str) -> std::path::PathBuf {
+        let dir = tmp.path().join("creatures");
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        std::fs::write(dir.join("c.json"), json).expect("write");
+        dir
+    }
+
+    /// Issue #317 kept **all** scratch pools on CPU. Issue #467 narrowed that to
+    /// *deep* scratch pools, so this test now uses a production-depth creature
+    /// (1666 hidden) instead of the 1-hidden shape it originally used — the
+    /// shallow case is asserted by
+    /// `auto_should_use_gpu_directory_keeps_gpu_for_shallow_scratch_topology`.
     #[test]
     fn auto_should_use_gpu_directory_declines_scratch_topology() {
-        use crate::multi_score::gpu_directory_topology_for_dir;
+        use crate::multi_score::gpu_directory_probe_for_dir;
         use neat_core::creature::{compile_creature, parse_creature_json};
 
-        let json = r#"{"input":2461,"output":1,"forwardOnly":true,"neurons":[{"type":"hidden","uuid":"h0","bias":0.0,"squash":"IDENTITY"},{"type":"output","uuid":"o0","bias":0.0,"squash":"IDENTITY"}],"synapses":[{"fromUUID":"input-0","toUUID":"h0","weight":1.0},{"fromUUID":"h0","toUUID":"o0","weight":1.0}]}"#;
-        let creature = parse_creature_json(json).expect("parse");
+        let json = scratch_creature_json(2461, 1666);
+        let creature = parse_creature_json(&json).expect("parse");
         let net = compile_creature(&creature).expect("compile");
         let topo = crate::gpu::forward_mse_batched::directory_gpu_topology(&[net]);
         assert_eq!(topo, DirectoryGpuTopology::ScratchOnly);
 
         let tmp = tempfile::tempdir().expect("tempdir");
-        let dir = tmp.path().join("creatures");
-        std::fs::create_dir(&dir).expect("mkdir");
-        std::fs::write(dir.join("c.json"), json).expect("write");
-        let probed = gpu_directory_topology_for_dir(&dir).expect("topology");
-        assert_eq!(probed, DirectoryGpuTopology::ScratchOnly);
+        let dir = creature_dir(&tmp, &json);
+        let probe = gpu_directory_probe_for_dir(&dir).expect("probe");
+        assert_eq!(probe.topology, DirectoryGpuTopology::ScratchOnly);
+        assert!(!probe.shallow, "1666 hidden neurons is not shallow");
         assert!(!auto_should_use_gpu_directory(
-            &dir,
+            Some(probe),
             crate::cost::CostKind::Mse
         ));
     }
 
+    /// Issue #467 — the Enceladus shape (2461 inputs, 19 hidden) is scratch-only
+    /// but shallow, and benchmarks ~29 % faster on GPU, so `auto` must keep it
+    /// on GPU rather than falling back to CPU.
+    #[test]
+    fn auto_should_use_gpu_directory_keeps_gpu_for_shallow_scratch_topology() {
+        use crate::multi_score::gpu_directory_probe_for_dir;
+
+        let json = scratch_creature_json(2461, 19);
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let dir = creature_dir(&tmp, &json);
+
+        let probe = gpu_directory_probe_for_dir(&dir).expect("probe");
+        assert_eq!(probe.topology, DirectoryGpuTopology::ScratchOnly);
+        assert!(probe.shallow, "the Enceladus shape is shallow");
+        assert!(auto_should_use_gpu_directory(
+            Some(probe),
+            crate::cost::CostKind::Mse
+        ));
+    }
+
+    /// Issue #467 — no CPU fallback happens for a shallow scratch pool, so the
+    /// `[gpu] auto fallback ...` note must stay silent.
+    #[test]
+    fn auto_topology_fallback_note_absent_for_shallow_scratch() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let dir = creature_dir(&tmp, &scratch_creature_json(2461, 19));
+        let probe = crate::multi_score::gpu_directory_probe_for_dir(&dir);
+        assert_eq!(
+            auto_topology_fallback_note(
+                GpuMode::Auto,
+                ScoringPath::CreatureDirectory,
+                crate::cost::CostKind::Mse,
+                probe,
+            ),
+            None
+        );
+    }
+
+    /// Issue #317 note, retargeted at a deep scratch pool by Issue #467 — the
+    /// original 0-hidden creature is now classified shallow (GPU) and would
+    /// legitimately print nothing.
     #[test]
     fn auto_topology_fallback_note_for_scratch_only() {
         let tmp = tempfile::tempdir().expect("tempdir");
-        let dir = tmp.path().join("creatures");
-        std::fs::create_dir(&dir).expect("mkdir");
-        let json = r#"{"input":300,"output":1,"forwardOnly":true,"neurons":[{"type":"output","uuid":"o0","bias":0.0,"squash":"IDENTITY"}],"synapses":[{"fromUUID":"input-0","toUUID":"o0","weight":1.0}]}"#;
-        std::fs::write(dir.join("c.json"), json).expect("write");
+        let dir = creature_dir(&tmp, &scratch_creature_json(2461, 1666));
         let note = auto_topology_fallback_note(
             GpuMode::Auto,
             ScoringPath::CreatureDirectory,
             crate::cost::CostKind::Mse,
-            &dir,
+            crate::multi_score::gpu_directory_probe_for_dir(&dir),
         )
         .expect("note");
         assert!(note.contains("scratch-kernel"));
