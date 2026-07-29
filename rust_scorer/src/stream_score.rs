@@ -150,11 +150,6 @@ fn partition_packed_records(
 /// let mean_error = loss_sum / records as f64;
 /// println!("mean error = {mean_error}");
 /// ```
-// `#[allow(dead_code)]`: the full-rate wrapper is the library entry point used
-// by `src/bin/cost_scan_bench.rs` and `benches/scoring.rs`; the CLI binary
-// calls the `_sampled` variant directly, so its self-contained module tree
-// never invokes this delegator. Consumers re-verified in the Issue #470 audit.
-#[allow(dead_code)]
 pub fn accumulate_cost_sum_forward_only_fused(
     cost: CostKind,
     bin_files: &[std::path::PathBuf],

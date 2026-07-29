@@ -17,6 +17,16 @@ section to the released version with its date.
 
 ### Changed
 
+- **The `rust_scorer` binary now links the library instead of recompiling it
+  (Issue #475).** `src/main.rs` declared its own `mod` tree, so the bin target
+  built a second, independent copy of every module — the shipped binary could
+  drift from the code benches and tests exercise, and the crate needed 17
+  `#[allow(dead_code)]` attributes to silence the unused bin-side copy. CLI
+  logic moved to `src/cli.rs`; `main.rs` is a thin shim over
+  `rust_scorer::cli::main`. All 17 suppressions are gone and ten `pub` items
+  that existed only to dodge `dead_code` are now `pub(crate)`, so the lint is
+  armed crate-wide. No behaviour or CLI-contract change.
+
 - **neat-core baseline acknowledged at 0.5.0 (Issue #252 gate).** neat-core has
   presented three pre-1.0 breaking bumps since the recorded 0.2.5 baseline, each
   removing API `rust_scorer` does not consume: the deprecated `score_records` /

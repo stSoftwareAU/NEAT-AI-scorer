@@ -74,9 +74,6 @@ impl SampleSpec {
     }
 
     /// The stride phase offset.
-    // `#[allow(dead_code)]`: public accessor exercised by tests; the CLI binary
-    // reads `phase` only through the field, not this getter.
-    #[allow(dead_code)]
     pub fn phase(&self) -> u64 {
         self.phase
     }
@@ -102,6 +99,9 @@ impl Default for SampleSpec {
 /// `(0, 1]`. Used as the clap `value_parser` so an out-of-range value is
 /// rejected with a clean non-zero exit rather than silently accepted.
 ///
+/// Stays `pub` after Issue #475: the doctest below is an *external* crate, so
+/// `pub(crate)` would break `cargo test --doc` (the #474 doctest-only carve-out).
+///
 /// # Examples
 ///
 /// ```
@@ -124,6 +124,9 @@ pub fn parse_sample_rate(s: &str) -> Result<f64, String> {
 /// Stateful, deterministic record sampler that threads a global record index
 /// through every streamed chunk so the kept set is independent of chunk
 /// boundaries (Issue #310).
+///
+/// Stays `pub` after Issue #475 for the same reason as [`parse_sample_rate`]:
+/// [`RecordSampler::filter_in_place`] is doctested from an external crate.
 #[derive(Debug, Clone)]
 pub struct RecordSampler {
     spec: SampleSpec,
@@ -142,9 +145,6 @@ impl RecordSampler {
     }
 
     /// A pass-through sampler that keeps every record.
-    // `#[allow(dead_code)]`: convenience constructor used by tests; the CLI
-    // binary builds samplers via `SampleSpec::sampler`.
-    #[allow(dead_code)]
     pub fn full() -> Self {
         Self::new(SampleSpec::full())
     }
@@ -168,7 +168,7 @@ impl RecordSampler {
     /// Consider the record at the current global index, advance past it, and
     /// return whether it should be scored. Used by the per-record recurrent
     /// path where records are not batched into a flat buffer.
-    pub fn keep_next(&mut self) -> bool {
+    pub(crate) fn keep_next(&mut self) -> bool {
         let keep = self.keeps_index(self.next_index);
         self.next_index += 1;
         keep

@@ -64,7 +64,7 @@ pub const MAX_NEURONS_PER_CREATURE: u32 = 256;
 /// the 2461-input / 19-hidden Enceladus creature, so `--gpu auto` routes them to
 /// GPU. The bound reuses the private-kernel cap because the same 256-neuron
 /// figure was validated at the boundary in that sweep.
-pub const MAX_SHALLOW_NON_INPUT_NEURONS: u32 = 256;
+pub(crate) const MAX_SHALLOW_NON_INPUT_NEURONS: u32 = 256;
 
 /// Absolute sanity ceiling on per-creature neuron count (Issue #182). The
 /// scratch kernel has no architectural cap, but a corrupt creature claiming an
@@ -641,7 +641,6 @@ impl BatchedRunner {
     }
 
     /// Which kernel this runner drives (Issue #182).
-    #[allow(dead_code)] // consumed by the GPU parity integration test.
     pub fn kernel(&self) -> KernelKind {
         self.kernel
     }
@@ -972,7 +971,7 @@ pub fn effective_directory_gpu_inflight(topology: DirectoryGpuTopology, requeste
 }
 
 /// Classify a compiled creature pool for GPU kernel selection.
-pub fn directory_gpu_topology(networks: &[CompiledNetwork]) -> DirectoryGpuTopology {
+pub(crate) fn directory_gpu_topology(networks: &[CompiledNetwork]) -> DirectoryGpuTopology {
     let mut has_private = false;
     let mut has_scratch = false;
     for net in networks {
@@ -999,7 +998,7 @@ pub fn directory_gpu_topology(networks: &[CompiledNetwork]) -> DirectoryGpuTopol
 ///
 /// An empty pool is **not** shallow: there is no evidence to justify GPU, and
 /// the caller must not read "no creatures" as "GPU is faster".
-pub fn directory_pool_is_shallow(networks: &[CompiledNetwork]) -> bool {
+pub(crate) fn directory_pool_is_shallow(networks: &[CompiledNetwork]) -> bool {
     !networks.is_empty()
         && networks.iter().all(|net| {
             let non_input = net.num_neurons.saturating_sub(net.num_inputs);

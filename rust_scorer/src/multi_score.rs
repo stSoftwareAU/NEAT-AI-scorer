@@ -75,13 +75,11 @@ pub mod training_pass_probe {
 
     /// Reset the sweep counter to zero. Call immediately before a scoring
     /// invocation whose sweep count you want to observe.
-    #[allow(dead_code)] // used by the `single_pass_assertion` integration test.
     pub fn reset() {
         TRAINING_DATA_SWEEPS.store(0, Ordering::SeqCst);
     }
 
     /// Number of full training-data sweeps recorded since the last [`reset`].
-    #[allow(dead_code)] // used by the `single_pass_assertion` integration test.
     pub fn count() -> u64 {
         TRAINING_DATA_SWEEPS.load(Ordering::SeqCst)
     }
@@ -118,13 +116,11 @@ pub mod compile_probe {
 
     /// Reset the compile counter to zero. Call immediately before a scoring
     /// invocation whose compile count you want to observe.
-    #[allow(dead_code)] // used by the `compile_once_assertion` integration test.
     pub fn reset() {
         CREATURE_COMPILES.store(0, Ordering::SeqCst);
     }
 
     /// Number of `compile_creature` calls recorded since the last [`reset`].
-    #[allow(dead_code)] // used by the `compile_once_assertion` integration test.
     pub fn count() -> u64 {
         CREATURE_COMPILES.load(Ordering::SeqCst)
     }
@@ -304,11 +300,6 @@ pub struct PartialScore {
 /// The full-score path is preserved by returning [`EarlyExit::Continue`] every
 /// time: with only `Continue` decisions every creature is scored over the whole
 /// corpus and the results are bit-identical to [`score_from_creature_dir`].
-// `#[allow(dead_code)]`: the self-contained `main.rs` module tree recompiles
-// this file for the binary, where these variants are never constructed; they
-// are part of the library API consumed by benches/tests (same rationale as
-// `training_pass_probe`).
-#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EarlyExit {
     /// Keep scoring every still-active creature.
@@ -368,9 +359,6 @@ const EARLY_EXIT_ABORT_ALL_SENTINEL: &str = "\u{0}neat-scorer-early-exit-abort-a
 ///     println!("{id}: score = {}", result.score);
 /// }
 /// ```
-// `#[allow(dead_code)]`: full-rate library entry point used by benches/tests;
-// the CLI binary calls `score_from_creature_dir_sampled` directly.
-#[allow(dead_code)]
 pub fn score_from_creature_dir(
     creatures_dir: &Path,
     data_path: &Path,
@@ -460,9 +448,6 @@ pub fn score_from_creature_dir_sampled(
 /// .unwrap();
 /// println!("scored {} creatures", scores.len());
 /// ```
-// `#[allow(dead_code)]`: library API used by benches/tests; the binary's
-// self-contained module tree recompiles this file and never calls it.
-#[allow(dead_code)]
 pub fn score_from_creature_dir_with_early_exit<F>(
     creatures_dir: &Path,
     data_path: &Path,
@@ -492,7 +477,7 @@ where
 fn score_from_creature_dir_cpu(
     creatures_dir: &Path,
     data_path: &Path,
-    // Issue #470 vestigial-parameter sweep: every CPU-path call site (`main.rs`,
+    // Issue #470 vestigial-parameter sweep: every CPU-path call site (`cli.rs`,
     // the benches and the CPU legs of the parity tests) passes
     // `GpuBackendLabel::CpuFallback`, but the parameter must stay. It is read
     // into `ScoreResult::gpu_backend` — i.e. it is the value serialised as the
@@ -858,7 +843,7 @@ fn score_from_creature_dir_cpu(
 /// Issue #180 — CPU-only pre-flight that decides whether a GPU kernel can host
 /// every creature in `creatures_dir` **without creating a `wgpu` device**.
 ///
-/// `main.rs` calls this under `--gpu auto` *before* selecting a GPU adapter: a
+/// `cli.rs` calls this under `--gpu auto` *before* selecting a GPU adapter: a
 /// created-then-abandoned Metal context could abort during process teardown —
 /// truncating the JSON the batch caller reads and surfacing as `exit 158` /
 /// `INVALID_JSON`. Gating adapter creation on this cheap CPU check means an
@@ -921,7 +906,7 @@ pub fn gpu_directory_compatible(creatures_dir: &Path) -> Result<(), GpuPrepareEr
 /// CPU-only pre-flight classification of a creature directory for `--gpu auto`
 /// (Issues #317, #467).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct DirectoryGpuProbe {
+pub(crate) struct DirectoryGpuProbe {
     /// Which kernel(s) the pool needs.
     pub topology: crate::gpu::forward_mse_batched::DirectoryGpuTopology,
     /// Every creature is shallow — see
@@ -936,7 +921,7 @@ pub struct DirectoryGpuProbe {
 /// [`crate::gpu::auto_should_use_gpu_directory`] can skip GPU on topologies
 /// that lose to CPU on Apple Silicon production workloads, while still picking
 /// GPU for the shallow scratch pools that win (Issue #467).
-pub fn gpu_directory_probe_for_dir(creatures_dir: &Path) -> Option<DirectoryGpuProbe> {
+pub(crate) fn gpu_directory_probe_for_dir(creatures_dir: &Path) -> Option<DirectoryGpuProbe> {
     let loaded = load_creatures_from_dir(creatures_dir).ok()?;
     if loaded.is_empty() {
         return None;
@@ -997,9 +982,6 @@ pub fn gpu_directory_probe_for_dir(creatures_dir: &Path) -> Option<DirectoryGpuP
 /// .unwrap();
 /// println!("scored {} creatures on the GPU", scores.len());
 /// ```
-// `#[allow(dead_code)]`: full-rate GPU library entry point used by
-// benches/tests; the CLI binary calls `score_from_creature_dir_gpu_sampled`.
-#[allow(dead_code)]
 pub fn score_from_creature_dir_gpu(
     creatures_dir: &Path,
     data_path: &Path,
@@ -1031,9 +1013,6 @@ pub fn score_from_creature_dir_gpu(
 /// Same single-pass GPU envelope, but only the deterministic subsample selected
 /// by `sample` is dispatched to the kernel. `SampleSpec::full()` reproduces the
 /// full-corpus GPU result exactly.
-// Issue #470 dead-code audit: no `#[allow(dead_code)]` here — the binary's
-// own module tree reaches this function (`main.rs` GPU directory path), as do
-// `tests/gpu_sample_rate_parity.rs` and the Criterion bench.
 pub fn score_from_creature_dir_gpu_sampled(
     creatures_dir: &Path,
     data_path: &Path,
