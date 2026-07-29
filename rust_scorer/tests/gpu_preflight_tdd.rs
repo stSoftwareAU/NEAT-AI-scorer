@@ -1,7 +1,7 @@
 //! Issue #180 — CPU-only GPU compatibility pre-flight for directory mode.
 //!
 //! `gpu_directory_compatible` decides — without creating a `wgpu` device —
-//! whether a GPU kernel can host every creature in a directory. `main.rs`
+//! whether a GPU kernel can host every creature in a directory. `cli.rs`
 //! consults it under `--gpu auto`.
 //!
 //! Issue #182 lifted the 256-neuron cap: creatures above it now run on the

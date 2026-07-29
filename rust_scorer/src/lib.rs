@@ -1,10 +1,11 @@
 //! Library surface for `rust_scorer` so external targets (Criterion benches,
 //! integration tests) can call the same hot paths the CLI uses.
 //!
-//! The CLI binary in `src/main.rs` continues to declare its own `mod ...;`
-//! tree — keeping `main.rs` self-contained avoids touching the stable
-//! positional CLI contract while still letting the `benches/scoring.rs`
-//! Criterion harness import the scoring modules through this crate root.
+//! Since Issue #475 the CLI binary is a thin shim over [`cli::main`]: `src/main.rs`
+//! links this library rather than declaring its own `mod ...;` tree. One copy
+//! of every module means the shipped binary cannot drift from the code benches
+//! and integration tests exercise, and `dead_code` is armed crate-wide instead
+//! of being blanket-suppressed for a duplicate bin-side compilation.
 //!
 //! Issue #36 — Criterion benchmark infrastructure.
 
@@ -15,6 +16,7 @@
 // integration tests.
 #![warn(missing_docs)]
 
+pub mod cli;
 pub mod corpus_guard;
 pub mod cost;
 pub mod env_tuning;

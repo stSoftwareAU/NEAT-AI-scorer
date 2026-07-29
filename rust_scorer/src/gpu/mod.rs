@@ -33,7 +33,7 @@
 //! single-creature path stays on CPU — Issue #81 closed as a negative result.
 //!
 //! [`auto_should_use_gpu`] codifies that ship/skip decision as a runtime
-//! function on a [`ScoringPath`] discriminant; `main.rs` consults it before
+//! function on a [`ScoringPath`] discriminant; `cli.rs` consults it before
 //! dispatching to the GPU runner. When `--gpu auto` finds no compatible
 //! adapter, every path silently falls back to CPU — `auto` must never abort
 //! scoring.
@@ -128,10 +128,6 @@ pub enum GpuBackendLabel {
 
 impl GpuBackendLabel {
     /// Stable serialised label as a `&'static str`. Matches the JSON form.
-    // `#[allow(dead_code)]`: consumed by `tests/gpu_mae_parity.rs` (backend
-    // gating); the binary serialises the label through `serde`, not this
-    // accessor. Consumer re-verified in the Issue #470 audit.
-    #[allow(dead_code)]
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Metal => "metal",
@@ -202,6 +198,13 @@ pub struct GpuContext {
 
 /// Which scoring entry point is about to run. Used by [`auto_should_use_gpu`]
 /// to pick CPU or GPU under [`GpuMode::Auto`] (Issue #83).
+///
+/// Issue #475 downgraded the rest of the `pub`-as-`dead_code`-suppression list
+/// but kept this one `pub`: [`ScoringPath::SingleCreature`] is constructed only
+/// by the unit tests below (Issue #81 settled the single-creature path as
+/// CPU-only, so no production call site builds it), and `dead_code` ignores
+/// `cfg(test)` construction. `pub(crate)` here would therefore need a **new**
+/// `#[allow(dead_code)]` — the exact suppression this issue removes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ScoringPath {
     /// Single-creature scoring (`<creature.json> <data_dir>` or
@@ -213,7 +216,6 @@ pub enum ScoringPath {
     /// short-circuits the single-creature path before consulting the helper
     /// (no GPU kernel exists for it). The variant is part of the stable
     /// public API so future kernels can flip the decision in one place.
-    #[allow(dead_code)]
     SingleCreature,
     /// Directory-of-creatures scoring (`<creatures_dir> <data_dir>`). Issue
     /// #82 showed the batched kernel beats CPU+PGO by ≥ 30 % at N=50 with
@@ -226,7 +228,7 @@ pub enum ScoringPath {
 /// scoring path **and cost kind** (Issue #121).
 ///
 /// This is the codified ship/skip decision from Issue #83 — call sites in
-/// `main.rs` consult it instead of hard-coding "directory ⇒ GPU,
+/// `cli.rs` consult it instead of hard-coding "directory ⇒ GPU,
 /// single ⇒ CPU" inline. Any future re-evaluation only has to update this
 /// function (and the corresponding section in
 /// [`docs/performance-baseline.md`](../../../docs/performance-baseline.md)).
@@ -273,7 +275,7 @@ pub fn auto_should_use_gpu(path: ScoringPath, cost: crate::cost::CostKind) -> bo
 /// [`crate::multi_score::gpu_directory_probe_for_dir`] **once** and shares the
 /// result with [`auto_topology_fallback_note`] instead of paying for it twice
 /// (Issue #467 — the tax is material for wide-input creature pools).
-pub fn auto_should_use_gpu_directory(
+pub(crate) fn auto_should_use_gpu_directory(
     probe: Option<crate::multi_score::DirectoryGpuProbe>,
     cost: crate::cost::CostKind,
 ) -> bool {
@@ -300,13 +302,13 @@ pub fn auto_should_use_gpu_directory(
 /// Issue #467: shallow scratch pools keep the GPU path, so they print nothing —
 /// the note must only appear when GPU was actually declined.
 /// Takes the same shared probe as [`auto_should_use_gpu_directory`].
-pub fn auto_topology_fallback_note(
+pub(crate) fn auto_topology_fallback_note(
     mode: GpuMode,
     // Issue #470 vestigial-parameter sweep: every current call site passes
     // `ScoringPath::CreatureDirectory`, so the guard below cannot fire today.
     // The parameter stays deliberately — it mirrors the sibling
     // [`auto_cost_fallback_note`] signature (which *is* exercised with
-    // `SingleCreature`), and `main.rs` picks the note helper by mode, not by
+    // `SingleCreature`), and `cli.rs` picks the note helper by mode, not by
     // path, so a future single-creature GPU kernel must not silently inherit
     // the directory-topology note.
     path: ScoringPath,
@@ -358,7 +360,7 @@ pub fn auto_topology_fallback_note(
 /// * `cost` is not GPU-supported ([`crate::cost::CostKind::gpu_supported`]).
 ///
 /// Returns `None` otherwise (MSE / GPU-supported costs emit no extra output).
-pub fn auto_cost_fallback_note(
+pub(crate) fn auto_cost_fallback_note(
     mode: GpuMode,
     path: ScoringPath,
     cost: crate::cost::CostKind,
@@ -385,7 +387,10 @@ pub fn auto_cost_fallback_note(
 /// pulled from `std::env::var("NEAT_SCORER_GPU")` (or `None`). Returning a
 /// `Result` lets the caller surface env-var typos as a clear error rather
 /// than silently falling back.
-pub fn resolve_mode(cli: Option<GpuMode>, env: Option<&str>) -> Result<GpuMode, GpuModeParseError> {
+pub(crate) fn resolve_mode(
+    cli: Option<GpuMode>,
+    env: Option<&str>,
+) -> Result<GpuMode, GpuModeParseError> {
     if let Some(m) = cli {
         return Ok(m);
     }
@@ -500,8 +505,6 @@ impl From<GpuInitError> for ResolveBackendError {
 ///   compatible adapter was available ([`ResolveBackendError::NoAdapter`]), or
 ///   `request_device` failed ([`ResolveBackendError::Init`]). The caller should
 ///   exit non-zero and surface the message to stderr.
-#[allow(dead_code)] // used by benches/tests; main.rs now resolves the adapter directly so it
-// can keep the resulting `GpuContext` for the GPU multi-creature path (Issue #82).
 pub fn resolve_backend(mode: GpuMode) -> Result<GpuBackendLabel, ResolveBackendError> {
     match mode {
         GpuMode::Off => Ok(GpuBackendLabel::CpuFallback),

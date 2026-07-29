@@ -124,11 +124,6 @@ impl CostKind {
     /// assert_eq!(CostKind::from_cli("MSE").unwrap(), CostKind::Mse);
     /// assert!(CostKind::from_cli("FOO").is_err());
     /// ```
-    // `#[allow(dead_code)]`: public library API for `NeatOptions.costName`
-    // pass-through, exercised by the doctest above and by the `cost::tests`
-    // unit tests; the bin target parses `--cost` through clap's `ValueEnum`,
-    // not this helper. Consumers re-verified in the Issue #470 audit.
-    #[allow(dead_code)]
     pub fn from_cli(raw: &str) -> Result<Self, InvalidCostName> {
         // Exact-match parsing — the TypeScript names are upper-case, so we
         // do not normalise case. This keeps the CLI contract aligned with
@@ -201,7 +196,7 @@ impl CostKind {
     /// reuses the MSE squared-error sum unchanged and differs only in this
     /// host-side finalisation. Centralising the division (and the optional
     /// `sqrt`) keeps the three finalisation sites — the single-creature path in
-    /// `main.rs` and the CPU and GPU creature-directory paths in
+    /// `cli.rs` and the CPU and GPU creature-directory paths in
     /// `multi_score.rs` — in lock-step so RMSE cannot silently report MSE-scale
     /// numbers on one path.
     ///
@@ -337,7 +332,6 @@ pub fn accumulate_cost_sum(
 /// Comma-separated list of supported cost names in TypeScript order
 /// (matches `BUILT_IN_COST_NAMES`). Used to build the error message
 /// returned by [`CostKind::from_cli`] when a value is rejected.
-#[allow(dead_code)]
 fn supported_list() -> String {
     CostKind::value_variants()
         .iter()
