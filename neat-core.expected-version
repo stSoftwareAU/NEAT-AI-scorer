@@ -11,4 +11,18 @@
 # rust_scorer handling landed in milestone #257; patch drift within the 0.2 line
 # is non-breaking. Verified by a clean `cargo build -p rust_scorer` and the full
 # scorer test suite passing against the sibling neat-core.
-0.2.5
+#
+# 0.2.5 -> 0.5.0: acknowledge the three breaking bumps neat-core has presented
+# since 0.2.5. Each removes API that rust_scorer does not consume:
+#   * 0.3.0 — neat-core #412 deleted the deprecated `score_records` /
+#     `score_records_parallel` wrappers and `RecordBatch::PerRecord`. scorer had
+#     already migrated to the flat scoring entry points (neat-core #411), so no
+#     scorer change was outstanding.
+#   * 0.4.0 — neat-core #420 removed `PredictiveCodingEngine`
+#     (pc_inference.rs / pc_learning.rs); scorer never referenced it.
+#   * 0.5.0 — neat-core #421 removed the `wasm_dataset` training-data offload;
+#     scorer never referenced it.
+# Verified by a clean `cargo build -p rust_scorer` and the full scorer test
+# suite (335 tests) passing against the sibling neat-core at 0.5.0, plus a
+# repo-wide grep confirming no remaining reference to any removed symbol.
+0.5.0

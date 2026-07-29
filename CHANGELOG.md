@@ -15,6 +15,17 @@ section to the released version with its date.
 
 ## [Unreleased]
 
+### Changed
+
+- **neat-core baseline acknowledged at 0.5.0 (Issue #252 gate).** neat-core has
+  presented three pre-1.0 breaking bumps since the recorded 0.2.5 baseline, each
+  removing API `rust_scorer` does not consume: the deprecated `score_records` /
+  `score_records_parallel` wrappers and `RecordBatch::PerRecord` (0.3.0),
+  `PredictiveCodingEngine` (0.4.0), and the `wasm_dataset` training-data offload
+  (0.5.0). scorer's migration to the flat scoring entry points had already
+  landed, so no scorer code change was outstanding; verified by a clean build
+  and the full test suite against neat-core 0.5.0.
+
 ### Fixed
 
 - **Misaligned training files no longer splice records silently (Issue #476).**
