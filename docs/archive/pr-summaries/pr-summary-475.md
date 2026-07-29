@@ -86,7 +86,7 @@ gate plus the new parity tests.
 **The suppressions are genuinely gone, not relocated.** `dead_code` is now armed
 crate-wide and the full gate is clean:
 
-```
+```console
 $ grep -rnE '^[[:space:]]*#\[allow\(dead_code\)\]' rust_scorer/src/
 (no matches — only two prose mentions remain, both explaining why an
  attribute is *not* there)
@@ -105,7 +105,7 @@ finding (`ScoringPath::SingleCreature`, table above).
 **No tests lost in the move.** The 24 CLI unit tests that lived in `main.rs`
 moved with it and now run in the lib target:
 
-```
+```text
 Running unittests src/lib.rs   ... 182 passed; 0 failed
 Running unittests src/main.rs  ...   0 passed; 0 failed   (shim has no tests)
 Doc-tests rust_scorer          ...  24 passed; 0 failed
