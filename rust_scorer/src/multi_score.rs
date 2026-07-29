@@ -35,6 +35,7 @@ use neat_core::training_bin_stream::for_each_read_chunk;
 use neat_core::training_data::{TrainingDataConfig, find_bin_files};
 use rayon::prelude::*;
 
+use crate::corpus_guard::assert_records_aligned;
 use crate::cost::{CostKind, accumulate_cost_sum};
 use crate::gpu::forward_mse_batched::{
     DirectoryGpuRunners, GpuPrepareError, build_batched_network_data,
@@ -534,6 +535,11 @@ fn score_from_creature_dir_cpu(
     if record_bytes == 0 {
         return Err("Invalid record byte length (zero)".to_string());
     }
+    // Issue #476 — refuse a corpus whose files are not each a whole number of
+    // records, before any streaming starts. The continuous-stream reader would
+    // otherwise splice a record across the file boundary and shift every
+    // record after it.
+    assert_records_aligned(&bin_files, record_bytes)?;
     let values_per_record = num_inputs + num_outputs;
 
     let fused_read_target_bytes = training_read_target_bytes_from_env(record_bytes);
@@ -1094,6 +1100,11 @@ fn score_from_creature_dir_gpu_impl(
     if record_bytes == 0 {
         return Err("Invalid record byte length (zero)".to_string());
     }
+    // Issue #476 — refuse a corpus whose files are not each a whole number of
+    // records, before any streaming starts. The continuous-stream reader would
+    // otherwise splice a record across the file boundary and shift every
+    // record after it.
+    assert_records_aligned(&bin_files, record_bytes)?;
     let values_per_record = num_inputs + num_outputs;
 
     let fused_read_target_bytes = training_read_target_bytes_from_env(record_bytes);

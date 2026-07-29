@@ -171,6 +171,58 @@ fn scorer_binary_record_aligned_multi_chunk_fast_path() {
     );
 }
 
+/// Issue #476: a corpus whose individual `.bin` files are not each a whole
+/// number of records must be rejected up front, naming the offending file.
+///
+/// The two files here are deliberately chosen so their misalignments cancel
+/// out — the concatenated stream *is* a whole number of records, so the
+/// end-of-stream "Trailing N bytes" backstop stays silent — yet every record
+/// after the first file boundary would be spliced from two different files,
+/// which is exactly what made native and WASM scoring disagree.
+#[test]
+fn scorer_binary_rejects_misaligned_training_files() {
+    let bin = env!("CARGO_BIN_EXE_rust_scorer");
+    let creature = fixture("identity_creature.json");
+
+    // Identity creature: 1 input + 1 output = 8 bytes per record.
+    const RECORD_BYTES: usize = 8;
+    let tmp = tempfile::tempdir().expect("create tempdir");
+    for (name, len) in [
+        ("a_ragged.bin", RECORD_BYTES * 4 + 4),
+        ("b_ragged.bin", RECORD_BYTES * 4 - 4),
+    ] {
+        let mut file = std::fs::File::create(tmp.path().join(name)).expect("create data file");
+        file.write_all(&vec![0u8; len]).expect("write data file");
+    }
+
+    let output = Command::new(bin)
+        .arg(&creature)
+        .arg(tmp.path())
+        .output()
+        .expect("failed to spawn rust_scorer binary");
+
+    assert!(
+        !output.status.success(),
+        "a misaligned corpus must exit non-zero, got {:?}\nstdout:\n{}",
+        output.status.code(),
+        String::from_utf8_lossy(&output.stdout),
+    );
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("a_ragged.bin"),
+        "stderr must name the offending file, got: {stderr}"
+    );
+    assert!(
+        stderr.contains("4 bytes past the last whole record"),
+        "stderr must state the remainder bytes, got: {stderr}"
+    );
+    assert!(
+        stderr.contains("spliced across file boundaries"),
+        "stderr must explain the splice risk, got: {stderr}"
+    );
+}
+
 /// Issue #80: `rust_scorer --gpu off` must produce JSON with the existing
 /// schema plus a new `gpuBackend: "cpu-fallback"` field. The default mode
 /// (no `--gpu` flag) must behave identically. This pins the JSON contract
