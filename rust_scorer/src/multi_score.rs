@@ -872,7 +872,7 @@ fn score_from_creature_dir_cpu(
 /// Returns:
 /// * `Err(GpuPrepareError)` — the set is genuinely incompatible with the GPU
 ///   kernels (an unsupported squash, a shape mismatch, or an absurd neuron
-///   count beyond [`crate::gpu::forward_mse_batched::MAX_NEURONS_ABSOLUTE`]).
+///   count beyond `gpu::forward_mse_batched::MAX_NEURONS_ABSOLUTE`).
 ///   Issue #289 (C-GOOD-ERR): the underlying typed [`GpuPrepareError`] is now
 ///   returned directly instead of being flattened to a `String`, so callers can
 ///   `match` on the specific incompatibility. Its `Display` still yields the

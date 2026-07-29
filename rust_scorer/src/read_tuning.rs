@@ -15,10 +15,10 @@ const LARGE_RECORD_BYTES_THRESHOLD: usize = 8000;
 const LARGE_RECORD_DEFAULT_READ_BYTES: usize = 32 * 1024 * 1024;
 
 /// Upper bound for read buffer size (matches previous `neat_core` tuner cap).
-pub const MAX_READ_BYTES: usize = 64 * 1024 * 1024;
+pub(crate) const MAX_READ_BYTES: usize = 64 * 1024 * 1024;
 
 /// Default read target when `NEAT_SCORER_READ_BYTES` is unset.
-pub fn default_training_read_bytes(record_bytes: usize) -> usize {
+pub(crate) fn default_training_read_bytes(record_bytes: usize) -> usize {
     let rb = record_bytes.max(1);
     if rb >= LARGE_RECORD_BYTES_THRESHOLD {
         LARGE_RECORD_DEFAULT_READ_BYTES

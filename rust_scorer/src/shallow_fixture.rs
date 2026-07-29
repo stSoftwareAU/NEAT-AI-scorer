@@ -24,7 +24,7 @@
 /// — the same property the real creature has. Cycling this set across the
 /// hidden neurons reproduces the transcendental mix (`Mish`, `SELU`, `ELU`, …)
 /// that determines per-neuron CPU cost, the variable the A/B is sensitive to.
-pub const ENCELADUS_SQUASHES: &[&str] = &[
+pub(crate) const ENCELADUS_SQUASHES: &[&str] = &[
     "LogSigmoid",
     "LeakyReLU",
     "Softplus",
@@ -58,7 +58,7 @@ pub const ENCELADUS_SQUASHES: &[&str] = &[
 // — it sets the `hidden → output` edge count — and keeping it generic keeps
 // this fixture symmetrical with `prod_fixture`. Not a vestige.
 #[must_use]
-pub fn plan_synapses(
+pub(crate) fn plan_synapses(
     num_inputs: usize,
     num_outputs: usize,
     hidden: usize,
@@ -79,9 +79,9 @@ pub fn plan_synapses(
 /// c % hidden)` for `c` in `0..input_hidden`, which yields **distinct** pairs
 /// (a base-`hidden` decomposition) spread evenly across the hidden layer while
 /// keeping the input index within `num_inputs`. Hidden neurons cycle
-/// [`ENCELADUS_SQUASHES`]; outputs use `IDENTITY`. The result parses with
+/// `ENCELADUS_SQUASHES`; outputs use `IDENTITY`. The result parses with
 /// `neat_core::creature::parse_creature_json` and reports exactly
-/// `input_hidden + hidden_output` synapses (see [`plan_synapses`]).
+/// `input_hidden + hidden_output` synapses (see `plan_synapses`).
 #[must_use]
 pub fn shallow_creature_json(
     num_inputs: usize,
