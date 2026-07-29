@@ -45,7 +45,7 @@ links became plain code spans — no prose was reworded:
 The issue's exclusion list is honoured as-is — items that leak into a public
 signature, items with a doctest-only external consumer, and items whose `pub`
 currently acts as `dead_code` suppression for the lib target (because `main.rs`
-re-declares its own `mod` tree) all keep `pub`.
+declares its own separate `mod` tree) all keep `pub`.
 
 ## Evidence
 
