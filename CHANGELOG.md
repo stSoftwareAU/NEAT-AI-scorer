@@ -15,6 +15,37 @@ section to the released version with its date.
 
 ## [Unreleased]
 
+### Changed
+
+- **neat-core baseline acknowledged at 0.5.0 (Issue #252 gate).** neat-core has
+  presented three pre-1.0 breaking bumps since the recorded 0.2.5 baseline, each
+  removing API `rust_scorer` does not consume: the deprecated `score_records` /
+  `score_records_parallel` wrappers and `RecordBatch::PerRecord` (0.3.0),
+  `PredictiveCodingEngine` (0.4.0), and the `wasm_dataset` training-data offload
+  (0.5.0). scorer's migration to the flat scoring entry points had already
+  landed, so no scorer code change was outstanding; verified by a clean build
+  and the full test suite against neat-core 0.5.0.
+
+### Fixed
+
+- **Misaligned training files no longer splice records silently (Issue #476).**
+  The native scorer streams every `.bin` file as one
+  continuous byte stream, so the `pending` buffer carries a short tail from file
+  N straight into file N+1. Any single file whose length is not a whole multiple
+  of `record_bytes` therefore produced a bogus spliced record at the boundary and
+  shifted every record after it — the run only complained at the very end, with
+  `Trailing N bytes (incomplete record) after reading all training files`, naming
+  no file, and said nothing at all when two misalignments cancelled out across the
+  corpus. The WASM scorer frames records per file and asserts, so hosts that fell
+  back to WASM scored a different record set from hosts on native — a small,
+  systematic, one-direction score offset across the fleet. New
+  `rust_scorer/src/corpus_guard.rs::assert_records_aligned` runs immediately after
+  every `find_bin_files(...)` site, before any streaming, and fails loudly naming
+  the offending file, its size and the remainder bytes. Zero `record_bytes` is
+  rejected rather than dividing by zero, and an unreadable file is an error rather
+  than a silent skip. The end-of-stream trailing-bytes checks stay as a backstop.
+  No `neat-core` change.
+
 ### Removed
 
 - **Scorer-local dead-code audit (Issue #470).** Re-ran the superseded

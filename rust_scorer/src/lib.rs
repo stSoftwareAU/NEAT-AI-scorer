@@ -15,6 +15,7 @@
 // integration tests.
 #![warn(missing_docs)]
 
+pub mod corpus_guard;
 pub mod cost;
 pub mod env_tuning;
 pub mod gpu;

@@ -10,6 +10,7 @@
 //!
 //! Issue #1967 - Build Rust CLI scorer application.
 
+mod corpus_guard;
 mod cost;
 mod env_tuning;
 mod gpu;
@@ -33,6 +34,7 @@ use neat_core::training_data::{TrainingDataConfig, TrainingDataIterator, find_bi
 
 use std::sync::Arc;
 
+use crate::corpus_guard::assert_records_aligned;
 use crate::cost::CostKind;
 use crate::gpu::{GpuBackendLabel, GpuMode, ScoringPath};
 use crate::multi_score::{score_from_creature_dir_gpu_sampled, score_from_creature_dir_sampled};
@@ -457,6 +459,11 @@ fn score_from_json(
     };
 
     let record_bytes = config.bytes_per_record();
+    // Issue #476 — refuse a corpus whose files are not each a whole number of
+    // records, before any streaming starts. The continuous-stream reader would
+    // otherwise splice a record across the file boundary and shift every
+    // record after it.
+    assert_records_aligned(&bin_files, record_bytes)?;
     let fused_read_target_bytes = training_read_target_bytes_from_env(record_bytes);
     let fused_read_buf_len =
         stream_score::effective_fused_read_buf_len(record_bytes, fused_read_target_bytes);
