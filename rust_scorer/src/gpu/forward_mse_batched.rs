@@ -71,13 +71,13 @@ pub const MAX_SHALLOW_NON_INPUT_NEURONS: u32 = 256;
 /// absurd neuron count would demand a nonsensical scratch allocation — reject
 /// it up-front instead. One million neurons is far above any real evolved
 /// creature (observed maxima are in the low thousands).
-pub const MAX_NEURONS_ABSOLUTE: u32 = 1 << 20;
+pub(crate) const MAX_NEURONS_ABSOLUTE: u32 = 1 << 20;
 
 /// Default activation-scratch memory budget for the `forward_mse_scratch`
 /// kernel, in bytes (512 MiB). The host caps the grid-stride thread count so
 /// `num_creatures * G_x * WG_SIZE * max_neurons * 4` bytes stays within this
 /// budget. Override with `NEAT_SCORER_GPU_SCRATCH_BYTES` (used by benchmarks).
-pub const DEFAULT_SCRATCH_BUDGET_BYTES: u64 = 512 * 1024 * 1024;
+pub(crate) const DEFAULT_SCRATCH_BUDGET_BYTES: u64 = 512 * 1024 * 1024;
 
 /// Highest point-wise squash discriminant the kernels inline (Issue #305).
 ///
@@ -122,7 +122,7 @@ struct HeaderGpu {
 /// GPU-side mirror of a compiled neuron (`#[repr(C)]`, uploaded as an SSBO element).
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable, Debug, Default)]
-pub struct NeuronGpu {
+pub(crate) struct NeuronGpu {
     bias: f32,
     squash_type: u32,
     start_synapse: u32,
@@ -149,7 +149,7 @@ pub struct SynapseGpu {
 /// GPU-side mirror of a compiled creature's buffer layout (`#[repr(C)]`, uploaded as an SSBO element).
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable, Debug, Default)]
-pub struct CreatureMetaGpu {
+pub(crate) struct CreatureMetaGpu {
     neuron_offset: u32,
     num_non_inputs: u32,
     synapse_offset: u32,
@@ -158,7 +158,7 @@ pub struct CreatureMetaGpu {
 
 /// Concatenated per-creature data ready for upload.
 #[derive(Debug, Default)]
-pub struct BatchedNetworkData {
+pub(crate) struct BatchedNetworkData {
     /// All creatures' neurons concatenated into one upload buffer.
     pub neurons: Vec<NeuronGpu>,
     /// All creatures' synapses concatenated into one upload buffer.
@@ -181,7 +181,7 @@ pub enum GpuPrepareError {
     /// MINIMUM/MAXIMUM/IF (32..=34); this now fires only for the remaining
     /// aggregates HYPOT/HYPOTv2/MEAN (35..=37).
     UnsupportedSquash(u8),
-    /// A creature claims more than [`MAX_NEURONS_ABSOLUTE`] neurons — far
+    /// A creature claims more than `MAX_NEURONS_ABSOLUTE` neurons — far
     /// beyond any real evolved creature, so it is rejected rather than sized
     /// into a nonsensical scratch allocation (Issue #182). Creatures merely
     /// above the 256-neuron private-array cap are *not* rejected: they route to
@@ -189,7 +189,7 @@ pub enum GpuPrepareError {
     TooManyNeurons {
         /// Index of the offending creature within the batch.
         creature_idx: usize,
-        /// The rejected neuron count that exceeded [`MAX_NEURONS_ABSOLUTE`].
+        /// The rejected neuron count that exceeded `MAX_NEURONS_ABSOLUTE`.
         num_neurons: usize,
     },
     /// Every creature must share the same `(num_inputs, num_outputs)` shape
@@ -232,7 +232,7 @@ fn squash_supported(t: u8) -> bool {
 ///
 /// Returns [`GpuPrepareError::UnsupportedSquash`] for any non-supported squash
 /// type so the caller can fall back to CPU before allocating any GPU buffers.
-pub fn build_batched_network_data(
+pub(crate) fn build_batched_network_data(
     networks: &[CompiledNetwork],
     num_inputs: usize,
     num_outputs: usize,
@@ -433,7 +433,7 @@ impl BatchedRunner {
     /// `cost` selects the per-record loss the kernel accumulates (Issue #316):
     /// squared error for MSE/RMSE, absolute error for MAE. Only a
     /// [`CostKind::gpu_supported`] cost should reach here.
-    pub fn from_data(
+    pub(crate) fn from_data(
         ctx: Arc<GpuContext>,
         data: &BatchedNetworkData,
         num_creatures: u32,
@@ -1009,7 +1009,7 @@ pub fn directory_pool_is_shallow(networks: &[CompiledNetwork]) -> bool {
 
 /// Directory-mode GPU runners — may hold private and/or scratch kernels when the
 /// creature pool is mixed so small creatures avoid the scratch-kernel tax.
-pub struct DirectoryGpuRunners {
+pub(crate) struct DirectoryGpuRunners {
     private: Option<BatchedRunner>,
     private_orig: Vec<usize>,
     scratch: Option<BatchedRunner>,
@@ -1099,7 +1099,7 @@ impl DirectoryGpuRunners {
     }
 
     /// Stable label for the `gpuKernel` JSON field.
-    pub fn kernel_label(&self) -> String {
+    pub(crate) fn kernel_label(&self) -> String {
         match self.topology() {
             DirectoryGpuTopology::Mixed => "forward_mse_batched+forward_mse_scratch".to_string(),
             DirectoryGpuTopology::ScratchOnly => "forward_mse_scratch".to_string(),
@@ -1119,7 +1119,7 @@ impl DirectoryGpuRunners {
 
 /// Pure helper for `BatchedRunner::scratch_workgroups_x` so the bounding
 /// logic is unit-testable without a GPU (Issue #182).
-pub fn scratch_workgroups_x_for(
+pub(crate) fn scratch_workgroups_x_for(
     n_records: usize,
     num_creatures: u32,
     max_neurons: u32,

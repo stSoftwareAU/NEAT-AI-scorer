@@ -187,7 +187,7 @@ pub fn accumulate_cost_sum_forward_only_fused(
 /// `CompiledNetwork` directly — `config` already carries the input/output
 /// widths the reader needs, so the export was pure dead weight at every call
 /// site.
-pub fn accumulate_cost_sum_forward_only_fused_sampled(
+pub(crate) fn accumulate_cost_sum_forward_only_fused_sampled(
     cost: CostKind,
     bin_files: &[std::path::PathBuf],
     config: &TrainingDataConfig,

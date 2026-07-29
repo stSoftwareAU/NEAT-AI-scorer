@@ -148,7 +148,7 @@ impl GpuBackendLabel {
     /// is a "real" native GPU backend the scorer can run kernels on, and
     /// returning `CpuFallback` keeps the JSON contract simple (only one label
     /// per "no GPU available" path).
-    pub fn from_wgpu(b: wgpu::Backend) -> Self {
+    pub(crate) fn from_wgpu(b: wgpu::Backend) -> Self {
         match b {
             wgpu::Backend::Metal => Self::Metal,
             wgpu::Backend::Vulkan => Self::Vulkan,

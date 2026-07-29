@@ -10,7 +10,7 @@ use crate::gpu::GpuBackendLabel;
 
 /// The current semantic major version matching the TypeScript constant.
 /// Creatures not at this version receive a small penalty.
-pub const SEMANTIC_MAJOR_VERSION: u32 = 4;
+pub(crate) const SEMANTIC_MAJOR_VERSION: u32 = 4;
 
 /// Typed error for the public scoring API (Issue #289, C-GOOD-ERR).
 ///

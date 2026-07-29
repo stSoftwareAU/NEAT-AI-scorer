@@ -16,8 +16,8 @@
 //! topology outside the expected production ranges — the latter catches a
 //! regression that swaps in a trivially small creature.
 //!
-//! The pure functions here ([`parse_production_creature`],
-//! [`check_production_topology`], [`load_production_creature`],
+//! The pure functions here (`parse_production_creature`,
+//! `check_production_topology`, [`load_production_creature`],
 //! [`corpus_record_count`]) are unit-tested. The production creature itself is
 //! **not** shipped and is **never fetched** by this public repo — it lives in a
 //! private repository. A contributor supplies their own local copy via the
@@ -44,17 +44,17 @@ pub const PROD_CREATURE_ENV: &str = "BENCH_PROD_CREATURE";
 // such as the synthetic 8→8→2 fixture (10 neurons, 8 inputs).
 
 /// Minimum plausible input width for the production creature (observed 2461).
-pub const MIN_INPUTS: usize = 1500;
+pub(crate) const MIN_INPUTS: usize = 1500;
 /// Expected number of outputs for the production creature (observed 1).
-pub const EXPECTED_OUTPUTS: usize = 1;
+pub(crate) const EXPECTED_OUTPUTS: usize = 1;
 /// Lower bound on production neuron count (observed 1666).
-pub const MIN_NEURONS: usize = 800;
+pub(crate) const MIN_NEURONS: usize = 800;
 /// Upper bound on production neuron count (guards against absurd inputs).
-pub const MAX_NEURONS: usize = 12_000;
+pub(crate) const MAX_NEURONS: usize = 12_000;
 /// Lower bound on production synapse count (observed 21 510).
-pub const MIN_SYNAPSES: usize = 8_000;
+pub(crate) const MIN_SYNAPSES: usize = 8_000;
 /// Upper bound on production synapse count.
-pub const MAX_SYNAPSES: usize = 120_000;
+pub(crate) const MAX_SYNAPSES: usize = 120_000;
 
 // --- Production corpus sizing (from the production performance.csv) ----------
 
@@ -96,7 +96,7 @@ impl std::error::Error for ProdFixtureError {}
 ///
 /// Does **not** validate topology — see [`check_production_topology`]. Splitting
 /// the two lets callers report the more specific failure.
-pub fn parse_production_creature(json: &str) -> Result<CreatureExport, ProdFixtureError> {
+pub(crate) fn parse_production_creature(json: &str) -> Result<CreatureExport, ProdFixtureError> {
     if json.trim().is_empty() {
         return Err(ProdFixtureError::Empty);
     }
@@ -107,7 +107,7 @@ pub fn parse_production_creature(json: &str) -> Result<CreatureExport, ProdFixtu
 ///
 /// Rejects a trivially small stand-in (e.g. the synthetic 8→8→2 fixture) so a
 /// regression cannot quietly benchmark a meaningless creature.
-pub fn check_production_topology(creature: &CreatureExport) -> Result<(), ProdFixtureError> {
+pub(crate) fn check_production_topology(creature: &CreatureExport) -> Result<(), ProdFixtureError> {
     let neurons = creature.neurons.len();
     let synapses = creature.synapses.len();
 

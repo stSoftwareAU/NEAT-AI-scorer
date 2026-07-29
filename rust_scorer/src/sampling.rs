@@ -82,7 +82,7 @@ impl SampleSpec {
     }
 
     /// `true` when this spec keeps every record (`rate == 1.0`).
-    pub fn is_full(&self) -> bool {
+    pub(crate) fn is_full(&self) -> bool {
         self.rate >= 1.0
     }
 
@@ -150,7 +150,7 @@ impl RecordSampler {
     }
 
     /// `true` when every record is kept (no filtering work performed).
-    pub fn is_full(&self) -> bool {
+    pub(crate) fn is_full(&self) -> bool {
         self.spec.is_full()
     }
 
