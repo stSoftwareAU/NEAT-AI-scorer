@@ -12,8 +12,11 @@ write access into exfiltration of an organisation-scoped credential.
 
 Both push steps are now hardened:
 
-- **git pinned to an absolute path** (`GIT=/usr/bin/git`) — a `$GITHUB_ENV`
-  `PATH` override cannot redirect the invocation.
+- **git and base64 pinned to absolute paths** (`GIT=/usr/bin/git`,
+  `BASE64=/usr/bin/base64`) — a `$GITHUB_ENV` `PATH` override cannot redirect
+  either invocation. `base64` matters as much as `git`: it is piped `$GH_PAT`
+  on stdin when the `AUTHORIZATION` header is built, so a planted `base64`
+  reads the credential directly.
 - **`-c core.hooksPath=/dev/null` on every invocation** — planted repository
   hooks never execute with the PAT in scope.
 - **No repository script runs beside the PAT.** `auto-format.yml` previously
@@ -21,7 +24,7 @@ Both push steps are now hardened:
   step, handing PR-head code the credential directly. The message is now
   resolved in the earlier `detect` step and passed through a step output.
 
-A new gate, `scripts/check-push-step-hardening.sh`, enforces all four rules on
+A new gate, `scripts/check-push-step-hardening.sh`, enforces all five rules on
 every step that binds `GH_PAT` to `secrets.ACTIONS_PUSH`, so the pattern cannot
 regress. It is wired into `quality.sh` and runs in CI via the `bats` suite.
 
@@ -46,7 +49,7 @@ flowchart LR
     end
     subgraph after[After]
         A2[PR-head script step] -.->|poisoning blocked| B2[push step]
-        D["GIT=/usr/bin/git"] --> B2
+        D["GIT=/usr/bin/git<br/>BASE64=/usr/bin/base64"] --> B2
         E["-c core.hooksPath=/dev/null"] --> B2
         F[no ./scripts in the PAT step] --> B2
         B2 --> C2[PAT stays in the step]
@@ -59,10 +62,12 @@ Checker output against the shipped workflows:
 OK   .github/workflows/auto-format.yml: pins git to an absolute path (GIT=/usr/bin/git)
 OK   .github/workflows/auto-format.yml: no bare 'git' command word — all invocations use "$GIT"
 OK   .github/workflows/auto-format.yml: every "$GIT" invocation disables repository hooks
+OK   .github/workflows/auto-format.yml: pins base64 to an absolute path (BASE64=/usr/bin/base64)
 OK   .github/workflows/auto-format.yml: executes no repository script with the PAT in scope
 OK   .github/workflows/version-increment.yml: pins git to an absolute path (GIT=/usr/bin/git)
 OK   .github/workflows/version-increment.yml: no bare 'git' command word — all invocations use "$GIT"
 OK   .github/workflows/version-increment.yml: every "$GIT" invocation disables repository hooks
+OK   .github/workflows/version-increment.yml: pins base64 to an absolute path (BASE64=/usr/bin/base64)
 OK   .github/workflows/version-increment.yml: executes no repository script with the PAT in scope
 ```
 
@@ -71,7 +76,7 @@ Both workflows also still pass `actionlint`, `check-auto-format-workflow.sh`,
 
 ## Test Plan
 
-New suite `tests/scripts/push_step_hardening.bats` (8 tests) drives the real
+New suite `tests/scripts/push_step_hardening.bats` (11 tests) drives the real
 checker against fixtures — each failing fixture reproduces one exfiltration
 primitive from the issue and passes only after the corresponding rule holds:
 
@@ -79,6 +84,10 @@ primitive from the issue and passes only after the corresponding rule holds:
 - fails when `git` is invoked bare (PATH-override reachable);
 - fails when a `"$GIT"` invocation does not disable repository hooks;
 - fails when the PAT-bearing step executes a repository script;
+- fails when `base64` is not pinned to an absolute path;
+- fails when `base64` is pinned but still invoked bare;
+- passes when the PAT-bearing step never uses `base64` (the rule applies only
+  where the header is built);
 - fails when no step binds `GH_PAT` to `ACTIONS_PUSH` (absence of the marker is
   not treated as success);
 - fails when the PAT-bearing step has no literal `run:` block;

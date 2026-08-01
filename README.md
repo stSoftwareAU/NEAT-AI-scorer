@@ -894,15 +894,17 @@ single-repo write access to the PAT's full organisation scope.
 flowchart LR
     A[PR-head script step] -->|PATH override / planted hook| B[push step holding $GH_PAT]
     B --> C[org PAT exfiltrated]
-    D["GIT=/usr/bin/git"] -->|absolute path| E[push step]
+    D["GIT=/usr/bin/git, BASE64=/usr/bin/base64"] -->|absolute paths| E[push step]
     F["-c core.hooksPath=/dev/null"] -->|hooks disabled| E
     G[no ./scripts in the PAT step] -->|no PR-head code beside the PAT| E
     E --> H[PAT stays in the step]
 ```
 
-Each push step therefore pins `GIT=/usr/bin/git`, passes
-`-c core.hooksPath=/dev/null` on every invocation, and resolves the commit
-message in an earlier step so no repository script runs alongside `$GH_PAT`.
+Each push step therefore pins `GIT=/usr/bin/git` and `BASE64=/usr/bin/base64`
+(`base64` is piped `$GH_PAT` on stdin when the auth header is built, so it is
+the same hijack vector as `git`), passes `-c core.hooksPath=/dev/null` on every
+git invocation, and resolves the commit message in an earlier step so no
+repository script runs alongside `$GH_PAT`.
 This is defence in depth, not a closed window — the durable fix is to scope
 the credential itself (a short-lived GitHub App installation token, or a
 fine-grained PAT limited to this repository), which needs an organisation

@@ -12,8 +12,9 @@ teardown() {
   rm -rf "$TMP_WF"
 }
 
-# A hardened PAT-bearing push step: absolute git path, hooks disabled on every
-# invocation, and no repository script executed with the PAT in scope.
+# A hardened PAT-bearing push step: absolute git and base64 paths, hooks
+# disabled on every invocation, and no repository script executed with the
+# PAT in scope.
 write_hardened_workflow() {
   cat >"$TMP_WF/wf.yml" <<'EOF'
 name: Example
@@ -32,9 +33,10 @@ jobs:
         run: |
           set -euo pipefail
           GIT=/usr/bin/git
+          BASE64=/usr/bin/base64
           "$GIT" -c core.hooksPath=/dev/null config user.name "bot"
           "$GIT" -c core.hooksPath=/dev/null commit -am "msg"
-          AUTH_HEADER="AUTHORIZATION: basic secret"
+          AUTH_HEADER="AUTHORIZATION: basic $(printf 'x:%s' "$GH_PAT" | "$BASE64" -w0)"
           "$GIT" -c core.hooksPath=/dev/null \
             -c http.https://github.com/.extraheader="$AUTH_HEADER" \
             push origin "HEAD:$PR_HEAD_REF"
@@ -106,6 +108,66 @@ EOF
   run "$CHECK" --workflow "$TMP_WF/wf.yml"
   [ "$status" -ne 0 ]
   [[ "$output" == *"repository script"* ]]
+}
+
+@test "fails when base64 is not pinned to an absolute path" {
+  cat >"$TMP_WF/wf.yml" <<'EOF'
+name: Example
+jobs:
+  push:
+    steps:
+      - name: Commit and push
+        env:
+          GH_PAT: ${{ secrets.ACTIONS_PUSH || secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          GIT=/usr/bin/git
+          AUTH_HEADER="basic $(printf 'x:%s' "$GH_PAT" | base64 -w0)"
+          "$GIT" -c core.hooksPath=/dev/null push origin HEAD:main
+EOF
+  run "$CHECK" --workflow "$TMP_WF/wf.yml"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"pin base64"* ]]
+}
+
+@test "fails when base64 is pinned but still invoked bare" {
+  cat >"$TMP_WF/wf.yml" <<'EOF'
+name: Example
+jobs:
+  push:
+    steps:
+      - name: Commit and push
+        env:
+          GH_PAT: ${{ secrets.ACTIONS_PUSH || secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          GIT=/usr/bin/git
+          BASE64=/usr/bin/base64
+          AUTH_HEADER="basic $(printf 'x:%s' "$GH_PAT" | base64 -w0)"
+          "$GIT" -c core.hooksPath=/dev/null push origin HEAD:main
+EOF
+  run "$CHECK" --workflow "$TMP_WF/wf.yml"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"bare 'base64'"* ]]
+}
+
+@test "passes when the PAT-bearing step never uses base64" {
+  cat >"$TMP_WF/wf.yml" <<'EOF'
+name: Example
+jobs:
+  push:
+    steps:
+      - name: Commit and push
+        env:
+          GH_PAT: ${{ secrets.ACTIONS_PUSH || secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          GIT=/usr/bin/git
+          "$GIT" -c core.hooksPath=/dev/null push origin HEAD:main
+EOF
+  run "$CHECK" --workflow "$TMP_WF/wf.yml"
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"FAIL"* ]]
 }
 
 @test "fails when no step binds GH_PAT to ACTIONS_PUSH" {

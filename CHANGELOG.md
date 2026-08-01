@@ -15,6 +15,19 @@ section to the released version with its date.
 
 ## [Unreleased]
 
+### Security
+
+- **PAT-bearing push steps hardened against in-job poisoning (Issue #497).**
+  `auto-format.yml` and `version-increment.yml` run a script checked out from
+  the PR head branch before the step that holds the org-level `ACTIONS_PUSH`
+  PAT. That earlier step could append a `PATH` override to `$GITHUB_ENV` or
+  plant `.git/hooks/pre-commit`, either of which would execute with `$GH_PAT`
+  in scope. Both push steps now pin `git` and `base64` to absolute paths, pass
+  `-c core.hooksPath=/dev/null` on every git invocation, and run no repository
+  script (the auto-format commit message moved to a step output). Enforced by
+  `scripts/check-push-step-hardening.sh` from `quality.sh` and CI. Defence in
+  depth only — scoping the credential itself needs an org admin (Issue #498).
+
 ### Changed
 
 - **The `rust_scorer` binary now links the library instead of recompiling it

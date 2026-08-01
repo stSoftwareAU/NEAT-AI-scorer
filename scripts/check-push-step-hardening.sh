@@ -19,6 +19,9 @@
 #      repository hooks never execute with the PAT in scope.
 #   4. The block executes no repository script (`./scripts/...`), which would
 #      hand the PAT straight to PR-head code.
+#   5. `base64` is likewise pinned to an absolute path (`BASE64=/usr/bin/base64`)
+#      and never invoked bare: it is piped the PAT on stdin when the auth
+#      header is built, so a planted `base64` reads the credential directly.
 #
 # See GitHub's security-hardening guidance on limiting the scope of
 # credentials available to workflow-executed code.
@@ -112,6 +115,12 @@ BARE_GIT = re.compile(r"""(?:^|[;&|(]\s*|\$\(\s*|`\s*)git\s""")
 SAFE_GIT = re.compile(r"""["']?\$\{?GIT\}?["']?\s""")
 HOOKS_OFF = re.compile(r"-c\s+core\.hooksPath=/dev/null")
 REPO_SCRIPT = re.compile(r"\./scripts/")
+# Derived from the git patterns rather than re-spelt: identical rules, and it
+# keeps this heredoc free of extra quote/paren/backtick tokens (bash 3.2 scans
+# the body of a $(...) command substitution for those).
+ABS_BASE64 = re.compile(ABS_GIT.pattern.replace("GIT", "BASE64").replace("bin/git", "bin/base64"))
+BARE_BASE64 = re.compile(BARE_GIT.pattern.replace("git", "base64"))
+USES_BASE64 = re.compile(r"\bbase64\b")
 
 results = []
 
@@ -216,6 +225,27 @@ for idx, line in enumerate(lines):
             )
         else:
             report("ok", lineno, "every \"$GIT\" invocation disables repository hooks")
+
+    # base64 is only reached when the step builds the auth header itself; a
+    # step that never mentions it has nothing to pin.
+    if any(USES_BASE64.search(c) for c in cmds):
+        bare_b64 = [c for c in cmds if BARE_BASE64.search(c)]
+        if not any(ABS_BASE64.match(raw) for raw in body):
+            report(
+                "fail",
+                lineno,
+                "PAT-bearing step must pin base64 to an absolute path "
+                "(BASE64=/usr/bin/base64) — it is piped $GH_PAT on stdin, so a "
+                "planted base64 reached through an overridden PATH reads the PAT",
+            )
+        elif bare_b64:
+            report(
+                "fail",
+                lineno,
+                f"bare 'base64' invocation must use \"$BASE64\": {bare_b64[0]}",
+            )
+        else:
+            report("ok", lineno, "pins base64 to an absolute path (BASE64=/usr/bin/base64)")
 
     scripted = [c for c in cmds if REPO_SCRIPT.search(c)]
     if scripted:
