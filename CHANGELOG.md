@@ -15,6 +15,17 @@ section to the released version with its date.
 
 ## [Unreleased]
 
+### Changed
+
+- **Acknowledged the neat-core 0.5.0 → 0.8.1 breaking bumps (Issue #252 gate).**
+  neat-core removed three dead WASM/SIMD surfaces —
+  `apply_derivative_simd_4way` / `derivative_batch_4way` (0.6.0),
+  `apply_calculate_error_batch_4way` / `calculate_error_batch_4way` (0.7.0) and
+  the unbound `get_training_state_num_*` exports (0.8.0). `rust_scorer`
+  referenced none of them, so no scorer code change was required;
+  `neat-core.expected-version` is bumped to `0.8.1` with the per-version
+  rationale recorded inline.
+
 ### Security
 
 - **PAT-bearing push steps hardened against in-job poisoning (Issue #497).**

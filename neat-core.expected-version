@@ -25,4 +25,21 @@
 # Verified by a clean `cargo build -p rust_scorer` and the full scorer test
 # suite (335 tests) passing against the sibling neat-core at 0.5.0, plus a
 # repo-wide grep confirming no remaining reference to any removed symbol.
-0.5.0
+#
+# 0.5.0 -> 0.8.1: acknowledge the three breaking bumps neat-core has presented
+# since 0.5.0. All three are dead-code removals from the WASM/SIMD surface that
+# rust_scorer does not consume:
+#   * 0.6.0 — neat-core #422 removed `apply_derivative_simd_4way` and the
+#     `derivative_batch_4way` WASM export; call `apply_derivative` per lane for
+#     identical numerics. scorer never referenced either.
+#   * 0.7.0 — neat-core #423 removed `apply_calculate_error_batch_4way` and the
+#     `calculate_error_batch_4way` WASM export; scorer never referenced either.
+#   * 0.8.0 — neat-core #416 removed the unbound training-state WASM exports
+#     `get_training_state_num_synapses` / `get_training_state_num_neurons`;
+#     scorer never referenced them.
+# 0.8.1 is patch-level (neat-core #442 safe-zone refactor, #476 batch-parity
+# fix) and carries no API change. Verified by a clean `cargo build -p
+# rust_scorer` and the full scorer test suite (303 tests) passing against the
+# sibling neat-core at 0.8.1, plus a repo-wide grep confirming no reference to
+# any removed symbol.
+0.8.1
