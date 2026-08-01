@@ -879,6 +879,37 @@ message live in `scripts/auto-format.sh` and are covered by
 `scripts/check-auto-format-workflow.sh` (invoked from `quality.sh`). The same
 `ACTIONS_PUSH` push token pattern applies here (Issue #435).
 
+#### Hardened PAT-bearing push steps (Issue #497)
+
+Both bot-push jobs execute scripts checked out from the **PR head branch**
+before the step that holds the org-level `ACTIONS_PUSH` PAT in its
+environment. Within a single job the earlier, attacker-editable step can
+poison the later one — append a `PATH` override to `$GITHUB_ENV` so `git`
+resolves to a planted binary, or write a `.git/hooks/pre-commit` that runs
+with `$GH_PAT` in scope. The fork guard keeps forks out, so the reachable
+population is same-repo branch pushers; that is still an escalation from
+single-repo write access to the PAT's full organisation scope.
+
+```mermaid
+flowchart LR
+    A[PR-head script step] -->|PATH override / planted hook| B[push step holding $GH_PAT]
+    B --> C[org PAT exfiltrated]
+    D["GIT=/usr/bin/git"] -->|absolute path| E[push step]
+    F["-c core.hooksPath=/dev/null"] -->|hooks disabled| E
+    G[no ./scripts in the PAT step] -->|no PR-head code beside the PAT| E
+    E --> H[PAT stays in the step]
+```
+
+Each push step therefore pins `GIT=/usr/bin/git`, passes
+`-c core.hooksPath=/dev/null` on every invocation, and resolves the commit
+message in an earlier step so no repository script runs alongside `$GH_PAT`.
+This is defence in depth, not a closed window — the durable fix is to scope
+the credential itself (a short-lived GitHub App installation token, or a
+fine-grained PAT limited to this repository), which needs an organisation
+admin to mint (tracked in Issue #498). The hardening is validated by
+`scripts/check-push-step-hardening.sh` (invoked from `quality.sh` and from the
+CI `bats` suite) and covered by `tests/scripts/push_step_hardening.bats`.
+
 A standalone Cargo Security Audit workflow (`.github/workflows/cargo-audit.yml`,
 Issue #64) runs a prebuilt `cargo audit` on every PR (against `*` and
 `milestone/**`) and adds a weekly cron schedule (`0 6 * * 1`) plus

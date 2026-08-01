@@ -65,6 +65,9 @@ jobs:
           set -euo pipefail
           cargo fmt --all
 
+      # Resolve the commit message here, not in the push step below: the
+      # helper is PR-head code, so running it alongside $GH_PAT would hand
+      # the org PAT straight to an attacker-editable script (Issue #497).
       - name: Detect formatting changes
         id: detect
         run: |
@@ -74,6 +77,11 @@ jobs:
           else
             echo "changed=false" >>"$GITHUB_OUTPUT"
           fi
+          {
+            echo "commit_message<<AUTO_FORMAT_COMMIT_MESSAGE_EOF"
+            ./scripts/auto-format.sh --commit-message
+            echo "AUTO_FORMAT_COMMIT_MESSAGE_EOF"
+          } >>"$GITHUB_OUTPUT"
 
       # Push with the org-level ACTIONS_PUSH PAT so the resulting
       # `synchronize` event is attributed to a trusted identity and PR
@@ -82,17 +90,26 @@ jobs:
       # GITHUB_TOKEN only when the secret is unset. The PAT is passed via
       # env + a per-command extraheader so it never lives in `.git/config`
       # (mirrors NEAT-AI update-package-version.yml).
+      #
+      # Earlier steps in this job run PR-head code, so this step is hardened
+      # against in-job poisoning of the PAT (Issue #497): git is pinned to an
+      # absolute path (immune to a $GITHUB_ENV PATH override), every
+      # invocation disables repository hooks (a planted `.git/hooks/pre-commit`
+      # would otherwise run with $GH_PAT in scope), and no repository script
+      # is executed here. Enforced by `scripts/check-push-step-hardening.sh`.
       - name: Commit and push rustfmt fixes
         if: steps.detect.outputs.changed == 'true'
         env:
           PR_HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          COMMIT_MESSAGE: ${{ steps.detect.outputs.commit_message }}
           GH_PAT: ${{ secrets.ACTIONS_PUSH || secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          msg="$(./scripts/auto-format.sh --commit-message)"
-          git commit -am "$msg"
+          GIT=/usr/bin/git
+          "$GIT" -c core.hooksPath=/dev/null config user.name "github-actions[bot]"
+          "$GIT" -c core.hooksPath=/dev/null config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          "$GIT" -c core.hooksPath=/dev/null commit -am "$COMMIT_MESSAGE"
           AUTH_HEADER="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GH_PAT" | base64 -w0)"
-          git -c http.https://github.com/.extraheader="$AUTH_HEADER" \
+          "$GIT" -c core.hooksPath=/dev/null \
+            -c http.https://github.com/.extraheader="$AUTH_HEADER" \
             push origin "HEAD:$PR_HEAD_REF"

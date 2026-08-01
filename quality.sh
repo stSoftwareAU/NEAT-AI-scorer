@@ -96,6 +96,9 @@ echo "🪄 Validating auto-format PR workflow (Issue #19)..."
 echo "🔑 Validating bot-push workflows use ACTIONS_PUSH (Issue #435)..."
 ./scripts/check-bot-push-token.sh
 
+echo "🛡️  Validating PAT-bearing push steps resist in-job poisoning (Issue #497)..."
+./scripts/check-push-step-hardening.sh
+
 echo "🧭 Validating CI job dependency graph (Issue #23)..."
 ./scripts/check-ci-job-graph.sh
 
