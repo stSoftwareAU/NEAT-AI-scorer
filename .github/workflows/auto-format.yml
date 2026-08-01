@@ -38,6 +38,13 @@ jobs:
     # Skip forks — neither GITHUB_TOKEN nor ACTIONS_PUSH can push to a
     # fork's branch. Formatting on fork PRs is the author's responsibility.
     if: github.event.pull_request.head.repo.full_name == github.repository
+    env:
+      # The `secrets` context is unavailable in a step-level `if:`, so the
+      # push App's configured/not-configured state is hoisted to a job-level
+      # env flag (Issue #498). Until an organisation admin creates the App and
+      # stores its secrets this is 'false': the mint step is skipped and the
+      # push falls back to ACTIONS_PUSH / GITHUB_TOKEN.
+      PUSH_APP_CONFIGURED: ${{ secrets.ACTIONS_PUSH_APP_CLIENT_ID != '' && secrets.ACTIONS_PUSH_APP_PRIVATE_KEY != '' }}
 
     steps:
       - name: Checkout PR branch
@@ -83,13 +90,30 @@ jobs:
             echo "AUTO_FORMAT_COMMIT_MESSAGE_EOF"
           } >>"$GITHUB_OUTPUT"
 
-      # Push with the org-level ACTIONS_PUSH PAT so the resulting
-      # `synchronize` event is attributed to a trusted identity and PR
-      # checks run without the "Awaiting approval / Approve and run" gate
-      # that GITHUB_TOKEN bot pushes create (Issue #435). Fall back to
-      # GITHUB_TOKEN only when the secret is unset. The PAT is passed via
-      # env + a per-command extraheader so it never lives in `.git/config`
-      # (mirrors NEAT-AI update-package-version.yml).
+      # Mint a short-lived installation token scoped to `contents: write` on
+      # THIS repository only (Issue #498). It expires within the hour and the
+      # action's post step revokes it, so a token that leaks reaches nothing
+      # beyond this repository — unlike the long-lived organisation-level
+      # ACTIONS_PUSH PAT, which carries write access to every org repo. The
+      # push stays attributed to a trusted non-GITHUB_TOKEN identity, so the
+      # Issue #435 behaviour is preserved.
+      - name: Mint repo-scoped push token
+        id: push-token
+        if: steps.detect.outputs.changed == 'true' && env.PUSH_APP_CONFIGURED == 'true'
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1  # v3
+        with:
+          client-id: ${{ secrets.ACTIONS_PUSH_APP_CLIENT_ID }}
+          private-key: ${{ secrets.ACTIONS_PUSH_APP_PRIVATE_KEY }}
+          repositories: ${{ github.event.repository.name }}
+          permission-contents: write
+
+      # Push with the minted repo-scoped token, falling back to the org-level
+      # ACTIONS_PUSH PAT (then GITHUB_TOKEN) until the App exists, so the
+      # resulting `synchronize` event is attributed to a trusted identity and
+      # PR checks run without the "Awaiting approval / Approve and run" gate
+      # that GITHUB_TOKEN bot pushes create (Issue #435). The credential is
+      # passed via env + a per-command extraheader so it never lives in
+      # `.git/config` (mirrors NEAT-AI update-package-version.yml).
       #
       # Earlier steps in this job run PR-head code, so this step is hardened
       # against in-job poisoning of the PAT (Issue #497): git and base64 are
@@ -103,7 +127,7 @@ jobs:
         env:
           PR_HEAD_REF: ${{ github.event.pull_request.head.ref }}
           COMMIT_MESSAGE: ${{ steps.detect.outputs.commit_message }}
-          GH_PAT: ${{ secrets.ACTIONS_PUSH || secrets.GITHUB_TOKEN }}
+          GH_PAT: ${{ steps.push-token.outputs.token || secrets.ACTIONS_PUSH || secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           GIT=/usr/bin/git
