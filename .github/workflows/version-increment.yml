@@ -128,6 +128,14 @@ jobs:
       # GITHUB_TOKEN only when the secret is unset. The PAT is passed via
       # env + a per-command extraheader so it never lives in `.git/config`
       # (mirrors NEAT-AI update-package-version.yml).
+      #
+      # Earlier steps in this job run PR-head code, so this step is hardened
+      # against in-job poisoning of the PAT (Issue #497): git and base64 are
+      # pinned to absolute paths (immune to a $GITHUB_ENV PATH override —
+      # base64 is piped $GH_PAT on stdin), every git invocation disables
+      # repository hooks (a planted `.git/hooks/pre-commit` would otherwise run
+      # with $GH_PAT in scope), and no repository script is executed here.
+      # Enforced by `scripts/check-push-step-hardening.sh`.
       - name: Commit and push bump
         if: steps.bump.outputs.changed == 'true'
         env:
@@ -136,12 +144,15 @@ jobs:
           GH_PAT: ${{ secrets.ACTIONS_PUSH || secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add rust_scorer/Cargo.toml
-          git commit -m "chore: auto-bump rust_scorer version to ${NEXT_VERSION}
+          GIT=/usr/bin/git
+          BASE64=/usr/bin/base64
+          "$GIT" -c core.hooksPath=/dev/null config user.name "github-actions[bot]"
+          "$GIT" -c core.hooksPath=/dev/null config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          "$GIT" -c core.hooksPath=/dev/null add rust_scorer/Cargo.toml
+          "$GIT" -c core.hooksPath=/dev/null commit -m "chore: auto-bump rust_scorer version to ${NEXT_VERSION}
 
           Closes part of #20 — guarded auto-version increment."
-          AUTH_HEADER="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GH_PAT" | base64 -w0)"
-          git -c http.https://github.com/.extraheader="$AUTH_HEADER" \
+          AUTH_HEADER="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GH_PAT" | "$BASE64" -w0)"
+          "$GIT" -c core.hooksPath=/dev/null \
+            -c http.https://github.com/.extraheader="$AUTH_HEADER" \
             push origin "HEAD:$PR_HEAD_REF"

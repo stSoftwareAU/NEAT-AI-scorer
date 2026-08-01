@@ -17,6 +17,30 @@ section to the released version with its date.
 
 ### Changed
 
+- **Acknowledged the neat-core 0.5.0 → 0.8.1 breaking bumps (Issue #252 gate).**
+  neat-core removed three dead WASM/SIMD surfaces —
+  `apply_derivative_simd_4way` / `derivative_batch_4way` (0.6.0),
+  `apply_calculate_error_batch_4way` / `calculate_error_batch_4way` (0.7.0) and
+  the unbound `get_training_state_num_*` exports (0.8.0). `rust_scorer`
+  referenced none of them, so no scorer code change was required;
+  `neat-core.expected-version` is bumped to `0.8.1` with the per-version
+  rationale recorded inline.
+
+### Security
+
+- **PAT-bearing push steps hardened against in-job poisoning (Issue #497).**
+  `auto-format.yml` and `version-increment.yml` run a script checked out from
+  the PR head branch before the step that holds the org-level `ACTIONS_PUSH`
+  PAT. That earlier step could append a `PATH` override to `$GITHUB_ENV` or
+  plant `.git/hooks/pre-commit`, either of which would execute with `$GH_PAT`
+  in scope. Both push steps now pin `git` and `base64` to absolute paths, pass
+  `-c core.hooksPath=/dev/null` on every git invocation, and run no repository
+  script (the auto-format commit message moved to a step output). Enforced by
+  `scripts/check-push-step-hardening.sh` from `quality.sh` and CI. Defence in
+  depth only — scoping the credential itself needs an org admin (Issue #498).
+
+### Changed
+
 - **The `rust_scorer` binary now links the library instead of recompiling it
   (Issue #475).** `src/main.rs` declared its own `mod` tree, so the bin target
   built a second, independent copy of every module — the shipped binary could
