@@ -865,9 +865,9 @@ the patch component once and pushes that commit back to the PR branch. A
 re-run of CI — or a human-authored bump on the same branch — short-circuits
 the job, so no duplicate bump commits are produced. The underlying logic
 lives in `scripts/version-increment.sh` and is covered by
-`tests/scripts/version_increment.bats`. Bot pushes authenticate with the
-org-level `ACTIONS_PUSH` PAT (falling back to `GITHUB_TOKEN` when unset) so
-the follow-on PR checks run without an "Approve and run" gate (Issue #435).
+`tests/scripts/version_increment.bats`. Bot pushes authenticate with a
+short-lived repo-scoped installation token (see below) so the follow-on PR
+checks run without an "Approve and run" gate (Issue #435).
 
 PRs also run an auto-format job (`.github/workflows/auto-format.yml`,
 Issue #19). The job runs `cargo fmt --all` on the PR branch; if the working
@@ -877,7 +877,47 @@ re-running on a clean branch is a no-op. Change detection and the commit
 message live in `scripts/auto-format.sh` and are covered by
 `tests/scripts/auto_format.bats`; the workflow itself is validated by
 `scripts/check-auto-format-workflow.sh` (invoked from `quality.sh`). The same
-`ACTIONS_PUSH` push token pattern applies here (Issue #435).
+bot-push token pattern applies here (Issue #435).
+
+#### Bot-push credential — repo-scoped installation token (Issue #498)
+
+Both bot-push jobs mint their push credential per run with
+`actions/create-github-app-token` (SHA-pinned, `# v3`): a GitHub App
+installation token narrowed to `permission-contents: write` on **this
+repository only**, expiring within the hour and revoked by the action's post
+step. That replaces the organisation-level `ACTIONS_PUSH` PAT as the primary
+credential — the PAT is long-lived and org-scoped, so anything that reached it
+stepped up from single-repo write access to write access on every repository
+in the organisation. Pushes stay attributed to a trusted non-`GITHUB_TOKEN`
+identity, so the Issue #435 "Approve and run" behaviour is unchanged.
+
+```mermaid
+flowchart LR
+    A[PR push] --> B{"App secrets set?"}
+    B -->|yes| C["Mint installation token<br/>contents: write, this repo, &lt;1h"]
+    B -->|no| D["Fallback:<br/>ACTIONS_PUSH PAT → GITHUB_TOKEN"]
+    C --> E[Commit and push step]
+    D --> E
+    E --> F["synchronize event —<br/>PR checks run unblocked"]
+    C -.->|post step| G[Token revoked]
+```
+
+The App requires an organisation admin to create it and store two secrets:
+
+| Secret                          | Value                                        |
+| ------------------------------- | -------------------------------------------- |
+| `ACTIONS_PUSH_APP_CLIENT_ID`    | The App's client ID                           |
+| `ACTIONS_PUSH_APP_PRIVATE_KEY`  | The App's PEM private key                     |
+
+Install the App on this repository only, with the `Contents: Read and write`
+repository permission. Until both secrets exist the job-level
+`PUSH_APP_CONFIGURED` flag is `false`, the mint step is skipped, and the push
+falls back to `secrets.ACTIONS_PUSH || secrets.GITHUB_TOKEN` — so the
+workflows keep working unchanged in the meantime. A fine-grained PAT limited
+to this single repository, stored as `ACTIONS_PUSH`, is the lower-effort
+alternative to the App. The policy is validated by
+`scripts/check-bot-push-token.sh` (invoked from `quality.sh`) and covered by
+`tests/scripts/bot_push_token.bats`.
 
 #### Hardened PAT-bearing push steps (Issue #497)
 
@@ -906,9 +946,10 @@ the same hijack vector as `git`), passes `-c core.hooksPath=/dev/null` on every
 git invocation, and resolves the commit message in an earlier step so no
 repository script runs alongside `$GH_PAT`.
 This is defence in depth, not a closed window — the durable fix is to scope
-the credential itself (a short-lived GitHub App installation token, or a
-fine-grained PAT limited to this repository), which needs an organisation
-admin to mint (tracked in Issue #498). The hardening is validated by
+the credential itself, which Issue #498 does above: once the App secrets are
+in place the credential in `$GH_PAT` is a repo-scoped token that expires
+within the hour, so exfiltrating it no longer reaches other organisation
+repositories. The hardening is validated by
 `scripts/check-push-step-hardening.sh` (invoked from `quality.sh` and from the
 CI `bats` suite) and covered by `tests/scripts/push_step_hardening.bats`.
 

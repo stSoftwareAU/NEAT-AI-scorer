@@ -131,6 +131,10 @@ lookup_policy() {
     # taiki-e/install-action installs prebuilt cargo tool binaries (Issue
     # #208), replacing source compiles. The v2 line ships a Node 24 runtime.
     taiki-e/install-action)           echo "required:2" ;;
+    # actions/create-github-app-token mints the short-lived repo-scoped bot
+    # push token (Issue #498). The v3 line ships a Node 24 runtime and takes
+    # the non-deprecated `client-id` input.
+    actions/create-github-app-token) echo "required:3" ;;
     # dtolnay/rust-toolchain is a composite/shell action. No Node runtime,
     # so the Node 24 deprecation does not apply.
     dtolnay/rust-toolchain)           echo "no-node" ;;
