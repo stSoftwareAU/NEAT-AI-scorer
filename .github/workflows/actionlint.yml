@@ -65,6 +65,7 @@ jobs:
 
       - name: Install actionlint
         run: |
+          set -euo pipefail
           curl -fsSL -o download-actionlint.bash \
             "https://raw.githubusercontent.com/rhysd/actionlint/v${ACTIONLINT_VERSION}/scripts/download-actionlint.bash"
           bash download-actionlint.bash "${ACTIONLINT_VERSION}"

@@ -83,6 +83,7 @@ jobs:
 
       - name: Run clippy
         run: |
+          set -euo pipefail
           cargo clippy --all-targets --all-features -- \
             -D warnings \
             -D clippy::filter_next \
