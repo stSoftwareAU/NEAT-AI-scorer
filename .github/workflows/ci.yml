@@ -129,6 +129,7 @@ jobs:
 
       - name: Run linter
         run: |
+          set -euo pipefail
           cargo clippy --all-targets --all-features -- \
             -D warnings \
             -D clippy::filter_next \
@@ -145,6 +146,7 @@ jobs:
 
       - name: Clean intermediate artefacts before tests
         run: |
+          set -euo pipefail
           df -h /
           find target -name "incremental" -type d -exec rm -rf {} + 2>/dev/null || true
           find target -name ".fingerprint" -type d -exec rm -rf {} + 2>/dev/null || true
@@ -208,6 +210,7 @@ jobs:
 
       - name: Check for required files
         run: |
+          set -euo pipefail
           required_files=(
             "Cargo.toml"
             "README.md"
@@ -313,6 +316,7 @@ jobs:
 
       - name: Run bash helper tests (bats)
         run: |
+          set -euo pipefail
           if [ -d "tests/scripts" ]; then
             bats tests/scripts
           fi
