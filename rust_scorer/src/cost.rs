@@ -14,36 +14,16 @@
 //! KISS: there is **no** environment-variable override. Unknown values are
 //! rejected at the clap layer with a non-zero exit and a stderr message
 //! listing the supported set.
+//!
+//! Issue #502: parsing is clap's [`ValueEnum`] derive and nothing else. The
+//! hand-rolled `CostKind::from_cli` parser (and its `InvalidCostName` error)
+//! became dead after the Issue #475 restructure wired `--cost` to
+//! `#[arg(long, value_enum, …)]`, and has been removed — the tests that pinned
+//! the upstream cost-name parity now exercise `CostKind::from_str`, the parser
+//! production actually uses.
 
 use clap::ValueEnum;
 use neat_core::network::CompiledNetwork;
-
-/// Typed error returned by [`CostKind::from_cli`] when a raw CLI value does not
-/// match one of the built-in cost names (Issue #289, C-GOOD-ERR).
-///
-/// Replaces the previous `Result<_, String>` contract so callers can react to
-/// the failure programmatically and compose it into their own
-/// `std::error::Error` chains. Hand-rolls `Display`/`Error` following the
-/// existing [`crate::gpu::GpuInitError`] pattern; the `Display` text is
-/// preserved byte-for-byte from the old `format!(...)` message.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct InvalidCostName {
-    /// The rejected raw CLI value.
-    pub value: String,
-}
-
-impl std::fmt::Display for InvalidCostName {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "Invalid cost '{}': expected one of {}",
-            self.value,
-            supported_list(),
-        )
-    }
-}
-
-impl std::error::Error for InvalidCostName {}
 
 /// Built-in NEAT-AI cost function selector.
 ///
@@ -105,37 +85,6 @@ impl CostKind {
             Self::CrossEntropy => "CROSS_ENTROPY",
             Self::CategoricalError => "CATEGORICAL_ERROR",
         }
-    }
-
-    /// Validate a raw CLI string and return the matching [`CostKind`].
-    ///
-    /// Centralises validation so unit tests can exercise the accept/reject
-    /// logic without going through clap's argv parser. The error message
-    /// lists every supported name in the TypeScript order to match the
-    /// `--help` output.
-    ///
-    /// Returns `Err` (with a message listing the supported names) when `raw`
-    /// does not exactly match one of the `BUILT_IN_COST_NAMES` strings.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use rust_scorer::cost::CostKind;
-    /// assert_eq!(CostKind::from_cli("MSE").unwrap(), CostKind::Mse);
-    /// assert!(CostKind::from_cli("FOO").is_err());
-    /// ```
-    pub fn from_cli(raw: &str) -> Result<Self, InvalidCostName> {
-        // Exact-match parsing — the TypeScript names are upper-case, so we
-        // do not normalise case. This keeps the CLI contract aligned with
-        // what `NeatOptions.costName` will pass through.
-        for variant in Self::value_variants() {
-            if variant.as_str() == raw {
-                return Ok(*variant);
-            }
-        }
-        Err(InvalidCostName {
-            value: raw.to_string(),
-        })
     }
 }
 
@@ -329,26 +278,17 @@ pub fn accumulate_cost_sum(
     })
 }
 
-/// Comma-separated list of supported cost names in TypeScript order
-/// (matches `BUILT_IN_COST_NAMES`). Used to build the error message
-/// returned by [`CostKind::from_cli`] when a value is rejected.
-fn supported_list() -> String {
-    CostKind::value_variants()
-        .iter()
-        .map(|v| v.as_str())
-        .collect::<Vec<_>>()
-        .join(", ")
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use clap::ValueEnum;
 
-    /// Every TypeScript `BUILT_IN_COST_NAMES` entry must parse via `from_cli`.
-    /// This pins the CLI contract against the upstream cost-name set.
+    /// Every TypeScript `BUILT_IN_COST_NAMES` entry must parse via the clap
+    /// `ValueEnum` parser production uses. This pins the CLI contract against
+    /// the upstream cost-name set (Issue #502 moved it off the removed
+    /// `from_cli` helper).
     #[test]
-    fn from_cli_accepts_every_built_in_cost_name() {
+    fn value_enum_accepts_every_built_in_cost_name() {
         for name in [
             "MSE",
             "MAE",
@@ -358,74 +298,38 @@ mod tests {
             "CROSS_ENTROPY",
             "CATEGORICAL_ERROR",
         ] {
-            let parsed = CostKind::from_cli(name)
+            let parsed = CostKind::from_str(name, false)
                 .unwrap_or_else(|e| panic!("expected '{name}' to parse, got error: {e}"));
             assert_eq!(parsed.as_str(), name);
         }
     }
 
-    /// Unknown cost names must be rejected with a helpful message listing
-    /// the supported set.
+    /// Unknown cost names must be rejected, echoing the bad value. The
+    /// "stderr lists the whole supported set" half of the contract lives at
+    /// the clap layer and is asserted end-to-end by
+    /// `tests/scorer_smoke.rs::scorer_binary_rejects_unknown_cost`.
     #[test]
-    fn from_cli_rejects_unknown_cost_name() {
-        // Issue #289: `from_cli` now returns the typed `InvalidCostName`; assert
-        // on its `Display` text so the historical message contract is preserved.
-        let err = CostKind::from_cli("FOO")
-            .expect_err("FOO must be rejected")
-            .to_string();
+    fn value_enum_rejects_unknown_cost_name() {
+        let err = CostKind::from_str("FOO", false).expect_err("FOO must be rejected");
         assert!(
             err.contains("FOO"),
             "error must echo the bad value, got: {err}"
         );
-        for name in [
-            "MSE",
-            "MAE",
-            "MAPE",
-            "MSLE",
-            "HINGE",
-            "CROSS_ENTROPY",
-            "CATEGORICAL_ERROR",
-        ] {
-            assert!(
-                err.contains(name),
-                "error must list supported cost '{name}', got: {err}"
-            );
-        }
     }
 
     /// Case-mismatched names must be rejected — the TS `BUILT_IN_COST_NAMES`
-    /// strings are upper-case and the CLI contract is exact.
+    /// strings are upper-case and the CLI contract is exact (`ignore_case =
+    /// false`).
     #[test]
-    fn from_cli_rejects_case_mismatch() {
-        assert!(CostKind::from_cli("mse").is_err());
-        assert!(CostKind::from_cli("Cross_Entropy").is_err());
+    fn value_enum_rejects_case_mismatch() {
+        assert!(CostKind::from_str("mse", false).is_err());
+        assert!(CostKind::from_str("Cross_Entropy", false).is_err());
     }
 
     /// Empty input is not a valid cost name.
     #[test]
-    fn from_cli_rejects_empty_string() {
-        assert!(CostKind::from_cli("").is_err());
-    }
-
-    /// Issue #289 (C-GOOD-ERR): `from_cli` returns a typed `InvalidCostName`
-    /// that exposes the rejected value as a field and composes into a caller's
-    /// `Box<dyn std::error::Error>` chain.
-    #[test]
-    fn from_cli_returns_typed_invalid_cost_name() {
-        let err = CostKind::from_cli("FOO").expect_err("FOO must be rejected");
-        assert_eq!(
-            err,
-            InvalidCostName {
-                value: "FOO".to_string()
-            }
-        );
-
-        fn caller() -> Result<CostKind, Box<dyn std::error::Error>> {
-            Ok(CostKind::from_cli("BAR")?)
-        }
-        let boxed = caller().unwrap_err();
-        assert!(boxed.to_string().contains("BAR"));
-        assert!(boxed.downcast_ref::<InvalidCostName>().is_some());
+    fn value_enum_rejects_empty_string() {
+        assert!(CostKind::from_str("", false).is_err());
     }
 
     /// The default must be MSE so the historical scoring behaviour is
@@ -561,17 +465,18 @@ mod tests {
         );
     }
 
-    /// Issue #339/#340: RMSE parses via `from_cli` and renders back as `RMSE`.
+    /// Issue #339/#340: RMSE parses via the clap `ValueEnum` parser and renders
+    /// back as `RMSE`.
     /// As of Issue #340 (`stSoftwareAU/NEAT-AI#3341`) `RMSE` is a first-class
     /// upstream `BUILT_IN_COST_NAMES` value; the dedicated
     /// [`cost_kind_stays_in_sync_with_upstream_built_in_cost_names`] drift test
     /// pins that both lists carry it.
     #[test]
-    fn from_cli_accepts_rmse() {
-        assert_eq!(CostKind::from_cli("RMSE").unwrap(), CostKind::Rmse);
+    fn value_enum_accepts_rmse() {
+        assert_eq!(CostKind::from_str("RMSE", false).unwrap(), CostKind::Rmse);
         assert_eq!(CostKind::Rmse.as_str(), "RMSE");
         // Case-sensitive, like the other names.
-        assert!(CostKind::from_cli("rmse").is_err());
+        assert!(CostKind::from_str("rmse", false).is_err());
     }
 
     /// Issue #340: the rust `CostKind` list is kept in sync with the upstream
@@ -582,8 +487,8 @@ mod tests {
     /// `stSoftwareAU/NEAT-AI#3341`. The test fails `cargo test` the moment the
     /// two lists drift — e.g. if `RMSE` (or any other built-in) is present on
     /// one side but dropped on the other: every mirrored name must parse via
-    /// [`CostKind::from_cli`] and render back byte-for-byte, so removing the
-    /// matching `CostKind` variant breaks the build.
+    /// the clap `ValueEnum` parser and render back byte-for-byte, so removing
+    /// the matching `CostKind` variant breaks the build.
     ///
     /// The rust side is a **superset**: `CATEGORICAL_ERROR` is a scorer/
     /// neat-core cost that is not in the upstream TS tuple, so this test only
@@ -610,7 +515,7 @@ mod tests {
         );
 
         for name in UPSTREAM_BUILT_IN_COST_NAMES {
-            let parsed = CostKind::from_cli(name).unwrap_or_else(|e| {
+            let parsed = CostKind::from_str(name, false).unwrap_or_else(|e| {
                 panic!("upstream cost '{name}' must map to a CostKind variant: {e}")
             });
             assert_eq!(
@@ -794,21 +699,21 @@ mod tests {
 
     /// Issue #120 explicitly forbids an environment-variable override.
     /// Encode that contract by asserting the env var is ignored: the
-    /// `from_cli` helper takes only the raw CLI value and never reads
+    /// `ValueEnum` parser takes only the raw CLI value and never reads
     /// process state, so setting `NEAT_SCORER_COST` cannot influence
     /// validation.
     #[test]
-    fn from_cli_ignores_env_var_override() {
+    fn value_enum_ignores_env_var_override() {
         // Safety: tests run in-process; setting an env var is benign here
-        // because `from_cli` never reads `std::env`.
+        // because the parser never reads `std::env`.
         // SAFETY: single-threaded test scope, no other reader observes the var.
         unsafe {
             std::env::set_var("NEAT_SCORER_COST", "MAE");
         }
-        // The helper still rejects unknown values regardless of env state.
-        assert!(CostKind::from_cli("FOO").is_err());
+        // The parser still rejects unknown values regardless of env state.
+        assert!(CostKind::from_str("FOO", false).is_err());
         // And it still returns exactly what the CLI string says.
-        assert_eq!(CostKind::from_cli("MSE").unwrap(), CostKind::Mse);
+        assert_eq!(CostKind::from_str("MSE", false).unwrap(), CostKind::Mse);
         // SAFETY: single-threaded test scope, no other reader observes the var.
         unsafe {
             std::env::remove_var("NEAT_SCORER_COST");
