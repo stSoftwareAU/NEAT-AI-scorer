@@ -1215,8 +1215,11 @@ BENCH_SCORING_BYTES=200000000 ./scripts/run-benches.sh
 Tunables (all optional): `BENCH_SCORING_BYTES`, `BENCH_SCORING_INPUTS`,
 `BENCH_SCORING_OUTPUTS`, `BENCH_SCORING_HIDDEN`. Recorded baselines and
 host-specific numbers live in [`docs/performance-baseline.md`](docs/performance-baseline.md).
-Per `AGENTS.md`, performance PRs without before/after Criterion evidence are
-rejected.
+Per the
+[Performance Task Workflow](CONTRIBUTING.md#performance-task-workflow) in
+`CONTRIBUTING.md`, performance PRs without before/after Criterion evidence are
+rejected, and a change that misses its acceptance bar is recorded as a
+`negative-result` on the issue instead of raised as a PR.
 
 ## How to flamegraph (Issue #37)
 
@@ -1347,7 +1350,9 @@ fixture the helper wrote to `target/pgo-fixture/`.
 
 Producing the PGO binary as a release artefact in CI requires committing a
 new workflow YAML, which the worker is not authorised to push (no
-`workflow` OAuth scope — see `AGENTS.md` "Human Escalation"). Run the
+`workflow` OAuth scope — see
+[Human escalation](CONTRIBUTING.md#human-escalation) in `CONTRIBUTING.md`).
+Run the
 helper locally for now, or have a maintainer wire `build-pgo.sh` into a
 manually triggered workflow under `.github/workflows/`.
 

@@ -2,7 +2,8 @@
 
 Establishes the Criterion baseline for the hot scoring paths so every later
 performance change can be validated with before/after evidence per the
-[Performance Task Workflow](../AGENTS.md). The bench source lives at
+[Performance Task Workflow](../CONTRIBUTING.md#performance-task-workflow). The
+bench source lives at
 [`rust_scorer/benches/scoring.rs`](../rust_scorer/benches/scoring.rs); reproduce
 the runs with [`scripts/run-benches.sh`](../scripts/run-benches.sh) or
 `cargo bench -p rust_scorer`.
@@ -1118,7 +1119,8 @@ follow-up.
    regressions are detected.
 3. When proposing a perf PR, paste the Criterion comparison output (or the
    before/after median + CI) into the PR summary. PRs without before/after
-   evidence are rejected per `AGENTS.md`.
+   evidence are rejected per the
+   [Performance Task Workflow](../CONTRIBUTING.md#performance-task-workflow).
 4. For a per-cost CPU refresh (Issue #124), build the bench bin and run it
    against any synthetic creature + `.bin` corpus:
 

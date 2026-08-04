@@ -273,7 +273,7 @@ table below.
 | `score_from_creature_dir/creatures/200` | (c) GPU offload | (c) ≥ 30 % over the post-(b) baseline. |
 
 A sub-issue that fails to clear its bar follows the
-[Performance Task Workflow](../AGENTS.md#performance-task-workflow): no PR,
+[Performance Task Workflow](../CONTRIBUTING.md#performance-task-workflow): no PR,
 post the negative-result numbers on the issue, label `negative-result`,
 close `not planned`.
 
