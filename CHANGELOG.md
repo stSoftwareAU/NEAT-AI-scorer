@@ -17,6 +17,18 @@ section to the released version with its date.
 
 ### Changed
 
+- **README "Output" section describes the shipped `gpuBackend` semantics
+  (Issue #507).** The section still said the field reported which `wgpu`
+  backend the scorer "would run on" (`"cpu-fallback"` "until GPU kernels
+  land"), contradicting the README's own "GPU mode" section and telling
+  readers GPU support had not shipped — kernels landed in Issues #82/#83/#182
+  and `--gpu auto` has been the default since #83. The paragraph now states
+  that the field reports the backend that **actually ran** the scoring kernel
+  and names every shipped label. New `scripts/check-gpu-backend-docs.sh` (run
+  from `quality.sh`, covered by `tests/scripts/gpu_backend_docs.bats`) derives
+  the labels from `GpuBackendLabel::as_str` and fails the gate if the section
+  loses the runtime semantics, omits a label, drops the cross-link to the GPU
+  mode section, or revives the stale wording.
 - **Dead `AGENTS.md` citations now point at a real home (Issue #505).** Four
   places cited `AGENTS.md` sections that never existed — a "Performance Task
   Workflow" and a "Human Escalation" section — so an agent following the
