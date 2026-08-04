@@ -1207,6 +1207,29 @@ covered end-to-end by `tests/scripts/workflow_action_versions.bats`.
 `quality.sh` invokes the script so any unpinned or outdated `uses:`
 reference fails the local gate before CI (Issues #24 and #100).
 
+Six per-workflow validators (`check-actionlint-workflow.sh`,
+`check-cargo-audit-workflow.sh`, `check-cargo-quality-workflow.sh`,
+`check-dependency-review-workflow.sh`, `check-markdown-lint-workflow.sh` and
+`check-sbom-workflow.sh`) additionally assert that their own workflow has a
+pinned `actions/checkout` step. That rule used to be an inline `grep` block in
+each script and had drifted into three generations of the same regex, so a
+future bump to a SHA starting with a hex letter would have failed two gates
+spuriously. Issue #511 extracted it into a single helper,
+`require_pinned_checkout`, in `scripts/lib/workflow-checks.sh` — the one place
+the acceptance rule (`vN` or a 40-character SHA, branch refs disallowed) now
+lives. The helper is covered by `tests/scripts/workflow_checks_lib.bats`.
+
+```mermaid
+flowchart LR
+    L["scripts/lib/workflow-checks.sh<br/>require_pinned_checkout"]
+    A[check-actionlint-workflow.sh] --> L
+    B[check-cargo-audit-workflow.sh] --> L
+    C[check-cargo-quality-workflow.sh] --> L
+    D[check-dependency-review-workflow.sh] --> L
+    E[check-markdown-lint-workflow.sh] --> L
+    F[check-sbom-workflow.sh] --> L
+```
+
 ## How to bench
 
 `rust_scorer` ships a Criterion suite (Issue #36) covering the forward-only

@@ -10,7 +10,8 @@
 #      permissions (e.g. `pull-requests: write`) are only required when
 #      enabling PR comment summaries, which the standalone workflow leaves
 #      to the reusable security workflow.
-#   3. Pin `actions/checkout` to a numeric major version (Node 24 policy).
+#   3. Pin `actions/checkout` to a numeric major version or a 40-char SHA
+#      (Node 24 policy).
 #   4. Invoke `actions/dependency-review-action`, also pinned to a numeric
 #      major (the version policy in
 #      `scripts/check-workflow-action-versions.sh` tracks the current
@@ -27,6 +28,17 @@
 # can exercise it against fixtures. When called with no argument it validates
 # `.github/workflows/dependency-review.yml` relative to the repo root.
 set -euo pipefail
+
+# Shared workflow-validation helpers (Issue #511) — the `actions/checkout` pin
+# rule lives in one place instead of six inline copies that drift apart.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+WORKFLOW_CHECKS_LIB="$SCRIPT_DIR/lib/workflow-checks.sh"
+if [[ ! -r "$WORKFLOW_CHECKS_LIB" ]]; then
+  echo "Missing shared helper: $WORKFLOW_CHECKS_LIB" >&2
+  exit 2
+fi
+# shellcheck source=lib/workflow-checks.sh disable=SC1091
+source "$WORKFLOW_CHECKS_LIB"
 
 usage() {
   cat <<'EOF'
@@ -63,7 +75,6 @@ while [[ $# -gt 0 ]]; do
 done
 
 if [[ -z "$WORKFLOW" ]]; then
-  SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
   WORKFLOW="$SCRIPT_DIR/../.github/workflows/dependency-review.yml"
 fi
 
@@ -97,16 +108,10 @@ else
   fail "no 'permissions: contents: read' block — least-privilege required"
 fi
 
-# 3. actions/checkout pinned to a numeric major (vN) or a 40-char SHA.
-# Branch refs (e.g. `@main`) disallowed.
-checkout_line="$(grep -nE 'uses:[[:space:]]*actions/checkout@' "$WORKFLOW" || true)"
-if [[ -z "$checkout_line" ]]; then
-  fail "actions/checkout step missing — workflow cannot fetch the repo"
-elif echo "$checkout_line" | grep -qE 'actions/checkout@(v[0-9]+|[0-9a-f]{40})\b'; then
-  ok "actions/checkout pinned to a numeric major or 40-char SHA"
-else
-  fail "actions/checkout is not pinned — branch refs disallowed"
-fi
+# 3. actions/checkout pinned to a numeric major (vN) or a 40-char SHA, via the
+# shared rule in scripts/lib/workflow-checks.sh (Issue #511). Branch refs
+# (e.g. `@main`) disallowed.
+require_pinned_checkout "$WORKFLOW"
 
 # 4. actions/dependency-review-action present and pinned to a numeric major
 # or a 40-char SHA. Issue #136 widened this from `v?[0-9]+` to also accept

@@ -106,6 +106,16 @@ PY
   [[ "$output" == *"not pinned"* ]]
 }
 
+@test "rejects an over-long hex checkout ref (Issue #511)" {
+  # The hybrid regex this validator used to carry had no `\b` anchor, so a
+  # 41-character ref matched on its first 40 characters and passed.
+  write_actionlint_workflow "$TMP_WF/actionlint.yml"
+  sed -i.bak 's|actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd  # v5|actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd0|' "$TMP_WF/actionlint.yml"
+  run "$SCRIPT_UNDER_TEST" --workflow "$TMP_WF/actionlint.yml"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"not pinned"* ]]
+}
+
 @test "fails when actions/checkout step is missing" {
   write_actionlint_workflow "$TMP_WF/actionlint.yml"
   sed -i.bak '/actions\/checkout/d' "$TMP_WF/actionlint.yml"
