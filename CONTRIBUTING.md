@@ -99,6 +99,68 @@ automatically bumps the patch component of `rust_scorer`'s version in
 branch. Because the version is bumped automatically, the `CHANGELOG.md` is
 the human-readable record of *what* changed — please keep it current.
 
+## Performance Task Workflow
+
+This section is the **single home** for the project's performance-change rules.
+The README ["How to bench"](./README.md#how-to-bench) section,
+[`docs/performance-baseline.md`](./docs/performance-baseline.md), and
+[`docs/gpu-scoring-design.md`](./docs/gpu-scoring-design.md) point here rather
+than restating them.
+
+1. **Benchmark first.** Record the baseline with
+   [`./scripts/run-benches.sh`](./scripts/run-benches.sh) *before* changing any
+   code. Acceptance evidence is captured at the documented corpus size —
+   `BENCH_SCORING_BYTES=200000000` (200 MB) — on the same host class as the
+   baseline recorded in
+   [`docs/performance-baseline.md`](./docs/performance-baseline.md).
+2. **Implement the change.**
+3. **Re-run the same benches** and record the after numbers: the median plus the
+   95 % confidence interval for every affected bench group.
+4. **Compare against the acceptance bar.** Only raise a PR when the change
+   demonstrably improves the measured metric against the bar its issue sets (the
+   per-bench bars for the GPU work are tabulated in
+   [`docs/gpu-scoring-design.md`](./docs/gpu-scoring-design.md)). The PR summary
+   MUST carry the before/after table. **Performance PRs without before/after
+   Criterion evidence are rejected.**
+5. **A miss is a negative result, not a failure.** A change that fails to clear
+   its bar raises **no PR**. Instead: post the before/after numbers on the
+   issue, explain what was tried and why it did not help, add the
+   `negative-result` label, and close the issue as `not planned`. Negative
+   results are first-class learnings — recording one stops the same experiment
+   being re-run.
+
+```mermaid
+flowchart LR
+    base[Record baseline<br/>run-benches.sh] --> impl[Implement change]
+    impl --> after[Re-run same benches]
+    after --> bar{Clears the<br/>acceptance bar?}
+    bar -- yes --> pr[PR with before/after table]
+    bar -- no --> neg[Post numbers on issue<br/>label negative-result<br/>close not planned]
+```
+
+## Human escalation
+
+Some changes cannot be finished by the automation worker and must be handed to a
+maintainer. This section is the **single home** for that contract.
+
+**Workflow YAML needs a maintainer.** The automation worker's credentials carry
+no `workflow` OAuth scope, so it cannot create or modify anything under
+[`.github/workflows/`](./.github/workflows). When a task needs new or changed
+workflow YAML:
+
+1. Land everything that does *not* need the workflow change — scripts, docs,
+   tests — in the normal PR.
+2. Spell out the wiring a maintainer must add (file, trigger, and the exact
+   command to run) in both the PR summary and the issue.
+3. Label the issue `needs-human` **and** post a comment saying why the label was
+   applied and what the maintainer must do next. The label and its explanation
+   always travel together — never one without the other.
+4. Stop. Do not retry the push.
+
+The same escalation applies to anything else only a human can do: credentials
+the worker does not hold, repository settings (branch protection, rulesets), or
+a product decision that is not ours to make.
+
 ## Licence
 
 By contributing, you agree that your contributions are licensed under the

@@ -17,6 +17,21 @@ section to the released version with its date.
 
 ### Changed
 
+- **Dead `AGENTS.md` citations now point at a real home (Issue #505).** Four
+  places cited `AGENTS.md` sections that never existed — a "Performance Task
+  Workflow" and a "Human Escalation" section — so an agent following the
+  citation found nothing. Both rules are now written down once, in
+  `CONTRIBUTING.md`: the Performance Task Workflow (before/after Criterion
+  evidence at the documented corpus size; a change that misses its acceptance
+  bar raises no PR — post the numbers, label `negative-result`, close
+  `not planned`) and Human escalation (the automation worker holds no
+  `workflow` OAuth scope, so `.github/workflows/` changes need a maintainer,
+  and `needs-human` always travels with an explanation comment). `README.md`,
+  `docs/gpu-scoring-design.md`, `docs/performance-baseline.md` and `AGENTS.md`
+  now link those anchors. New `scripts/check-docs-cross-references.sh` (run
+  from `quality.sh`, covered by `tests/scripts/docs_cross_references.bats`)
+  fails the gate on a dead anchor, a missing canonical section, or a document
+  that re-attributes either rule to `AGENTS.md`.
 - **Read-chunk docs now describe the shipped adaptive default (Issue #504).**
   The README "Large-record hosts" section still told readers the
   `NEAT_SCORER_READ_BYTES` default was a fixed 2 MiB and that production hosts
