@@ -17,6 +17,18 @@ section to the released version with its date.
 
 ### Changed
 
+- **One emitter for the creature JSON wire format (Issue #513).** The envelope
+  (`input`/`output`/`forwardOnly`/`semanticVersion`) plus the per-neuron and
+  per-synapse literal shapes were hand-encoded with `format!` across benches,
+  binaries, integration tests and both `src/` fixture modules, so a schema
+  change upstream meant the same edit fifteen times. New
+  `rust_scorer::fixture_json` owns the emission — `neuron_json`,
+  `synapse_json`, `typed_synapse_json`, `creature_envelope`, and the
+  `dense_mlp_creature_json` builder that collapses the byte-identical
+  `synthetic_creature_json` triplet in the GPU parity tests. Callers keep their
+  own loops, shapes and weight formulas, which differ between fixtures on
+  purpose.
+
 - **The docs private-repo guard covers the whole archive (Issue #510).** Four
   archived PR summaries — the ones added by the private-repo-reference audit
   itself — still named the private production-data and cluster-data
