@@ -144,6 +144,9 @@ echo "🖥️  Validating gpuBackend docs match GpuBackendLabel (Issue #507)..."
 echo "🗄️  Validating the PR-summary archive is single and documented (Issue #508)..."
 ./scripts/check-pr-summary-archive.sh
 
+echo "📦 Validating the binary list is single-homed in the README (Issue #509)..."
+./scripts/check-binary-list-docs.sh
+
 echo "🔗 Validating cross-document citations resolve (Issue #505)..."
 ./scripts/check-docs-cross-references.sh
 
