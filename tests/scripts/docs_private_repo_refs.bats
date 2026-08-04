@@ -77,9 +77,39 @@ EOF
   [ "$status" -eq 0 ]
 }
 
-@test "allows the remediation PR summaries that document the audit itself" {
+@test "flags the remediation PR summaries too — no carve-out (Issue #510)" {
   printf '# Summary\n\nRemoved the private GRQ-cluster name.\n' \
     >"$TMP_DIR/docs/archive/pr-summaries/pr-summary-449.md"
+
+  run "$SCRIPT_UNDER_TEST" --root "$TMP_DIR"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"pr-summary-449.md"* ]]
+}
+
+@test "catches a lower-case private name inside an identifier (Issue #510)" {
+  printf '# Summary\n\nRenamed `default_read_bytes_scales_for_grq_records`.\n' \
+    >"$TMP_DIR/docs/archive/pr-summaries/pr-summary-98.md"
+
+  run "$SCRIPT_UNDER_TEST" --root "$TMP_DIR"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"pr-summary-98.md"* ]]
+}
+
+@test "catches a lower-case private name in a fixture filename (Issue #510)" {
+  printf '# Summary\n\nRenamed the `grq-scale.json` fixture.\n' \
+    >"$TMP_DIR/docs/grq-fixture-note.md"
+
+  run "$SCRIPT_UNDER_TEST" --root "$TMP_DIR"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"grq-scale.json"* ]]
+}
+
+@test "does not match unrelated words that merely contain the letters" {
+  cat >"$TMP_DIR/CHANGELOG.md" <<'EOF'
+# Changelog
+
+The grqualifier field and GRQUARK constant are unrelated identifiers.
+EOF
 
   run "$SCRIPT_UNDER_TEST" --root "$TMP_DIR"
   [ "$status" -eq 0 ]

@@ -49,17 +49,18 @@ if [ ! -d "$ROOT" ]; then
   exit 1
 fi
 
-# Private repo names, matched case-sensitively as whole words so ordinary
-# prose is unaffected.
-PRIVATE_PATTERN='\bGRQ(-cluster)?\b'
+# Private repo names, matched case-insensitively (Issue #510 — the old
+# case-sensitive form missed lower-case identifier spellings such as
+# `default_read_bytes_scales_for_grq_records` and `grq-scale.json`). The
+# non-alphanumeric guards act as word boundaries that also treat `_` and `-`
+# as separators, so ordinary prose and unrelated identifiers are unaffected.
+PRIVATE_PATTERN='(^|[^[:alnum:]])GRQ(-cluster)?([^[:alnum:]]|$)'
 
-# The PR summaries that document the private-repo-reference audit itself
-# necessarily quote the names they removed; everything else must stay clean.
+# Every archived summary is in scope — there is no carve-out (Issue #510).
+# Remediation work is documented at concept level, so a summary never needs to
+# reproduce the private names it removed.
 in_scope() {
   case "$1" in
-    docs/archive/pr-summaries/pr-summary-448.md \
-      | docs/archive/pr-summaries/pr-summary-449.md \
-      | docs/archive/pr-summaries/pr-summary-450.md) return 1 ;;
     # `*` spans `/` in a case pattern, so this covers docs/ at any depth.
     CHANGELOG.md | docs/*.md) return 0 ;;
     *) return 1 ;;
@@ -92,7 +93,7 @@ scan_matches() {
   [ ${#files[@]} -eq 0 ] && return 0
   # `|| true`: grep exits 1 when nothing matches, which is the clean case.
   # -H so a single-file match still reports its path.
-  (cd "$ROOT" && grep -HInE "$PRIVATE_PATTERN" -- "${files[@]}") || true
+  (cd "$ROOT" && grep -HInEi "$PRIVATE_PATTERN" -- "${files[@]}") || true
 }
 
 matches="$(scan_matches)"

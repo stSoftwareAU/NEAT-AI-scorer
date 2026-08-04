@@ -3,30 +3,30 @@
 Reworded every private-repo reference in `docs/performance-baseline.md` to
 **concept level** so this public repository stays self-contained. The file
 previously named and described the production creature and corpus by the
-**private** `stSoftwareAU/GRQ-cluster` (and `GRQ`) repo names — check 3 of the
+**private** cluster-data and production-data repo names — check 3 of the
 `private-repo-reference-audit` (textual private-repo name mention in docs).
 Naming a private repo in public docs points every public reader at content they
 cannot see. Closes #449.
 
 The change is **purely documentary** — no code, benchmark, or test behaviour is
-affected. All 32 `GRQ` / `GRQ-cluster` mentions were replaced with
+affected. All 32 private-repo name mentions were replaced with
 characteristic-level phrasing that keeps the technical meaning intact:
 
-- "GRQ-cluster creature" / "GRQ creature" → "production creature" /
+- private repo name used as a creature qualifier → "production creature" /
   "production-scale creature" (the topology — ≈1666 neurons, 2461 inputs, 34
   squash types — is already described in-file).
-- `/path/to/GRQ-cluster/network.json` invocation examples →
+- `/path/to/<private-repo>/network.json` invocation examples →
   `/path/to/production/network.json`.
-- "the real GRQ `network.json` was unreachable (`GRQ-cluster/main/network.json`
-  → HTTP 404)" → "the real production `network.json` was unreachable (the
-  private production creature is not available to the unattended worker)" — the
-  dead raw-URL pointer is gone.
-- "GRQ production" / "GRQ-scale" / "GRQ hosts" / "GRQ corpus" → "production"
+- "the real `network.json` was unreachable (private-repo raw path → HTTP 404)"
+  → "the real production `network.json` was unreachable (the private production
+  creature is not available to the unattended worker)" — the dead raw-URL
+  pointer is gone.
+- private repo name used as a scale, host or corpus qualifier → "production"
   variants throughout (decision headings, topology notes, env-tuning guidance).
 
-The raw `raw.githubusercontent.com/stSoftwareAU/GRQ-cluster/...` links the audit
-cited at lines 17/669 were already removed by the related #448 work; no
-`raw.githubusercontent` links remain in the file.
+The private-repo `raw.githubusercontent.com` links the audit cited at lines
+17/669 were already removed by the related #448 work; no `raw.githubusercontent`
+links remain in the file.
 
 The existing concept-level sentence "The creature lives in a private repository;
 contributors with access provide their own local copy" was left as-is — it
@@ -36,14 +36,14 @@ already describes the source without naming the private repo.
 
 Documentation-only change — no web UI to screenshot. Verification:
 
-- `grep -iE "GRQ|raw.githubusercontent" docs/performance-baseline.md` →
-  **no matches** (was 32 `GRQ`/`GRQ-cluster` lines before).
+- grepping the file for the private repo names and `raw.githubusercontent` →
+  **no matches** (was 32 private-repo-name lines before).
 - `markdownlint-cli2 docs/performance-baseline.md` → **0 errors**.
 - `codespell --config .codespellrc docs/performance-baseline.md` → **clean**.
 
 ```mermaid
 flowchart LR
-    A["docs/performance-baseline.md<br/>names private GRQ / GRQ-cluster repos"]
+    A["docs/performance-baseline.md<br/>names the private production/cluster repos"]
       --> B["Reword to concept level<br/>(production creature / corpus)"]
     B --> C["Public repo self-contained<br/>no private-repo pointers"]
 ```
