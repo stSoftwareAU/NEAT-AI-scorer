@@ -11,8 +11,9 @@
 #   - target, .git, Cargo.lock              : build artefacts / VCS metadata.
 #   - tests/scripts/spell_check.bats        : intentionally contains typo
 #     fixtures that exercise the preflight (see the bats suite).
-#   - docs/pr-summary-*.md                  : historical PR narratives that
-#     may quote typo fixtures from the PR they describe (Issue #21).
+#   - docs/archive/pr-summaries/*.md        : historical PR narratives that
+#     may quote typo fixtures from the PR they describe (Issue #21). The
+#     archive is the single home for every summary (Issue #508).
 #   - docs/evidence/*.svg                   : flamegraph SVGs contain
 #     truncated thread/symbol names from the OS sampler (Issue #37).
 #
@@ -20,7 +21,7 @@
 # comment rather than silencing individual files. Genuine typos must continue
 # to fail the build.
 [codespell]
-skip = ./target,./.git,./Cargo.lock,./tests/scripts/spell_check.bats,./docs/pr-summary-*.md,./docs/evidence/*.svg
+skip = ./target,./.git,./Cargo.lock,./tests/scripts/spell_check.bats,./docs/archive/pr-summaries/*.md,./docs/evidence/*.svg
 check-filenames =
 check-hidden =
 ignore-words-list = renderD,mape,MAPE

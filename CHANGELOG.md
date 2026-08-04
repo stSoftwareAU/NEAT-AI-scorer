@@ -17,6 +17,21 @@ section to the released version with its date.
 
 ### Changed
 
+- **One documented home for the PR-summary archive (Issue #508).** The archive
+  — the project's durable cross-machine memory — was split between
+  `docs/pr-summary-*.md` (40 summaries, PRs 1–105) and
+  `docs/archive/pr-summaries/` (110 summaries, PRs 117+) with no documented
+  convention, so an agent mining prior learnings could sweep one location and
+  silently miss the other. The 40 root summaries moved into
+  `docs/archive/pr-summaries/`, the `.codespellrc` `skip` entry now names the
+  archive path so the Issue #21 typo-fixture exemption follows the files, and
+  the convention ("summaries live under `docs/archive/pr-summaries/`, one file
+  per PR") is recorded in a new `docs/archive/pr-summaries/README.md` and in
+  the `CONTRIBUTING.md` pull-request workflow. New
+  `scripts/check-pr-summary-archive.sh` (run from `quality.sh`, covered by
+  `tests/scripts/pr_summary_archive.bats`) fails the gate on a summary outside
+  the archive, an uncovered codespell skip list, or a missing convention doc.
+
 - **README "Output" section describes the shipped `gpuBackend` semantics
   (Issue #507).** The section still said the field reported which `wgpu`
   backend the scorer "would run on" (`"cpu-fallback"` "until GPU kernels
