@@ -142,6 +142,13 @@ directive; `quality.sh` already does. The matching BATS contract assertions
   `debug_assert!` (Issue #201).
 - Draw diagrams in the living docs with **Mermaid**, not box-drawing ASCII
   (Issue #48); `tests/scripts/diagrams_mermaid.bats` enforces this.
+- Never hand-encode the creature JSON wire format in a test, bench, or fixture
+  (Issue #513). Emit it through
+  [`rust_scorer::fixture_json`](./rust_scorer/src/fixture_json.rs) —
+  `neuron_json`, `synapse_json`, `typed_synapse_json`, `creature_envelope`, and
+  the `dense_mlp_creature_json` builder — so a schema change upstream is one
+  edit, not fifteen. Keep your own loops, shapes, and weight formulas local:
+  those differ between fixtures on purpose.
 
 ## Pull request workflow
 

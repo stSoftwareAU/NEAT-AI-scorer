@@ -178,32 +178,33 @@ pub fn production_creature_path_from_env() -> Option<PathBuf> {
 mod tests {
     use super::*;
 
+    use crate::fixture_json::{creature_envelope, neuron_json, synapse_json};
+
     /// A minimal creature JSON with the given counts, all forward-only.
     fn creature_json(input: usize, output: usize, hidden: usize, synapses: usize) -> String {
         let mut neurons: Vec<String> = Vec::new();
         for h in 0..hidden {
-            neurons.push(format!(
-                r#"{{"type":"hidden","uuid":"hidden-{h}","bias":0.0,"squash":"TANH"}}"#
-            ));
+            neurons.push(neuron_json("hidden", &format!("hidden-{h}"), 0.0, "TANH"));
         }
         for o in 0..output {
-            neurons.push(format!(
-                r#"{{"type":"output","uuid":"output-{o}","bias":0.0,"squash":"IDENTITY"}}"#
+            neurons.push(neuron_json(
+                "output",
+                &format!("output-{o}"),
+                0.0,
+                "IDENTITY",
             ));
         }
         let mut syn: Vec<String> = Vec::new();
         for s in 0..synapses {
             let h = if hidden > 0 { s % hidden } else { 0 };
-            syn.push(format!(
-                r#"{{"fromUUID":"input-{}","toUUID":"hidden-{h}","weight":0.1}}"#,
-                s % input.max(1)
+            let i = s % input.max(1);
+            syn.push(synapse_json(
+                &format!("input-{i}"),
+                &format!("hidden-{h}"),
+                0.1,
             ));
         }
-        format!(
-            r#"{{"input":{input},"output":{output},"forwardOnly":true,"semanticVersion":"4.0.0","neurons":[{}],"synapses":[{}]}}"#,
-            neurons.join(","),
-            syn.join(",")
-        )
+        creature_envelope(input, output, &neurons, &syn)
     }
 
     #[test]

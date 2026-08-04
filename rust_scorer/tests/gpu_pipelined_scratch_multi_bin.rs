@@ -8,6 +8,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use rust_scorer::cost::CostKind;
+use rust_scorer::fixture_json::dense_mlp_creature_json;
 use rust_scorer::gpu::forward_mse_batched::DirectoryGpuTopology;
 use rust_scorer::gpu::forward_mse_batched::effective_directory_gpu_inflight;
 use rust_scorer::gpu::{GpuBackendLabel, GpuMode, resolve_backend, select_adapter};
@@ -16,42 +17,6 @@ use rust_scorer::multi_score::score_from_creature_dir_gpu;
 const NUM_INPUTS: usize = 8;
 const NUM_OUTPUTS: usize = 2;
 const HIDDEN: usize = 300;
-
-fn synthetic_creature_json() -> String {
-    let mut neurons: Vec<String> = Vec::new();
-    for h in 0..HIDDEN {
-        neurons.push(format!(
-            r#"{{"type":"hidden","uuid":"hidden-{h}","bias":0.05,"squash":"TANH"}}"#
-        ));
-    }
-    for o in 0..NUM_OUTPUTS {
-        neurons.push(format!(
-            r#"{{"type":"output","uuid":"output-{o}","bias":0.0,"squash":"IDENTITY"}}"#
-        ));
-    }
-    let mut synapses: Vec<String> = Vec::new();
-    for i in 0..NUM_INPUTS {
-        for h in 0..HIDDEN {
-            let w = 0.05 + 0.001 * ((i * HIDDEN + h) as f64);
-            synapses.push(format!(
-                r#"{{"fromUUID":"input-{i}","toUUID":"hidden-{h}","weight":{w}}}"#
-            ));
-        }
-    }
-    for h in 0..HIDDEN {
-        for o in 0..NUM_OUTPUTS {
-            let w = 0.1 + 0.001 * ((h * NUM_OUTPUTS + o) as f64);
-            synapses.push(format!(
-                r#"{{"fromUUID":"hidden-{h}","toUUID":"output-{o}","weight":{w}}}"#
-            ));
-        }
-    }
-    format!(
-        r#"{{"input":{NUM_INPUTS},"output":{NUM_OUTPUTS},"forwardOnly":true,"semanticVersion":"4.0.0","neurons":[{}],"synapses":[{}]}}"#,
-        neurons.join(","),
-        synapses.join(","),
-    )
-}
 
 fn write_bin(path: &Path, n_records: usize) {
     let mut bytes = Vec::with_capacity(n_records * (NUM_INPUTS + NUM_OUTPUTS) * 4);
@@ -74,7 +39,7 @@ fn write_fixture(root: &Path) -> (std::path::PathBuf, std::path::PathBuf) {
 
     std::fs::write(
         creatures_dir.join("scratch.json"),
-        synthetic_creature_json(),
+        dense_mlp_creature_json(NUM_INPUTS, NUM_OUTPUTS, HIDDEN, "TANH"),
     )
     .expect("write creature");
 

@@ -16,47 +16,12 @@ use std::path::Path;
 use std::sync::Arc;
 
 use rust_scorer::cost::CostKind;
+use rust_scorer::fixture_json::dense_mlp_creature_json;
 use rust_scorer::gpu::{GpuBackendLabel, GpuMode, resolve_backend, select_adapter};
 use rust_scorer::multi_score::score_from_creature_dir_gpu;
 
 const NUM_INPUTS: usize = 8;
 const NUM_OUTPUTS: usize = 2;
-
-fn synthetic_creature_json(hidden: usize) -> String {
-    let mut neurons: Vec<String> = Vec::new();
-    for h in 0..hidden {
-        neurons.push(format!(
-            r#"{{"type":"hidden","uuid":"hidden-{h}","bias":0.05,"squash":"TANH"}}"#
-        ));
-    }
-    for o in 0..NUM_OUTPUTS {
-        neurons.push(format!(
-            r#"{{"type":"output","uuid":"output-{o}","bias":0.0,"squash":"IDENTITY"}}"#
-        ));
-    }
-    let mut synapses: Vec<String> = Vec::new();
-    for i in 0..NUM_INPUTS {
-        for h in 0..hidden {
-            let w = 0.05 + 0.001 * ((i * hidden + h) as f64);
-            synapses.push(format!(
-                r#"{{"fromUUID":"input-{i}","toUUID":"hidden-{h}","weight":{w}}}"#
-            ));
-        }
-    }
-    for h in 0..hidden {
-        for o in 0..NUM_OUTPUTS {
-            let w = 0.1 + 0.001 * ((h * NUM_OUTPUTS + o) as f64);
-            synapses.push(format!(
-                r#"{{"fromUUID":"hidden-{h}","toUUID":"output-{o}","weight":{w}}}"#
-            ));
-        }
-    }
-    format!(
-        r#"{{"input":{NUM_INPUTS},"output":{NUM_OUTPUTS},"forwardOnly":true,"semanticVersion":"4.0.0","neurons":[{}],"synapses":[{}]}}"#,
-        neurons.join(","),
-        synapses.join(","),
-    )
-}
 
 fn write_fixture(
     root: &Path,
@@ -68,7 +33,7 @@ fn write_fixture(
     std::fs::create_dir_all(&creatures_dir).expect("create creatures dir");
     std::fs::create_dir_all(&data_dir).expect("create data dir");
 
-    let json = synthetic_creature_json(8);
+    let json = dense_mlp_creature_json(NUM_INPUTS, NUM_OUTPUTS, 8, "TANH");
     for c in 0..num_creatures {
         std::fs::write(creatures_dir.join(format!("creature-{c}.json")), &json)
             .expect("write creature");

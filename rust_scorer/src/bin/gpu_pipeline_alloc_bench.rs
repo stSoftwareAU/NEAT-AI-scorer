@@ -25,6 +25,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Instant;
 
 use rust_scorer::cost::CostKind;
+use rust_scorer::fixture_json::dense_mlp_creature_json;
 use rust_scorer::gpu::{GpuBackendLabel, select_adapter};
 use rust_scorer::multi_score::score_from_creature_dir_gpu;
 
@@ -69,49 +70,13 @@ const HIDDEN: usize = 8;
 // Small read buffer → many streamed chunks → many per-chunk submissions.
 const READ_BYTES: usize = (NUM_INPUTS + NUM_OUTPUTS) * 4 * 64;
 
-fn synthetic_creature_json() -> String {
-    let mut neurons: Vec<String> = Vec::new();
-    for h in 0..HIDDEN {
-        neurons.push(format!(
-            r#"{{"type":"hidden","uuid":"hidden-{h}","bias":0.05,"squash":"TANH"}}"#
-        ));
-    }
-    for o in 0..NUM_OUTPUTS {
-        neurons.push(format!(
-            r#"{{"type":"output","uuid":"output-{o}","bias":0.0,"squash":"IDENTITY"}}"#
-        ));
-    }
-    let mut synapses: Vec<String> = Vec::new();
-    for i in 0..NUM_INPUTS {
-        for h in 0..HIDDEN {
-            let w = 0.05 + 0.001 * ((i * HIDDEN + h) as f64);
-            synapses.push(format!(
-                r#"{{"fromUUID":"input-{i}","toUUID":"hidden-{h}","weight":{w}}}"#
-            ));
-        }
-    }
-    for h in 0..HIDDEN {
-        for o in 0..NUM_OUTPUTS {
-            let w = 0.1 + 0.001 * ((h * NUM_OUTPUTS + o) as f64);
-            synapses.push(format!(
-                r#"{{"fromUUID":"hidden-{h}","toUUID":"output-{o}","weight":{w}}}"#
-            ));
-        }
-    }
-    format!(
-        r#"{{"input":{NUM_INPUTS},"output":{NUM_OUTPUTS},"forwardOnly":true,"semanticVersion":"4.0.0","neurons":[{}],"synapses":[{}]}}"#,
-        neurons.join(","),
-        synapses.join(","),
-    )
-}
-
 fn build_fixture(root: &Path) -> std::io::Result<(std::path::PathBuf, std::path::PathBuf)> {
     let creatures_dir = root.join("creatures");
     let data_dir = root.join("data");
     std::fs::create_dir_all(&creatures_dir)?;
     std::fs::create_dir_all(&data_dir)?;
 
-    let json = synthetic_creature_json();
+    let json = dense_mlp_creature_json(NUM_INPUTS, NUM_OUTPUTS, HIDDEN, "TANH");
     for c in 0..NUM_CREATURES {
         std::fs::write(creatures_dir.join(format!("creature-{c}.json")), &json)?;
     }

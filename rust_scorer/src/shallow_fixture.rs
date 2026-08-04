@@ -17,6 +17,8 @@
 //! pure functions below are unit-tested; the Criterion `shallow_gpu_vs_cpu`
 //! group in [`benches/scoring.rs`](../../benches/scoring.rs) consumes them.
 
+use crate::fixture_json::{creature_envelope, neuron_json, synapse_json};
+
 /// The point-wise squash mix observed in the real `Enceladus` hidden layer.
 ///
 /// Every entry is a **point-wise** activation (`SquashType` 0..=31), so the
@@ -95,13 +97,14 @@ pub fn shallow_creature_json(
     let mut neurons: Vec<String> = Vec::with_capacity(hidden + num_outputs);
     for h in 0..hidden {
         let squash = ENCELADUS_SQUASHES[h % ENCELADUS_SQUASHES.len()];
-        neurons.push(format!(
-            r#"{{"type":"hidden","uuid":"hidden-{h}","bias":0.05,"squash":"{squash}"}}"#
-        ));
+        neurons.push(neuron_json("hidden", &format!("hidden-{h}"), 0.05, squash));
     }
     for o in 0..num_outputs {
-        neurons.push(format!(
-            r#"{{"type":"output","uuid":"output-{o}","bias":0.0,"squash":"IDENTITY"}}"#
+        neurons.push(neuron_json(
+            "output",
+            &format!("output-{o}"),
+            0.0,
+            "IDENTITY",
         ));
     }
 
@@ -118,25 +121,25 @@ pub fn shallow_creature_json(
         let h = c.checked_rem(hidden).unwrap_or(0);
         let sign = if c % 2 == 0 { 1.0 } else { -1.0 };
         let w = sign * (0.002 + 0.0001 * ((c % 37) as f64));
-        synapses.push(format!(
-            r#"{{"fromUUID":"input-{i}","toUUID":"hidden-{h}","weight":{w}}}"#
+        synapses.push(synapse_json(
+            &format!("input-{i}"),
+            &format!("hidden-{h}"),
+            w,
         ));
     }
     // hidden -> output, fully wired.
     for h in 0..hidden {
         for o in 0..num_outputs {
             let w = 0.05 + 0.001 * ((h * num_outputs + o) as f64);
-            synapses.push(format!(
-                r#"{{"fromUUID":"hidden-{h}","toUUID":"output-{o}","weight":{w}}}"#
+            synapses.push(synapse_json(
+                &format!("hidden-{h}"),
+                &format!("output-{o}"),
+                w,
             ));
         }
     }
 
-    format!(
-        r#"{{"input":{num_inputs},"output":{num_outputs},"forwardOnly":true,"semanticVersion":"4.0.0","neurons":[{}],"synapses":[{}]}}"#,
-        neurons.join(","),
-        synapses.join(","),
-    )
+    creature_envelope(num_inputs, num_outputs, &neurons, &synapses)
 }
 
 #[cfg(test)]
