@@ -26,9 +26,10 @@ change only — no runtime behaviour changed.
   elides the private name as **…** and labels each row by the role the name
   played, so the mapping stays readable without reproducing it.
 - **`docs/archive/pr-summaries/pr-summary-452.md`** — the three lower-case
-  identifiers (`…_grq_scale_…`, `…_for_grq_records`, `grq-scale.json`) are now
-  described as "the two private-repo-prefixed test names" and "the
-  private-repo-prefixed fixture", keeping only the post-rename identifiers.
+  identifiers (two private-repo-prefixed test names — a scale case and a
+  record-size case — plus a private-repo-prefixed fixture filename) are now
+  described by that role rather than quoted, keeping only the post-rename
+  identifiers.
 - **`scripts/check-docs-private-repo-refs.sh`** — deleted the three-file
   exemption from `in_scope()`; `PRIVATE_PATTERN` gained
   `(^|[^[:alnum:]])…([^[:alnum:]]|$)` boundaries and the grep gained `-i`, so
