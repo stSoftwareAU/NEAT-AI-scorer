@@ -1058,12 +1058,16 @@ covered end-to-end by `tests/scripts/milestone_branch_filter.bats`. The workflow
 `scripts/check-cargo-quality-workflow.sh` (invoked from `quality.sh`) and
 covered end-to-end by `tests/scripts/cargo_quality_workflow.bats`.
 
-ShellCheck runs in exactly one place: `ci.yml`'s `shell-checks` job invokes
-`ludeeus/action-shellcheck@2.0.0` alongside the `bash -n` syntax check and
-the bats helper-test suite, and feeds the `ci-required` aggregator that
-branch protection gates on. A standalone `shellcheck.yml` previously ran the
-identical invocation, doubling the maintenance surface (Issue #157); it was
-removed so the ShellCheck configuration lives in a single home. The dedup
+ShellCheck runs in exactly one place: `ci.yml`'s `shell-checks` job runs the
+[`koalaman/shellcheck`](https://github.com/koalaman/shellcheck) binary
+**pre-installed on the `ubuntu-latest` runner** directly — no third-party
+wrapper action enters the supply chain (PR #184 dropped the wrapper, whose
+unauthenticated release-asset download also failed the job on a transient
+error) — alongside the `bash -n` syntax check and the bats helper-test suite,
+and feeds the `ci-required` aggregator that branch protection gates on. A
+standalone `shellcheck.yml` previously ran the identical invocation, doubling
+the maintenance surface (Issue #157); it was removed so the ShellCheck
+configuration lives in a single home. The dedup
 invariant is enforced by `scripts/check-shellcheck-dedup.sh` (invoked from
 `quality.sh`) and covered end-to-end by
 `tests/scripts/shellcheck_dedup.bats`, which fail if a second workflow
@@ -1187,9 +1191,13 @@ the SHA and the comment in the same PR, and note the changelog highlights
 in the PR description.
 
 The same script also enforces the Node 24 deprecation policy from the
-trailing comment: minimum majors, tracked Node 20 exceptions
-(`actions/dependency-review-action@v4`, `rustsec/audit-check@v2` — no
-Node 24 release upstream yet), and a composite/shell allow-list. The
+trailing comment: minimum majors, the single remaining tracked Node 20
+exception (`rustsec/audit-check@v2` — no Node 24 tag upstream yet, so the pin
+is the `master` HEAD commit that already declares `using: node24`), and a
+composite/shell allow-list. `actions/dependency-review-action` is no longer an
+exception (Issue #136): the validator requires major **5**, and both
+`dependency-review.yml` and `security.yml` pin `v5.0.0`, which ships on
+Node 24. The
 policy lives in `scripts/check-workflow-action-versions.sh` and is
 covered end-to-end by `tests/scripts/workflow_action_versions.bats`.
 `quality.sh` invokes the script so any unpinned or outdated `uses:`
