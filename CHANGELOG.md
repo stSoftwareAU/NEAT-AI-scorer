@@ -17,6 +17,20 @@ section to the released version with its date.
 
 ### Changed
 
+- **Read-chunk docs now describe the shipped adaptive default (Issue #504).**
+  The README "Large-record hosts" section still told readers the
+  `NEAT_SCORER_READ_BYTES` default was a fixed 2 MiB and that production hosts
+  should `export NEAT_SCORER_READ_BYTES=33554432`, contradicting both
+  `AGENTS.md` and `rust_scorer/src/read_tuning.rs`, where records ≥ 8000 B
+  default to 32 MiB reads. The section now documents the record-size adaptive
+  default (with a Mermaid flowchart), keeps the #307 sweep as its supporting
+  evidence, and states the 64 MiB `MAX_READ_BYTES` clamp.
+  `docs/performance-baseline.md` keeps its dated #307 decision text unedited
+  and carries an appended supersession banner. New
+  `scripts/check-read-bytes-docs.sh` (run from `quality.sh`, covered by
+  `tests/scripts/read_bytes_docs.bats`) reads the constants from
+  `read_tuning.rs` and fails the gate if either document drifts again.
+
 - **Acknowledged the neat-core 0.5.0 → 0.8.1 breaking bumps (Issue #252 gate).**
   neat-core removed three dead WASM/SIMD surfaces —
   `apply_derivative_simd_4way` / `derivative_batch_4way` (0.6.0),

@@ -550,18 +550,50 @@ default, mirroring how `NEAT_SCORER_GPU` already rejects invalid values:
 ```
 
 Unset or blank values stay silent, and a valid value is honoured without any
-warning.
+warning. The default quoted in the message is the **record-size adaptive**
+default described below, so it reads `33554432` on production-sized records.
 
-### Large-record hosts: raise `NEAT_SCORER_READ_BYTES` (Issue #307)
+### Large-record hosts: adaptive `NEAT_SCORER_READ_BYTES` default (Issues #307, #504)
 
-The default `NEAT_SCORER_READ_BYTES` (2 MiB) is tuned for the synthetic
-small-record fixtures. **Production records are 9848 bytes**
-(2461 inputs + 1 output, `f32`), so a 2 MiB chunk holds only ~213 records —
-too few to amortise the per-chunk Rayon dispatch across the worker pool. A
-sweep on the #296 production fixture (see
-[`docs/performance-baseline.md`](docs/performance-baseline.md)) shows larger
-aligned reads recover **~20 %** on the single-creature path, with the sweet
-spot at **16–32 MiB**:
+The read-chunk default is **record-size adaptive** — the constants live in
+[`rust_scorer/src/read_tuning.rs`](rust_scorer/src/read_tuning.rs) and apply to
+every scoring path (single-creature, directory/multi-creature, streaming, CLI
+and `float_scan_bench`):
+
+| Record size | Default read chunk when `NEAT_SCORER_READ_BYTES` is **unset** |
+|---|---|
+| < 8000 B/record (synthetic fixtures) | **2 MiB** (`DEFAULT_READ_BYTES`) |
+| ≥ 8000 B/record (`LARGE_RECORD_BYTES_THRESHOLD`) | **32 MiB** (`LARGE_RECORD_DEFAULT_READ_BYTES`) |
+
+**Production records are 9848 bytes** (2461 inputs + 1 output, `f32`), so
+production runs already read 32 MiB chunks with **no environment variable set**
+— exporting `NEAT_SCORER_READ_BYTES=33554432` by hand is now redundant.
+
+```mermaid
+flowchart TD
+    A[Scoring path needs a read chunk] --> B{NEAT_SCORER_READ_BYTES set?}
+    B -- yes --> C[Use the env value]
+    B -- no --> D{record_bytes >= 8000?}
+    D -- yes --> E[32 MiB default]
+    D -- no --> F[2 MiB default]
+    C --> G[Clamp to record_bytes..64 MiB cap]
+    E --> G
+    F --> G
+    G --> H[Round down to a whole number of records]
+```
+
+`NEAT_SCORER_READ_BYTES` still **overrides** the adaptive default when you want
+a different size. Any value — env or default — is clamped to the **64 MiB** cap
+(`MAX_READ_BYTES`, and to at least one record) and rounded down to a whole
+number of records, so a chunk never splits a record.
+
+#### Why 32 MiB (the supporting sweep)
+
+A 2 MiB chunk holds only ~213 production records — too few to amortise the
+per-chunk Rayon dispatch across the worker pool. A sweep on the #296 production
+fixture (see [`docs/performance-baseline.md`](docs/performance-baseline.md))
+shows larger aligned reads recover **~20 %** on the single-creature path, with
+the sweet spot at **16–32 MiB**:
 
 | `NEAT_SCORER_READ_BYTES` | `production_single_creature` | `production_multi_creature/1` | `production_multi_creature/4` |
 |---|---:|---:|---:|
@@ -576,23 +608,29 @@ back-to-back on one Apple Silicon host; absolute times are host-load
 sensitive, so the table reports the relative improvement each cell held across
 repeated interleaved runs.)
 
-On production hosts with these large records, export a bigger chunk before scoring:
+Those numbers are why the ≥ 8000 B/record default is **32 MiB**; no export is
+needed to get them. To pick a different size — for example `16777216` (16 MiB),
+which captures most of the gain at half the transient read buffer — set the env
+explicitly:
 
 ```bash
-# ~24 % faster forward-only scoring on 9848-byte production records.
-export NEAT_SCORER_READ_BYTES=33554432   # 32 MiB
+# Override the adaptive default; 32 MiB (33554432) is already the default here.
+export NEAT_SCORER_READ_BYTES=16777216   # 16 MiB
 ```
 
-`16777216` (16 MiB) captures most of the gain at half the transient read
-buffer. The read buffer is **per-scan, not per-worker** — directory mode runs
+The read buffer is **per-scan, not per-worker** — directory mode runs
 a single shared scan and partitions the unpacked records across the worker
 pool — so a 32 MiB setting adds at most ~64 MiB of transient buffer (the
 pipelined path double-buffers), not 32 MiB × worker count. That stays well
 within production host RAM headroom.
 
-The global default is intentionally **left at 2 MiB**: the gain is specific to
-large (> ~1 KiB) records, and raising it globally would enlarge the buffer for
-the small-record synthetic path for no benefit. Set the env per-host instead.
+The default is raised **per record size, not globally**: the gain is specific to
+large records, so the small-record synthetic path keeps its 2 MiB buffer while
+large-record corpora get 32 MiB automatically. The #307 sweep originally shipped
+as env-var advice with the global default fixed at 2 MiB; that recommendation was
+superseded when the adaptive default landed in `read_tuning.rs` (see the
+supersession note in
+[`docs/performance-baseline.md`](docs/performance-baseline.md)).
 
 ## Local layout
 

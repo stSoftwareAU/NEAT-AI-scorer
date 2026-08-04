@@ -1030,6 +1030,22 @@ the sweet spot is specific to large-record production hosts.
 
 ### Decision (Issue #307)
 
+> **Superseded (2026-08-04, Issue #504) — the decision below is dated history.**
+> The "global default stays 2 MiB, no auto-tuner ships" call recorded here was
+> later overtaken by the **record-size adaptive default** that shipped in
+> [`rust_scorer/src/read_tuning.rs`](../rust_scorer/src/read_tuning.rs):
+> corpora with records ≥ `LARGE_RECORD_BYTES_THRESHOLD` (8000 B — production is
+> ≈ 9848 B) now default to **32 MiB** reads when `NEAT_SCORER_READ_BYTES` is
+> unset, while smaller records keep the 2 MiB default. The env var remains an
+> override, clamped to the 64 MiB `MAX_READ_BYTES` cap. Exporting
+> `NEAT_SCORER_READ_BYTES=33554432` on production hosts — the recommendation
+> below — is therefore **redundant**. The measurements in this section stand as
+> the evidence that motivated the adaptive default; for current behaviour read
+> the README "Large-record hosts" section and `AGENTS.md`. *(Banner added per
+> [Issue #504](https://github.com/stSoftwareAU/NEAT-AI-scorer/issues/504),
+> mirroring the Issue #211 pattern in `docs/gpu-scoring-design.md`. Per this
+> document's convention the historical text below is left unedited.)*
+
 The clear ≥ 5 % gain on every production group qualifies under the issue's
 merge gate, but the **global default stays 2 MiB** and no auto-tuner ships:
 
