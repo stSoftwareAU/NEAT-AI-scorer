@@ -135,6 +135,9 @@ echo "🛟 Validating risk-bearing multi-line run: blocks open with set -euo pip
 echo "📖 Validating README 'matches CI' block aligns with the CI quality job (Issue #212)..."
 ./scripts/check-readme-ci-alignment.sh
 
+echo "📚 Validating read-chunk docs match read_tuning.rs constants (Issue #504)..."
+./scripts/check-read-bytes-docs.sh
+
 echo "🕵️  Validating README names no private repository (Issue #450)..."
 ./scripts/check-readme-private-repo-refs.sh
 
