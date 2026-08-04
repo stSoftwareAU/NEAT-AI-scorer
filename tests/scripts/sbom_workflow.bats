@@ -145,6 +145,16 @@ PY
   [[ "$output" == *"not pinned"* ]]
 }
 
+@test "fails when only one of several checkout steps is unpinned (Issue #511)" {
+  # sbom.yml checks out two repositories; every checkout step must be pinned,
+  # not merely one of them.
+  write_sbom_workflow "$TMP_WF/sbom.yml"
+  perl -0pi -e 's|actions/checkout\@v5|actions/checkout\@main|' "$TMP_WF/sbom.yml"
+  run "$SCRIPT_UNDER_TEST" --workflow "$TMP_WF/sbom.yml"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"not pinned"* ]]
+}
+
 @test "fails when dtolnay/rust-toolchain is missing" {
   write_sbom_workflow "$TMP_WF/sbom.yml"
   sed -i.bak '/dtolnay\/rust-toolchain/d' "$TMP_WF/sbom.yml"

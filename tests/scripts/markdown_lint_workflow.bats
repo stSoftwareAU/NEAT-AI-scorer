@@ -166,6 +166,16 @@ PY
   [[ "$output" == *"not pinned"* ]]
 }
 
+@test "accepts a 40-char checkout SHA starting with a hex letter (Issue #511)" {
+  # The pre-#136 `v?[0-9]+` regex this validator used to carry rejected SHAs
+  # whose leading character is a-f. The shared helper accepts them.
+  write_markdown_lint_workflow "$TMP_WF/markdown-lint.yml"
+  sed -i.bak 's|actions/checkout@v5|actions/checkout@a1d282b9c3e4f5061728394a5b6c7d8e9f001122|' "$TMP_WF/markdown-lint.yml"
+  run "$SCRIPT_UNDER_TEST" --workflow "$TMP_WF/markdown-lint.yml"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"actions/checkout pinned"* ]]
+}
+
 @test "fails when actions/setup-node is unpinned" {
   write_markdown_lint_workflow "$TMP_WF/markdown-lint.yml"
   sed -i.bak 's|actions/setup-node@v4|actions/setup-node@main|' "$TMP_WF/markdown-lint.yml"

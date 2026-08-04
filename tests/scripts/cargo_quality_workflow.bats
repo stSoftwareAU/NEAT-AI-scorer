@@ -94,6 +94,16 @@ PY
   [[ "$output" == *"not pinned"* ]]
 }
 
+@test "accepts a 40-char checkout SHA starting with a hex letter (Issue #511)" {
+  # The pre-#136 `v?[0-9]+` regex this validator used to carry rejected SHAs
+  # whose leading character is a-f. The shared helper accepts them.
+  write_quality_workflow "$TMP_WF/cargo-quality.yml"
+  sed -i.bak 's|actions/checkout@v5|actions/checkout@a1d282b9c3e4f5061728394a5b6c7d8e9f001122|' "$TMP_WF/cargo-quality.yml"
+  run "$SCRIPT_UNDER_TEST" --workflow "$TMP_WF/cargo-quality.yml"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"actions/checkout pinned"* ]]
+}
+
 @test "fails when dtolnay/rust-toolchain is missing" {
   write_quality_workflow "$TMP_WF/cargo-quality.yml"
   sed -i.bak '/dtolnay\/rust-toolchain/d' "$TMP_WF/cargo-quality.yml"
