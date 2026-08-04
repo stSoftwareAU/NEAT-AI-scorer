@@ -15,8 +15,9 @@
 # `.github/workflows/markdown-lint.yml` relative to the repo root.
 set -euo pipefail
 
-# Shared workflow-validation helpers (Issue #511) — the `actions/checkout` pin
-# rule lives in one place instead of six inline copies that drift apart.
+# Shared workflow-validation helpers (Issues #511, #514) — the `actions/checkout`
+# pin rule and the least-privilege `permissions:` rule each live in one place
+# instead of inline copies that drift apart.
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 WORKFLOW_CHECKS_LIB="$SCRIPT_DIR/lib/workflow-checks.sh"
 if [[ ! -r "$WORKFLOW_CHECKS_LIB" ]]; then
@@ -86,13 +87,9 @@ else
   fail "workflow is not triggered on pull_request"
 fi
 
-# 2. Explicit permissions block (least privilege).
-if grep -qE '^permissions:[[:space:]]*$' "$WORKFLOW" \
-  && grep -qE '^[[:space:]]+contents:[[:space:]]*read' "$WORKFLOW"; then
-  ok "permissions block grants only contents: read"
-else
-  fail "no 'permissions: contents: read' block — least-privilege required"
-fi
+# 2. Explicit permissions block (least privilege), via the shared rule in
+#    scripts/lib/workflow-checks.sh (Issue #514).
+require_readonly_permissions "$WORKFLOW"
 
 # 3. actions/checkout pinned to a numeric major (vN) or a 40-char SHA, via the
 #    shared rule in scripts/lib/workflow-checks.sh (Issue #511). Branch refs

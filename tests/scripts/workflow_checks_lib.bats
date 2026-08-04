@@ -1,11 +1,12 @@
 #!/usr/bin/env bats
-# Tests for scripts/lib/workflow-checks.sh — Issue #511.
+# Tests for scripts/lib/workflow-checks.sh — Issues #511, #514.
 #
 # The `actions/checkout` pin-acceptance rule used to be re-implemented inline in
 # six workflow validators and had drifted into three generations of the regex.
-# These tests exercise the single shared helper directly: a caller sources the
-# library, defines the `ok`/`fail` reporting contract, and calls
-# `require_pinned_checkout` against synthetic workflow YAML.
+# The least-privilege `permissions:` rule was a byte-identical copy in seven of
+# them (Issue #514). These tests exercise the single shared helpers directly: a
+# caller sources the library, defines the `ok`/`fail` reporting contract, and
+# calls the helper against synthetic workflow YAML.
 
 setup() {
   LIB="${BATS_TEST_DIRNAME}/../../scripts/lib/workflow-checks.sh"
@@ -28,18 +29,31 @@ jobs:
 EOF
 }
 
-# Run require_pinned_checkout in a subshell that provides the ok/fail contract
-# the six validators define, mirroring how they call the helper.
-run_helper() {
+# Run a helper in a subshell that provides the ok/fail contract the validators
+# define, mirroring how they call it.
+run_lib() {
   run bash -c '
     set -euo pipefail
     EXIT_CODE=0
     fail() { echo "FAIL: $*" >&2; EXIT_CODE=1; }
     ok()   { echo "OK   : $*"; }
     source "$1"
-    require_pinned_checkout "$2"
+    "$2" "$3"
     exit "$EXIT_CODE"
-  ' bash "$LIB" "$1"
+  ' bash "$LIB" "$1" "$2"
+}
+
+run_helper() {
+  run_lib require_pinned_checkout "$1"
+}
+
+run_permissions_helper() {
+  run_lib require_readonly_permissions "$1"
+}
+
+# Write a workflow whose body is $1, used for the permissions cases.
+write_workflow() {
+  printf '%s\n' "$1" >"$TMP_WF/wf.yml"
 }
 
 @test "accepts a numeric major version pin" {
@@ -176,6 +190,118 @@ EOF
     set -uo pipefail
     source "$1"
     require_pinned_checkout "$2"
+  ' bash "$LIB" "$TMP_WF/wf.yml"
+  [ "$status" -eq 2 ]
+  [[ "$output" == *"ok()"* ]]
+}
+
+# --- require_readonly_permissions (Issue #514) --------------------------------
+
+@test "permissions: accepts a bare block granting contents: read" {
+  write_workflow 'name: Example
+permissions:
+  contents: read
+jobs:
+  build:
+    steps:
+      - run: echo hello'
+  run_permissions_helper "$TMP_WF/wf.yml"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"permissions block grants only contents: read"* ]]
+}
+
+@test "permissions: rejects a job-level-only block (top-level key required)" {
+  write_workflow 'name: Example
+jobs:
+  build:
+    permissions:
+      contents: read
+    steps:
+      - run: echo hello'
+  run_permissions_helper "$TMP_WF/wf.yml"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"least-privilege required"* ]]
+}
+
+@test "permissions: fails when no permissions block is declared" {
+  write_workflow 'name: Example
+jobs:
+  build:
+    steps:
+      - run: echo hello'
+  run_permissions_helper "$TMP_WF/wf.yml"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"no 'permissions: contents: read' block"* ]]
+  [[ "$output" == *"least-privilege required"* ]]
+}
+
+@test "permissions: rejects the blanket write-all shorthand" {
+  write_workflow 'name: Example
+permissions: write-all
+jobs:
+  build:
+    steps:
+      - run: echo hello'
+  run_permissions_helper "$TMP_WF/wf.yml"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"least-privilege required"* ]]
+}
+
+@test "permissions: fails when the block declares no contents: read scope" {
+  write_workflow 'name: Example
+permissions:
+  issues: write
+jobs:
+  build:
+    steps:
+      - run: echo hello'
+  run_permissions_helper "$TMP_WF/wf.yml"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"least-privilege required"* ]]
+}
+
+@test "permissions: tolerates trailing whitespace after the bare key" {
+  printf 'name: Example\npermissions:   \n  contents: read\n' >"$TMP_WF/wf.yml"
+  run_permissions_helper "$TMP_WF/wf.yml"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"permissions block grants only contents: read"* ]]
+}
+
+@test "permissions: reports exactly one line per call" {
+  write_workflow 'name: Example
+permissions:
+  contents: read'
+  run_permissions_helper "$TMP_WF/wf.yml"
+  [ "$status" -eq 0 ]
+  [ "$(grep -c '^OK   ' <<<"$output")" -eq 1 ]
+}
+
+@test "permissions: fails loudly when called without a workflow argument" {
+  run bash -c '
+    set -uo pipefail
+    fail() { :; }
+    ok() { :; }
+    source "$1"
+    require_readonly_permissions
+  ' bash "$LIB"
+  [ "$status" -eq 2 ]
+  [[ "$output" == *"workflow path"* ]]
+}
+
+@test "permissions: fails loudly when the workflow file is unreadable" {
+  run_permissions_helper "$TMP_WF/does-not-exist.yml"
+  [ "$status" -eq 2 ]
+  [[ "$output" == *"not readable"* ]]
+}
+
+@test "permissions: fails loudly when the caller has not defined ok/fail" {
+  write_workflow 'name: Example
+permissions:
+  contents: read'
+  run bash -c '
+    set -uo pipefail
+    source "$1"
+    require_readonly_permissions "$2"
   ' bash "$LIB" "$TMP_WF/wf.yml"
   [ "$status" -eq 2 ]
   [[ "$output" == *"ok()"* ]]
