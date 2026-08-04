@@ -6,6 +6,8 @@
 # directory exercise the pass/fail behaviour (exit codes, reported output) so
 # the real README is not mutated by the tests.
 
+load 'test_helper'
+
 setup() {
   SCRIPT_UNDER_TEST="${BATS_TEST_DIRNAME}/../../scripts/check-readme-ci-alignment.sh"
   [ -x "$SCRIPT_UNDER_TEST" ] || chmod +x "$SCRIPT_UNDER_TEST"
@@ -118,9 +120,7 @@ EOF
 }
 
 @test "reports an error when the README file does not exist" {
-  run "$SCRIPT_UNDER_TEST" --readme "$TMP_DIR/does-not-exist.md"
-  [ "$status" -ne 0 ]
-  [[ "$output" == *"not found"* ]]
+  assert_missing_target_rejected "$SCRIPT_UNDER_TEST" --readme "$TMP_DIR/does-not-exist.md"
 }
 
 @test "unknown flag prints usage and exits non-zero" {

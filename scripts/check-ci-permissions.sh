@@ -30,6 +30,10 @@
 # `.github/workflows/ci.yml` relative to the repo root.
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=scripts/lib/check-harness.sh
+source "$SCRIPT_DIR/lib/check-harness.sh"
+
 usage() {
   cat <<'EOF'
 Usage: check-ci-permissions.sh [--workflow PATH]
@@ -45,43 +49,10 @@ non-zero with a descriptive message otherwise.
 EOF
 }
 
-WORKFLOW=""
-while [[ $# -gt 0 ]]; do
-  case "$1" in
-    --workflow)
-      WORKFLOW="$2"
-      shift 2
-      ;;
-    -h|--help)
-      usage
-      exit 0
-      ;;
-    *)
-      echo "Unknown argument: $1" >&2
-      usage >&2
-      exit 2
-      ;;
-  esac
-done
-
-if [[ -z "$WORKFLOW" ]]; then
-  SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-  WORKFLOW="$SCRIPT_DIR/../.github/workflows/ci.yml"
-fi
-
-if [[ ! -f "$WORKFLOW" ]]; then
-  echo "Workflow file not found: $WORKFLOW" >&2
-  exit 2
-fi
-
-EXIT_CODE=0
-fail() {
-  echo "FAIL $WORKFLOW: $*" >&2
-  EXIT_CODE=1
-}
-ok() {
-  echo "OK   $WORKFLOW: $*"
-}
+parse_check_args --workflow ".github/workflows/ci.yml" "$@"
+WORKFLOW="$CHECK_TARGET"
+check_require_file "$WORKFLOW"
+check_subject "$WORKFLOW"
 
 # Emit a TSV report describing the workflow-level permissions block and the
 # `security` job's job-level permissions block. A minimal Python scanner walks

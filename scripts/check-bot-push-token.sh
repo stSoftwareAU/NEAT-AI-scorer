@@ -27,6 +27,10 @@
 #      (and keep clearing the Issue #435 approval gate) before the App exists.
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=scripts/lib/check-harness.sh
+source "$SCRIPT_DIR/lib/check-harness.sh"
+
 usage() {
   cat <<'EOF'
 Usage: check-bot-push-token.sh [--workflow PATH]
@@ -43,42 +47,18 @@ otherwise.
 EOF
 }
 
-WORKFLOW=""
-while [[ $# -gt 0 ]]; do
-  case "$1" in
-    --workflow)
-      if [[ $# -lt 2 ]]; then
-        echo "Missing value for --workflow" >&2
-        usage >&2
-        exit 2
-      fi
-      WORKFLOW="$2"
-      shift 2
-      ;;
-    -h|--help)
-      usage
-      exit 0
-      ;;
-    *)
-      echo "Unknown argument: $1" >&2
-      usage >&2
-      exit 2
-      ;;
-  esac
-done
+parse_check_args --workflow "" "$@"
+WORKFLOW="$CHECK_TARGET"
 
 WORKFLOWS=()
 if [[ -n "$WORKFLOW" ]]; then
   WORKFLOWS=("$WORKFLOW")
 else
-  SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
   WORKFLOWS=(
-    "$SCRIPT_DIR/../.github/workflows/auto-format.yml"
-    "$SCRIPT_DIR/../.github/workflows/version-increment.yml"
+    "$(check_repo_path ".github/workflows/auto-format.yml")"
+    "$(check_repo_path ".github/workflows/version-increment.yml")"
   )
 fi
-
-EXIT_CODE=0
 
 validate_workflow() {
   local wf="$1"

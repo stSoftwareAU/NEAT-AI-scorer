@@ -8,6 +8,8 @@
 # job — the script takes the resulting working tree as-is and reports on it,
 # which keeps these tests hermetic (no Rust toolchain required).
 
+load 'test_helper'
+
 setup() {
   AUTO_FORMAT="${BATS_TEST_DIRNAME}/../../scripts/auto-format.sh"
   WF_CHECK="${BATS_TEST_DIRNAME}/../../scripts/check-auto-format-workflow.sh"
@@ -81,9 +83,7 @@ teardown() {
 }
 
 @test "unknown flag prints usage and exits non-zero" {
-  run "$AUTO_FORMAT" --nonsense
-  [ "$status" -ne 0 ]
-  [[ "$output" == *"Usage"* ]]
+  assert_unknown_flag_rejected "$AUTO_FORMAT"
 }
 
 @test "missing mode prints usage and exits non-zero" {

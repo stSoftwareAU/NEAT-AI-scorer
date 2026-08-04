@@ -75,6 +75,57 @@ quarantine-gated bumps go through [`./bump-deps.sh`](./bump-deps.sh) instead.
 
 Keep re-running `./quality.sh < /dev/null` until it passes cleanly.
 
+### Guard-script harness
+
+Every `scripts/check-*.sh` validator shares one CLI contract, and that contract
+lives in a single place: [`scripts/lib/check-harness.sh`](./scripts/lib/check-harness.sh)
+(Issue #512). The harness owns the `--FLAG PATH` / `-h` argument loop,
+default-target resolution relative to the repo root, the "file not found" guard
+(`exit 2`), and the accumulate-and-report protocol — an `OK` line on stdout, a
+`FAIL` line on stderr, `EXIT_CODE=1` without aborting so a run lists every
+violation. Only
+the per-script rule checks live in the individual validators.
+
+```mermaid
+flowchart LR
+    A["scripts/check-*.sh"] -->|source| H["scripts/lib/check-harness.sh"]
+    H --> P["parse_check_args<br/>--FLAG / -h / exit 2"]
+    H --> G["check_require_file<br/>check_require_dir"]
+    H --> R["ok / fail / EXIT_CODE"]
+    A --> C["per-script rule checks"]
+    C --> R
+```
+
+Writing a new validator:
+
+```bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=scripts/lib/check-harness.sh
+source "$SCRIPT_DIR/lib/check-harness.sh"
+
+usage() { cat <<'EOF'
+Usage: check-thing.sh [--workflow PATH]
+EOF
+}
+
+parse_check_args --workflow ".github/workflows/thing.yml" "$@"
+WORKFLOW="$CHECK_TARGET"
+check_require_file "$WORKFLOW"
+check_subject "$WORKFLOW"   # prefixes every OK/FAIL line with the file
+
+# ... per-script rule checks calling ok "…" / fail "…" ...
+
+exit "$EXIT_CODE"
+```
+
+`shellcheck` must be run with `-x` so it follows the `# shellcheck source=`
+directive; `quality.sh` already does. The matching BATS contract assertions
+(`assert_missing_target_rejected`, `assert_unknown_flag_rejected`) live in
+[`tests/scripts/test_helper.bash`](./tests/scripts/test_helper.bash) — `load
+'test_helper'` rather than restating them per suite.
+
 ## Coding standards
 
 - **Australian English** throughout code, comments, and documentation

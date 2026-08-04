@@ -23,6 +23,10 @@
 # real repository files relative to the repo root.
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=scripts/lib/check-harness.sh
+source "$SCRIPT_DIR/lib/check-harness.sh"
+
 usage() {
   cat <<'EOF'
 Usage: check-rust-lints.sh [--manifest PATH] [--lib PATH]
@@ -44,50 +48,32 @@ LIB=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --manifest)
+      check_flag_value --manifest $#
       MANIFEST="$2"
       shift 2
       ;;
     --lib)
+      check_flag_value --lib $#
       LIB="$2"
       shift 2
       ;;
-    -h|--help)
+    -h | --help)
       usage
       exit 0
       ;;
     *)
-      echo "Unknown argument: $1" >&2
-      usage >&2
-      exit 2
+      check_unknown_arg "$1"
       ;;
   esac
 done
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-if [[ -z "$MANIFEST" ]]; then
-  MANIFEST="$SCRIPT_DIR/../Cargo.toml"
-fi
-if [[ -z "$LIB" ]]; then
-  LIB="$SCRIPT_DIR/../rust_scorer/src/lib.rs"
-fi
+[[ -n "$MANIFEST" ]] || MANIFEST="$(check_repo_path "Cargo.toml")"
+[[ -n "$LIB" ]] || LIB="$(check_repo_path "rust_scorer/src/lib.rs")"
 
-if [[ ! -f "$MANIFEST" ]]; then
-  echo "Cargo.toml not found: $MANIFEST" >&2
-  exit 2
-fi
-if [[ ! -f "$LIB" ]]; then
-  echo "library root not found: $LIB" >&2
-  exit 2
-fi
+check_require_file "$MANIFEST" "Cargo.toml"
+check_require_file "$LIB" "library root"
 
-EXIT_CODE=0
-fail() {
-  echo "FAIL $*" >&2
-  EXIT_CODE=1
-}
-ok() {
-  echo "OK   $*"
-}
+# Every message names its own file, so ok/fail carry no subject prefix.
 
 # Extract the body of the [workspace.lints.rust] table: every line from the
 # header up to (but not including) the next table header. Keeps rule checks

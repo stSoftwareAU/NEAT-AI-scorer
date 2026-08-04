@@ -15,6 +15,10 @@
 # tests.
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=scripts/lib/check-harness.sh
+source "$SCRIPT_DIR/lib/check-harness.sh"
+
 usage() {
   cat <<'EOF'
 Usage: check-milestone-branch-filter.sh [--workflow PATH]
@@ -29,34 +33,9 @@ Exits 0 when the workflow's on.pull_request.branches filter includes a
 EOF
 }
 
-WORKFLOW=""
-while [[ $# -gt 0 ]]; do
-  case "$1" in
-    --workflow)
-      WORKFLOW="$2"
-      shift 2
-      ;;
-    -h|--help)
-      usage
-      exit 0
-      ;;
-    *)
-      echo "Unknown argument: $1" >&2
-      usage >&2
-      exit 2
-      ;;
-  esac
-done
-
-if [[ -z "$WORKFLOW" ]]; then
-  SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-  WORKFLOW="$SCRIPT_DIR/../.github/workflows/ci.yml"
-fi
-
-if [[ ! -f "$WORKFLOW" ]]; then
-  echo "Workflow file not found: $WORKFLOW" >&2
-  exit 2
-fi
+parse_check_args --workflow ".github/workflows/ci.yml" "$@"
+WORKFLOW="$CHECK_TARGET"
+check_require_file "$WORKFLOW"
 
 # Extract the `on.pull_request.branches` list, one entry per line. The scanner
 # walks the `on:` map, descends into `pull_request:`, then collects the

@@ -20,6 +20,10 @@
 # Designed for reuse from BATS tests and quality.sh.
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=scripts/lib/check-harness.sh
+source "$SCRIPT_DIR/lib/check-harness.sh"
+
 usage() {
   cat <<'EOF'
 Usage: check-neat-core-composite-action.sh [--action PATH] [--workflows DIR]
@@ -42,33 +46,28 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --action)
       ACTION="${2:-}"
-      [[ -n "$ACTION" ]] || { echo "--action requires a path argument" >&2; exit 2; }
+      [[ -n "$ACTION" ]] || check_die 2 "--action requires a path argument"
       shift 2
       ;;
     --workflows)
       WORKFLOWS_DIR="${2:-}"
-      [[ -n "$WORKFLOWS_DIR" ]] || { echo "--workflows requires a directory argument" >&2; exit 2; }
+      [[ -n "$WORKFLOWS_DIR" ]] || check_die 2 "--workflows requires a directory argument"
       shift 2
       ;;
-    -h|--help)
+    -h | --help)
       usage
       exit 0
       ;;
     *)
-      echo "Unknown argument: $1" >&2
-      usage >&2
-      exit 2
+      check_unknown_arg "$1"
       ;;
   esac
 done
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-[[ -n "$ACTION" ]] || ACTION="$SCRIPT_DIR/../.github/actions/setup-neat-core/action.yml"
-[[ -n "$WORKFLOWS_DIR" ]] || WORKFLOWS_DIR="$SCRIPT_DIR/../.github/workflows"
+[[ -n "$ACTION" ]] || ACTION="$(check_repo_path ".github/actions/setup-neat-core/action.yml")"
+[[ -n "$WORKFLOWS_DIR" ]] || WORKFLOWS_DIR="$(check_repo_path ".github/workflows")"
 
-EXIT_CODE=0
-fail() { echo "FAIL $*" >&2; EXIT_CODE=1; }
-ok() { echo "OK   $*"; }
+# Every message names its own file, so ok/fail carry no subject prefix.
 
 # --- 1 & 2: the composite action exists and is well formed. -----------------
 if [[ ! -f "$ACTION" ]]; then
@@ -102,10 +101,7 @@ else
 fi
 
 # --- 3 & 4: workflows go through the composite, none inline the checkout. ----
-if [[ ! -d "$WORKFLOWS_DIR" ]]; then
-  echo "Workflows directory not found: $WORKFLOWS_DIR" >&2
-  exit 2
-fi
+check_require_dir "$WORKFLOWS_DIR"
 
 inline_hits="$(grep -rln 'repository:[[:space:]]*stSoftwareAU/NEAT-AI-core' \
   --include='*.yml' --include='*.yaml' "$WORKFLOWS_DIR" || true)"

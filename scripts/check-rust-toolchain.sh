@@ -16,6 +16,10 @@
 # `rust-toolchain.toml` relative to the repo root.
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=scripts/lib/check-harness.sh
+source "$SCRIPT_DIR/lib/check-harness.sh"
+
 usage() {
   cat <<'EOF'
 Usage: check-rust-toolchain.sh [--toolchain PATH]
@@ -30,43 +34,10 @@ Exits non-zero with a descriptive message otherwise.
 EOF
 }
 
-TOOLCHAIN=""
-while [[ $# -gt 0 ]]; do
-  case "$1" in
-    --toolchain)
-      TOOLCHAIN="$2"
-      shift 2
-      ;;
-    -h|--help)
-      usage
-      exit 0
-      ;;
-    *)
-      echo "Unknown argument: $1" >&2
-      usage >&2
-      exit 2
-      ;;
-  esac
-done
-
-if [[ -z "$TOOLCHAIN" ]]; then
-  SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-  TOOLCHAIN="$SCRIPT_DIR/../rust-toolchain.toml"
-fi
-
-if [[ ! -f "$TOOLCHAIN" ]]; then
-  echo "rust-toolchain.toml not found: $TOOLCHAIN" >&2
-  exit 2
-fi
-
-EXIT_CODE=0
-fail() {
-  echo "FAIL $TOOLCHAIN: $*" >&2
-  EXIT_CODE=1
-}
-ok() {
-  echo "OK   $TOOLCHAIN: $*"
-}
+parse_check_args --toolchain "rust-toolchain.toml" "$@"
+TOOLCHAIN="$CHECK_TARGET"
+check_require_file "$TOOLCHAIN" "rust-toolchain.toml"
+check_subject "$TOOLCHAIN"
 
 # 1. A [toolchain] table is present.
 if grep -qE '^\[toolchain\]' "$TOOLCHAIN"; then
