@@ -17,6 +17,15 @@ section to the released version with its date.
 
 ### Changed
 
+- **The docs private-repo guard covers the whole archive (Issue #510).** Four
+  archived PR summaries — the ones added by the private-repo-reference audit
+  itself — still named the private production-data and cluster-data
+  repositories, and `scripts/check-docs-private-repo-refs.sh` carved three of
+  them out of `in_scope()` on the rationale that they must quote what they
+  removed. They need not: all four are now worded at concept level, the
+  carve-out is gone, and the match is case-insensitive with `_`/`-` treated as
+  word boundaries so lower-case identifier spellings are caught too.
+
 - **One documented home for the workspace binary list (Issue #509).**
   `rust_scorer/Cargo.toml` declares four `[[bin]]` targets, but `CONTRIBUTING.md`
   named three (omitting `gpu_pipeline_alloc_bench`) and `AGENTS.md` named two —

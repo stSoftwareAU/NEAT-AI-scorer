@@ -1,7 +1,7 @@
 ## Summary
 
 Deleted the production benchmark's runtime access to the **private**
-`stSoftwareAU/GRQ-cluster` repository so this public repo is fully
+cluster-data repository so this public repo is fully
 self-contained and its benches are reproducible outside the organisation
 (check 1 — runtime access to a private repo). Closes #448.
 
@@ -62,8 +62,8 @@ bench build:
   `production_creature_path_reads_local_env_only`.
 - `cargo build -p rust_scorer --benches` — compiles cleanly with the removed
   imports and the `Option`-returning `prod_fixture()`.
-- `grep` confirms no live source/script reference to
-  `raw.githubusercontent.com/stSoftwareAU/GRQ-cluster` remains.
+- `grep` confirms no live source/script reference to the private cluster-data
+  repository's `raw.githubusercontent.com` path remains.
 
 ## Test Plan
 
