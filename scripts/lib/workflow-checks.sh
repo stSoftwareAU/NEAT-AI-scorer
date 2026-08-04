@@ -1,4 +1,4 @@
-# Shared workflow-validation helpers (Issue #511).
+# Shared workflow-validation helpers (Issues #511, #514).
 #
 # Sourced by the per-workflow validators under `scripts/`. It carries rules that
 # every one of them enforces identically, so a change to the rule is a change to
@@ -62,5 +62,41 @@ require_pinned_checkout() {
     fail "actions/checkout is not pinned — branch refs disallowed: ${unpinned[*]}"
   else
     ok "actions/checkout pinned to a numeric major or 40-char SHA"
+  fi
+}
+
+# require_readonly_permissions <workflow>
+#
+# The least-privilege rule (Issue #514): the workflow declares a bare top-level
+# `permissions:` key and grants `contents: read` beneath it. A bare key is
+# required so the blanket `permissions: write-all` shorthand is rejected — an
+# inline `permissions: {contents: read}` one-liner is not accepted either, and
+# no workflow in this repo uses one.
+#
+# Known looseness, deliberately kept when the seven inline copies were unified:
+# the two greps are independent, so an indented `contents: read` anywhere in the
+# file satisfies the second one. Tightening it to "inside the top-level block"
+# is now a single edit here.
+require_readonly_permissions() {
+  local workflow="${1:-}"
+
+  if [[ -z "$workflow" ]]; then
+    echo "require_readonly_permissions: a workflow path argument is required" >&2
+    return 2
+  fi
+  if [[ ! -r "$workflow" ]]; then
+    echo "require_readonly_permissions: workflow not readable: $workflow" >&2
+    return 2
+  fi
+  if ! declare -F ok >/dev/null || ! declare -F fail >/dev/null; then
+    echo "require_readonly_permissions: caller must define ok() and fail() first" >&2
+    return 2
+  fi
+
+  if grep -qE '^permissions:[[:space:]]*$' "$workflow" \
+    && grep -qE '^[[:space:]]+contents:[[:space:]]*read' "$workflow"; then
+    ok "permissions block grants only contents: read"
+  else
+    fail "no 'permissions: contents: read' block — least-privilege required"
   fi
 }

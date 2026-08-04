@@ -1219,15 +1219,24 @@ spuriously. Issue #511 extracted it into a single helper,
 the acceptance rule (`vN` or a 40-character SHA, branch refs disallowed) now
 lives. The helper is covered by `tests/scripts/workflow_checks_lib.bats`.
 
+The least-privilege `permissions:` rule — the workflow declares a bare top-level
+`permissions:` key and grants `contents: read` — was the same story one step
+earlier: seven validators (the six above plus
+`check-semgrep-workflow.sh`) carried a byte-identical six-line `grep` pair, so
+any change to the acceptance rule needed seven identical edits. Issue #514
+extracted it into `require_readonly_permissions` in the same library, alongside
+the checkout rule.
+
 ```mermaid
 flowchart LR
-    L["scripts/lib/workflow-checks.sh<br/>require_pinned_checkout"]
+    L["scripts/lib/workflow-checks.sh<br/>require_pinned_checkout<br/>require_readonly_permissions"]
     A[check-actionlint-workflow.sh] --> L
     B[check-cargo-audit-workflow.sh] --> L
     C[check-cargo-quality-workflow.sh] --> L
     D[check-dependency-review-workflow.sh] --> L
     E[check-markdown-lint-workflow.sh] --> L
     F[check-sbom-workflow.sh] --> L
+    G["check-semgrep-workflow.sh<br/>(permissions rule only)"] --> L
 ```
 
 ## How to bench
