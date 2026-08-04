@@ -13,23 +13,20 @@ use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
 
+use rust_scorer::fixture_json::{creature_envelope, neuron_json, synapse_json};
 use tempfile::TempDir;
 
 /// Minimal forward-only identity creature: 1 input → 1 output, IDENTITY
 /// squash, weight 1.0. Small enough that the fused path runs in
 /// milliseconds even on the largest corpus this smoke test creates.
-const IDENTITY_CREATURE_JSON: &str = r#"{
-    "input": 1,
-    "output": 1,
-    "forwardOnly": true,
-    "semanticVersion": "4.0.0",
-    "neurons": [
-        {"type":"output","uuid":"output-0","bias":0.0,"squash":"IDENTITY"}
-    ],
-    "synapses": [
-        {"fromUUID":"input-0","toUUID":"output-0","weight":1.0}
-    ]
-}"#;
+fn identity_creature_json() -> String {
+    creature_envelope(
+        1,
+        1,
+        &[neuron_json("output", "output-0", 0.0, "IDENTITY")],
+        &[synapse_json("input-0", "output-0", 1.0)],
+    )
+}
 
 /// Write a tiny `.bin` corpus: 64 records of [input, target] f32 pairs.
 fn write_tiny_corpus(data_dir: &std::path::Path) {
@@ -54,7 +51,7 @@ fn bench_bin() -> PathBuf {
 fn cost_scan_bench_emits_one_row_per_supported_cost() {
     let tmp = TempDir::new().unwrap();
     let creature = tmp.path().join("creature.json");
-    fs::write(&creature, IDENTITY_CREATURE_JSON).unwrap();
+    fs::write(&creature, identity_creature_json()).unwrap();
     let data_dir = tmp.path().join("data");
     write_tiny_corpus(&data_dir);
 
@@ -136,7 +133,7 @@ fn cost_scan_bench_emits_one_row_per_supported_cost() {
 fn cost_scan_bench_rejects_missing_data_dir() {
     let tmp = TempDir::new().unwrap();
     let creature = tmp.path().join("creature.json");
-    fs::write(&creature, IDENTITY_CREATURE_JSON).unwrap();
+    fs::write(&creature, identity_creature_json()).unwrap();
     let missing = tmp.path().join("no-such-dir");
 
     let output = Command::new(bench_bin())

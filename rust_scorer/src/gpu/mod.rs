@@ -525,6 +525,7 @@ pub fn resolve_backend(mode: GpuMode) -> Result<GpuBackendLabel, ResolveBackendE
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::fixture_json::{creature_envelope, neuron_json, synapse_json};
 
     #[test]
     fn gpu_mode_parses_lowercase() {
@@ -612,23 +613,13 @@ mod tests {
         let mut neurons: Vec<String> = Vec::new();
         let mut synapses: Vec<String> = Vec::new();
         for h in 0..hidden {
-            neurons.push(format!(
-                r#"{{"type":"hidden","uuid":"h{h}","bias":0.0,"squash":"IDENTITY"}}"#
-            ));
+            neurons.push(neuron_json("hidden", &format!("h{h}"), 0.0, "IDENTITY"));
             let i = h % num_inputs;
-            synapses.push(format!(
-                r#"{{"fromUUID":"input-{i}","toUUID":"h{h}","weight":1.0}}"#
-            ));
-            synapses.push(format!(
-                r#"{{"fromUUID":"h{h}","toUUID":"o0","weight":1.0}}"#
-            ));
+            synapses.push(synapse_json(&format!("input-{i}"), &format!("h{h}"), 1.0));
+            synapses.push(synapse_json(&format!("h{h}"), "o0", 1.0));
         }
-        neurons.push(r#"{"type":"output","uuid":"o0","bias":0.0,"squash":"IDENTITY"}"#.into());
-        format!(
-            r#"{{"input":{num_inputs},"output":1,"forwardOnly":true,"neurons":[{}],"synapses":[{}]}}"#,
-            neurons.join(","),
-            synapses.join(","),
-        )
+        neurons.push(neuron_json("output", "o0", 0.0, "IDENTITY"));
+        creature_envelope(num_inputs, 1, &neurons, &synapses)
     }
 
     fn creature_dir(tmp: &tempfile::TempDir, json: &str) -> std::path::PathBuf {

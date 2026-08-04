@@ -24,52 +24,13 @@ use std::path::Path;
 use std::sync::Arc;
 
 use rust_scorer::cost::CostKind;
+use rust_scorer::fixture_json::dense_mlp_creature_json;
 use rust_scorer::gpu::forward_mse_batched::MAX_NEURONS_PER_CREATURE;
 use rust_scorer::gpu::{GpuBackendLabel, GpuMode, resolve_backend, select_adapter};
 use rust_scorer::multi_score::{score_from_creature_dir, score_from_creature_dir_gpu};
 
 const NUM_INPUTS: usize = 8;
 const NUM_OUTPUTS: usize = 2;
-
-/// A forward-only 8→hidden→2 MLP with `TANH` hidden neurons — a real forward
-/// pass with a non-linear squash, not a trivial identity creature. Varying
-/// `hidden` lets the fixture straddle the 256-neuron kernel boundary so both
-/// the private-array and scratch kernels are exercised.
-fn creature_json(hidden: usize) -> String {
-    let mut neurons: Vec<String> = Vec::new();
-    for h in 0..hidden {
-        neurons.push(format!(
-            r#"{{"type":"hidden","uuid":"hidden-{h}","bias":0.05,"squash":"TANH"}}"#
-        ));
-    }
-    for o in 0..NUM_OUTPUTS {
-        neurons.push(format!(
-            r#"{{"type":"output","uuid":"output-{o}","bias":0.0,"squash":"IDENTITY"}}"#
-        ));
-    }
-    let mut synapses: Vec<String> = Vec::new();
-    for i in 0..NUM_INPUTS {
-        for h in 0..hidden {
-            let w = 0.05 + 0.001 * ((i * hidden + h) as f64);
-            synapses.push(format!(
-                r#"{{"fromUUID":"input-{i}","toUUID":"hidden-{h}","weight":{w}}}"#
-            ));
-        }
-    }
-    for h in 0..hidden {
-        for o in 0..NUM_OUTPUTS {
-            let w = 0.1 + 0.001 * ((h * NUM_OUTPUTS + o) as f64);
-            synapses.push(format!(
-                r#"{{"fromUUID":"hidden-{h}","toUUID":"output-{o}","weight":{w}}}"#
-            ));
-        }
-    }
-    format!(
-        r#"{{"input":{NUM_INPUTS},"output":{NUM_OUTPUTS},"forwardOnly":true,"semanticVersion":"4.0.0","neurons":[{}],"synapses":[{}]}}"#,
-        neurons.join(","),
-        synapses.join(","),
-    )
-}
 
 /// Write a mixed creature directory (small private-kernel creatures + one large
 /// scratch-kernel creature) and a single training bin.
@@ -83,7 +44,11 @@ fn write_fixture(root: &Path, n_records: usize) -> (std::path::PathBuf, std::pat
     for c in 0..3 {
         std::fs::write(
             creatures_dir.join(format!("small-{c}.json")),
-            creature_json(8),
+            // A forward-only 8→hidden→2 MLP with `TANH` hidden neurons — a real
+            // forward pass with a non-linear squash, not a trivial identity
+            // creature. Varying `hidden` straddles the 256-neuron kernel boundary
+            // so both the private-array and scratch kernels are exercised.
+            dense_mlp_creature_json(NUM_INPUTS, NUM_OUTPUTS, 8, "TANH"),
         )
         .expect("write small creature");
     }
@@ -93,7 +58,7 @@ fn write_fixture(root: &Path, n_records: usize) -> (std::path::PathBuf, std::pat
         (MAX_NEURONS_PER_CREATURE as usize + 50).saturating_sub(NUM_INPUTS + NUM_OUTPUTS);
     std::fs::write(
         creatures_dir.join("large-0.json"),
-        creature_json(large_hidden),
+        dense_mlp_creature_json(NUM_INPUTS, NUM_OUTPUTS, large_hidden, "TANH"),
     )
     .expect("write large creature");
 

@@ -21,44 +21,9 @@ use neat_core::creature::{compile_creature, parse_creature_json};
 use neat_core::loss::mse_sum_batch_packed;
 
 use rust_scorer::cost::CostKind;
+use rust_scorer::fixture_json::dense_mlp_creature_json;
 use rust_scorer::gpu::forward_mse_batched::BatchedRunner;
 use rust_scorer::gpu::{GpuMode, resolve_backend, select_adapter};
-
-fn synthetic_creature_json(num_inputs: usize, num_outputs: usize, hidden: usize) -> String {
-    let mut neurons: Vec<String> = Vec::new();
-    for h in 0..hidden {
-        neurons.push(format!(
-            r#"{{"type":"hidden","uuid":"hidden-{h}","bias":0.05,"squash":"TANH"}}"#
-        ));
-    }
-    for o in 0..num_outputs {
-        neurons.push(format!(
-            r#"{{"type":"output","uuid":"output-{o}","bias":0.0,"squash":"IDENTITY"}}"#
-        ));
-    }
-    let mut synapses: Vec<String> = Vec::new();
-    for i in 0..num_inputs {
-        for h in 0..hidden {
-            let w = 0.05 + 0.001 * ((i * hidden + h) as f64);
-            synapses.push(format!(
-                r#"{{"fromUUID":"input-{i}","toUUID":"hidden-{h}","weight":{w}}}"#
-            ));
-        }
-    }
-    for h in 0..hidden {
-        for o in 0..num_outputs {
-            let w = 0.1 + 0.001 * ((h * num_outputs + o) as f64);
-            synapses.push(format!(
-                r#"{{"fromUUID":"hidden-{h}","toUUID":"output-{o}","weight":{w}}}"#
-            ));
-        }
-    }
-    format!(
-        r#"{{"input":{num_inputs},"output":{num_outputs},"forwardOnly":true,"semanticVersion":"4.0.0","neurons":[{}],"synapses":[{}]}}"#,
-        neurons.join(","),
-        synapses.join(","),
-    )
-}
 
 fn build_records(num_inputs: usize, num_outputs: usize, n_records: usize) -> Vec<f32> {
     let values_per_record = num_inputs + num_outputs;
@@ -98,7 +63,7 @@ fn same_size_chunks_are_deterministic_and_reuse_bind_groups() {
     let Some(ctx) = gpu_ctx() else { return };
 
     let (num_inputs, num_outputs, hidden) = (8, 2, 8);
-    let json = synthetic_creature_json(num_inputs, num_outputs, hidden);
+    let json = dense_mlp_creature_json(num_inputs, num_outputs, hidden, "TANH");
     let template = compile_creature(&parse_creature_json(&json).expect("parse")).expect("compile");
     let nets: Vec<_> = (0..4).map(|_| template.clone()).collect();
 
@@ -143,7 +108,7 @@ fn grown_and_shrunk_chunks_stay_correct() {
     let Some(ctx) = gpu_ctx() else { return };
 
     let (num_inputs, num_outputs, hidden) = (8, 2, 8);
-    let json = synthetic_creature_json(num_inputs, num_outputs, hidden);
+    let json = dense_mlp_creature_json(num_inputs, num_outputs, hidden, "TANH");
     let template = compile_creature(&parse_creature_json(&json).expect("parse")).expect("compile");
     let nets: Vec<_> = (0..4).map(|_| template.clone()).collect();
 
@@ -190,7 +155,7 @@ fn reused_bind_group_preserves_cpu_parity() {
     let Some(ctx) = gpu_ctx() else { return };
 
     let (num_inputs, num_outputs, hidden) = (8, 2, 8);
-    let json = synthetic_creature_json(num_inputs, num_outputs, hidden);
+    let json = dense_mlp_creature_json(num_inputs, num_outputs, hidden, "TANH");
     let template = compile_creature(&parse_creature_json(&json).expect("parse")).expect("compile");
     let mut nets: Vec<_> = (0..4).map(|_| template.clone()).collect();
 

@@ -16,6 +16,7 @@ use std::path::Path;
 use std::process::Command;
 
 use rust_scorer::cost::CostKind;
+use rust_scorer::fixture_json::{creature_envelope, neuron_json, synapse_json};
 use rust_scorer::gpu::GpuBackendLabel;
 use rust_scorer::multi_score::score_from_creature_dir;
 
@@ -32,8 +33,17 @@ fn write_training_data(dir: &Path, records: &[(Vec<f32>, Vec<f32>)]) {
 /// Forward-only creature with one hidden TANH neuron, so the scored value is
 /// sensitive to the whole activation pipeline (not just an identity pass).
 fn creature_json(weight: f64) -> String {
-    format!(
-        r#"{{"input":1,"output":1,"forwardOnly":true,"neurons":[{{"type":"hidden","uuid":"hidden-0","bias":0.25,"squash":"TANH"}},{{"type":"output","uuid":"output-0","bias":0.0,"squash":"IDENTITY"}}],"synapses":[{{"fromUUID":"input-0","toUUID":"hidden-0","weight":{weight}}},{{"fromUUID":"hidden-0","toUUID":"output-0","weight":0.75}}],"semanticVersion":"4.0.0"}}"#
+    creature_envelope(
+        1,
+        1,
+        &[
+            neuron_json("hidden", "hidden-0", 0.25, "TANH"),
+            neuron_json("output", "output-0", 0.0, "IDENTITY"),
+        ],
+        &[
+            synapse_json("input-0", "hidden-0", weight),
+            synapse_json("hidden-0", "output-0", 0.75),
+        ],
     )
 }
 

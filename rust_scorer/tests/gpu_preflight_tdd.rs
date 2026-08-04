@@ -11,6 +11,7 @@
 
 use std::path::Path;
 
+use rust_scorer::fixture_json::{creature_envelope, neuron_json, synapse_json};
 use rust_scorer::gpu::forward_mse_batched::GpuPrepareError;
 use rust_scorer::multi_score::gpu_directory_compatible;
 
@@ -20,35 +21,36 @@ use rust_scorer::multi_score::gpu_directory_compatible;
 fn write_creature(dir: &Path, name: &str, num_inputs: usize, num_outputs: usize, hidden: usize) {
     let mut neurons = Vec::new();
     for h in 0..hidden {
-        neurons.push(format!(
-            r#"{{"type":"hidden","uuid":"hidden-{h}","bias":0.01,"squash":"TANH"}}"#
-        ));
+        neurons.push(neuron_json("hidden", &format!("hidden-{h}"), 0.01, "TANH"));
     }
     for o in 0..num_outputs {
-        neurons.push(format!(
-            r#"{{"type":"output","uuid":"output-{o}","bias":0.0,"squash":"IDENTITY"}}"#
+        neurons.push(neuron_json(
+            "output",
+            &format!("output-{o}"),
+            0.0,
+            "IDENTITY",
         ));
     }
     let mut synapses = Vec::new();
     for i in 0..num_inputs {
         for h in 0..hidden {
-            synapses.push(format!(
-                r#"{{"fromUUID":"input-{i}","toUUID":"hidden-{h}","weight":0.02}}"#
+            synapses.push(synapse_json(
+                &format!("input-{i}"),
+                &format!("hidden-{h}"),
+                0.02,
             ));
         }
     }
     for h in 0..hidden {
         for o in 0..num_outputs {
-            synapses.push(format!(
-                r#"{{"fromUUID":"hidden-{h}","toUUID":"output-{o}","weight":0.03}}"#
+            synapses.push(synapse_json(
+                &format!("hidden-{h}"),
+                &format!("output-{o}"),
+                0.03,
             ));
         }
     }
-    let json = format!(
-        r#"{{"input":{num_inputs},"output":{num_outputs},"forwardOnly":true,"semanticVersion":"4.0.0","neurons":[{}],"synapses":[{}]}}"#,
-        neurons.join(","),
-        synapses.join(","),
-    );
+    let json = creature_envelope(num_inputs, num_outputs, &neurons, &synapses);
     std::fs::write(dir.join(name), json).expect("write creature JSON");
 }
 
