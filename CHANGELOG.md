@@ -17,6 +17,16 @@ section to the released version with its date.
 
 ### Changed
 
+- **One documented home for the workspace binary list (Issue #509).**
+  `rust_scorer/Cargo.toml` declares four `[[bin]]` targets, but `CONTRIBUTING.md`
+  named three (omitting `gpu_pipeline_alloc_bench`) and `AGENTS.md` named two —
+  each doc kept its own copy of a list the manifest owns, so every new binary
+  re-opened the drift. Both now cite the README **Binaries** section (given its
+  own heading so the citation resolves) instead of restating the list. New
+  `scripts/check-binary-list-docs.sh` (run from `quality.sh`, covered by
+  `tests/scripts/binary_list_docs.bats`) fails the gate when the README omits a
+  manifest binary, or when `CONTRIBUTING.md` / `AGENTS.md` name one.
+
 - **One documented home for the PR-summary archive (Issue #508).** The archive
   — the project's durable cross-machine memory — was split between
   `docs/pr-summary-*.md` (40 summaries, PRs 1–105) and

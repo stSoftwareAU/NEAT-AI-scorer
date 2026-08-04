@@ -9,8 +9,10 @@ and submit changes. It mirrors the local gate documented in
 ## Repository layout
 
 This is a multi-binary Rust workspace. The sole workspace member is
-**`rust_scorer`** (the `rust_scorer`, `float_scan_bench`, and
-`cost_scan_bench` binaries). The shared scoring logic lives in
+**`rust_scorer`**. Its `[[bin]]` targets are owned by
+[`rust_scorer/Cargo.toml`](./rust_scorer/Cargo.toml) and documented in the
+README [Binaries](./README.md#binaries) section — this guide deliberately keeps
+no copy of that list (Issue #509). The shared scoring logic lives in
 **`neat-core`**, resolved as a **path dependency** on a sibling clone of
 [NEAT-AI-core](https://github.com/stSoftwareAU/NEAT-AI-core).
 
