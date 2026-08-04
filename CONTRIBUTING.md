@@ -82,6 +82,13 @@ Keep re-running `./quality.sh < /dev/null` until it passes cleanly.
   assert on results, exit codes, or side effects.
 - When a domain term trips codespell, add it with a short justification to
   [`.codespellrc`](./.codespellrc) rather than silencing a whole file.
+- A precondition that guards an `unsafe` block must be an always-on `assert!`,
+  never a `debug_assert!` (Issue #103) — release builds elide the latter, which
+  turned a length check in `unpack_f32s_le` into an out-of-bounds read. Pure
+  internal-maths invariants with no memory-safety consequence may stay
+  `debug_assert!` (Issue #201).
+- Draw diagrams in the living docs with **Mermaid**, not box-drawing ASCII
+  (Issue #48); `tests/scripts/diagrams_mermaid.bats` enforces this.
 
 ## Pull request workflow
 
@@ -90,7 +97,11 @@ Keep re-running `./quality.sh < /dev/null` until it passes cleanly.
 3. Run `./quality.sh < /dev/null` until it passes.
 4. Update [`CHANGELOG.md`](./CHANGELOG.md) under the `## [Unreleased]`
    section, and update the README or other docs if behaviour changes.
-5. Open a pull request targeting `Develop`.
+5. Write the PR summary to
+   [`docs/archive/pr-summaries/`](./docs/archive/pr-summaries/README.md) —
+   **PR summaries live there, one file per PR** (`pr-summary-<issue>.md`), and
+   nowhere else (Issue #508).
+6. Open a pull request targeting `Develop`.
 
 On each PR the **Version Increment** workflow
 ([`.github/workflows/version-increment.yml`](./.github/workflows/version-increment.yml))

@@ -450,7 +450,7 @@ single positional argument (`<training_data_dir>`).
 
 ### Output
 
-Single-creature mode JSON includes **`forwardOnly`** (from the creature) and **`trainingReadBackend`**: on a native release build you should see **`pipelined_double_buffer`** when `forwardOnly` is `true` (fused scoring + `training_bin_stream`). If `forwardOnly` is `false`, you get **`record_iterator`** instead (no pipelining — much slower on large data). The **`gpuBackend`** field reports the `wgpu` backend that **actually ran** the scoring kernel — `"metal"`, `"vulkan"`, `"dx12"` or `"gl"` when a GPU hosted the run, and `"cpu-fallback"` when the CPU pipeline ran (see [GPU mode](#gpu-mode-issues-80--83) above for the routing rules). When record-level sub-sampling runs (`--sample-rate < 1`, see [Record-level sub-sampling](#record-level-sub-sampling----sample-rate-issue-310)) a **`sampleRate`** field echoes the effective rate and `recordCount` is the number of *sampled* records scored; the field is absent for a full-corpus run.
+Single-creature mode JSON includes **`forwardOnly`** (from the creature) and **`trainingReadBackend`**: on a native release build you should see **`pipelined_double_buffer`** when `forwardOnly` is `true` (fused scoring + `training_bin_stream`). If `forwardOnly` is `false`, you get **`record_iterator`** instead (no pipelining — much slower on large data). The **`gpuBackend`** field reports the `wgpu` backend that **actually ran** the scoring kernel — `"metal"`, `"vulkan"`, `"dx12"` or `"gl"` when a GPU hosted the run, and `"cpu-fallback"` when the CPU pipeline ran (see [GPU mode](#gpu-mode-issues-80--83) above for the routing rules). When record-level sub-sampling runs (`--sample-rate < 1`, see [Record-level sub-sampling](#record-level-sub-sampling----sample-rate-issue-310)) a **`sampleRate`** field echoes the effective rate and `recordCount` is the number of *sampled* records scored; the field is absent for a full-corpus run. **`compileTimeSecs`** (Issue #42) reports the wall-clock seconds spent in `compile_creature` — plus any per-worker `CompiledNetwork` clone — before scoring starts, so the fixed startup share of `timeTaken` can be told apart from scoring time; it is omitted when no compile timing was recorded.
 
 In directory mode, output is a top-level object keyed by creature filename stem, where each value has the same shape as a single-creature `ScoreResult`.
 
@@ -634,7 +634,7 @@ supersession note in
 
 ## Local layout
 
-Place **NEAT-AI-core** and **NEAT-AI-scorer** as **siblings** (e.g. `…/src/NEAT-AI-core` and `…/src/NEAT-AI-scorer`). The path in `rust_scorer/Cargo.toml` is `../../NEAT-AI-core/neat-core` so `cargo build` resolves `neat-core` from your local **NEAT-AI-core** tree. CI does the same via a second checkout (`../NEAT-AI-core`).
+Place **NEAT-AI-core** and **NEAT-AI-scorer** as **siblings** (e.g. `…/src/NEAT-AI-core` and `…/src/NEAT-AI-scorer`). The path in `rust_scorer/Cargo.toml` is `../../NEAT-AI-core/neat-core` so `cargo build` resolves `neat-core` from your local **NEAT-AI-core** tree. CI does the same via a second checkout, but indirectly: `actions/checkout` **refuses any `path:` that resolves outside `$GITHUB_WORKSPACE`**, so the [`setup-neat-core`](./.github/actions/setup-neat-core/action.yml) composite action clones into the in-workspace `NEAT-AI-core/` and symlinks `$GITHUB_WORKSPACE/../NEAT-AI-core` at it (Issue #18). `scripts/check-workflow-paths.sh` fails the gate if a workflow reintroduces an out-of-workspace `path:`.
 
 ### neat-core breaking-bump gate (Issue #252)
 

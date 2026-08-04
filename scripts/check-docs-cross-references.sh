@@ -15,9 +15,10 @@
 #      anchor matches a real heading in it.
 #   3. No document re-attributes those rules to AGENTS.md.
 #
-# `docs/pr-summary-*.md` and `docs/archive/pr-summaries/*` are frozen historical
-# records of merged PRs, so they are not scanned — rewriting them would falsify
-# the record.
+# `docs/archive/pr-summaries/*` — the single home for PR summaries since Issue
+# #508 — holds frozen historical records of merged PRs, so it is not scanned:
+# rewriting a summary would falsify the record. The `pr-summary-*` skip below
+# is belt-and-braces should one ever land back in the `docs/` root.
 #
 # Usage:
 #   check-docs-cross-references.sh [--root PATH]

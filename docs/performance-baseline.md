@@ -1130,3 +1130,33 @@ follow-up.
    ```
 
    Append a new dated Host row to the "Per-cost CPU baseline" table.
+
+## Learnings recovered from the early PR summaries (Issue #508)
+
+Measurements from PRs 1–105 whose outcomes were only ever recorded in the
+individual PR summaries, folded here when the archive was consolidated under
+[`docs/archive/pr-summaries/`](./archive/pr-summaries/README.md). Hosts and
+fixtures are those of the originating PR — treat them as directional deltas,
+not as current absolute baselines.
+
+| Change | Measured delta | Source |
+|--------|----------------|--------|
+| Record-aligned zero-copy read path — skip the `pending.extend_from_slice` memcpy when a chunk is a whole-record multiple | single-creature fused **−27.3 %**; directory N=50 **−16.6 %**; N=10 @ 8 MiB **−6.1 %** | `pr-summary-38.md` |
+| Flatten the nested Rayon pools in `multi_score` to one flat worker pool (16 MiB, 10 cores) | N=1 **−14.8 %**, N=10 **−11.4 %**, N=50 **−28.0 %**, N=200 **−10.2 %** | `pr-summary-41.md` |
+| Compile the creature once and `CompiledNetwork::clone` per worker instead of `compile_creature` per worker | clone is **35× / 98× / 221×** cheaper at 8 / 64 / 200 hidden neurons (5.0→0.14 µs, 40.2→0.41 µs, 109→0.49 µs); **−10.3 %** at N=50 | `pr-summary-42.md` |
+| Batched GPU kernel on a **16 MiB** corpus (vs the 200 MB numbers recorded above) | only **17 % faster** at N=50 and **slower** at N=10 | `pr-summary-82.md` |
+
+Two rules of thumb fall out of those numbers and still hold:
+
+- **Compile-once wins shrink as the population grows.** Worker count is
+  `min(N, activation_threads)`, so only `N < activation_threads` was paying for
+  duplicate compiles — the 221× per-call saving is invisible at N=200.
+- **GPU crossover is corpus-size dependent, not just topology dependent.** At
+  16 MiB the per-dispatch arithmetic is too thin to amortise dispatch overhead
+  even on unified memory; the GPU decisions recorded above assume a
+  production-scale corpus.
+
+**Regression recipe for the record-aligned fast path (Issue #38).** Score the
+same corpus twice at two record-aligned `NEAT_SCORER_READ_BYTES` values (e.g.
+32 and 8 records' worth) and assert each creature's `error` is equal within
+`1e-9`. A chunking bug shows up as a per-creature divergence, not as a crash.
