@@ -22,6 +22,10 @@
 # CODEOWNERS file at the first recognised path relative to the repo root.
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=scripts/lib/check-harness.sh
+source "$SCRIPT_DIR/lib/check-harness.sh"
+
 usage() {
   cat <<'EOF'
 Usage: check-codeowners.sh [--codeowners PATH]
@@ -37,53 +41,19 @@ Exits non-zero with a descriptive message otherwise.
 EOF
 }
 
-CODEOWNERS=""
-while [[ $# -gt 0 ]]; do
-  case "$1" in
-    --codeowners)
-      CODEOWNERS="$2"
-      shift 2
-      ;;
-    -h|--help)
-      usage
-      exit 0
-      ;;
-    *)
-      echo "Unknown argument: $1" >&2
-      usage >&2
-      exit 2
-      ;;
-  esac
-done
-
+parse_check_args --codeowners "" "$@"
+CODEOWNERS="$CHECK_TARGET"
 if [[ -z "$CODEOWNERS" ]]; then
-  SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-  REPO_ROOT="$SCRIPT_DIR/.."
   for candidate in "CODEOWNERS" ".github/CODEOWNERS" "docs/CODEOWNERS"; do
-    if [[ -f "$REPO_ROOT/$candidate" ]]; then
-      CODEOWNERS="$REPO_ROOT/$candidate"
+    if [[ -f "$(check_repo_path "$candidate")" ]]; then
+      CODEOWNERS="$(check_repo_path "$candidate")"
       break
     fi
   done
-  if [[ -z "$CODEOWNERS" ]]; then
-    echo "CODEOWNERS not found at any recognised path: CODEOWNERS, .github/CODEOWNERS, docs/CODEOWNERS" >&2
-    exit 2
-  fi
+  [[ -n "$CODEOWNERS" ]] || check_die 2 "CODEOWNERS not found at any recognised path: CODEOWNERS, .github/CODEOWNERS, docs/CODEOWNERS"
 fi
-
-if [[ ! -f "$CODEOWNERS" ]]; then
-  echo "CODEOWNERS file not found: $CODEOWNERS" >&2
-  exit 2
-fi
-
-EXIT_CODE=0
-fail() {
-  echo "FAIL $CODEOWNERS: $*" >&2
-  EXIT_CODE=1
-}
-ok() {
-  echo "OK   $CODEOWNERS: $*"
-}
+check_require_file "$CODEOWNERS" "CODEOWNERS file"
+check_subject "$CODEOWNERS"
 
 # Does a CODEOWNERS pattern cover .github/workflows/ ?
 # CODEOWNERS uses gitignore-style globs; we accept the patterns that

@@ -28,6 +28,10 @@
 #     `.github/workflows` relative to the repo root.
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=scripts/lib/check-harness.sh
+source "$SCRIPT_DIR/lib/check-harness.sh"
+
 usage() {
   cat <<'EOF'
 Usage: check-prebuilt-tool-install.sh [--workflow PATH --tool NAME] [--workflows DIR]
@@ -54,61 +58,55 @@ WORKFLOWS_DIR=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --workflow)
+      check_flag_value --workflow $#
       WORKFLOW="$2"
       shift 2
       ;;
     --tool)
+      check_flag_value --tool $#
       TOOL="$2"
       shift 2
       ;;
     --workflows)
+      check_flag_value --workflows $#
       WORKFLOWS_DIR="$2"
       shift 2
       ;;
-    -h|--help)
+    -h | --help)
       usage
       exit 0
       ;;
     *)
-      echo "Unknown argument: $1" >&2
-      usage >&2
-      exit 2
+      check_unknown_arg "$1"
       ;;
   esac
 done
-
-EXIT_CODE=0
-fail() {
-  echo "FAIL $1: $2" >&2
-  EXIT_CODE=1
-}
-ok() {
-  echo "OK   $1: $2"
-}
 
 # Validate a single (workflow file, tool) pair against the two rules.
 check_pair() {
   local file="$1"
   local tool="$2"
+  # Each ok/fail line is about this workflow file.
+  local CHECK_SUBJECT="$file"
 
   if [[ ! -f "$file" ]]; then
-    fail "$file" "workflow file not found"
+    fail "workflow file not found"
     return
   fi
 
   # Rule 1: no source compile via `cargo install <tool>`.
   if grep -qE "cargo[[:space:]]+install[[:space:]]+${tool}([[:space:]]|$)" "$file"; then
-    fail "$file" "compiles $tool from source via 'cargo install $tool' — use a prebuilt binary"
+    fail "compiles $tool from source via 'cargo install $tool' — use a prebuilt binary"
   else
-    ok "$file" "no 'cargo install $tool' source compile"
+    ok "no 'cargo install $tool' source compile"
   fi
 
   # Rule 2: prebuilt install via taiki-e/install-action with a matching tool.
   if grep -qE 'uses:[[:space:]]*taiki-e/install-action@' "$file" \
     && grep -qE "tool:[[:space:]]*${tool}([[:space:]]|,|$)" "$file"; then
-    ok "$file" "installs $tool via prebuilt taiki-e/install-action"
+    ok "installs $tool via prebuilt taiki-e/install-action"
   else
-    fail "$file" "no prebuilt taiki-e/install-action step for $tool"
+    fail "no prebuilt taiki-e/install-action step for $tool"
   fi
 }
 
@@ -122,15 +120,8 @@ if [[ -n "$WORKFLOW" || -n "$TOOL" ]]; then
   exit "$EXIT_CODE"
 fi
 
-if [[ -z "$WORKFLOWS_DIR" ]]; then
-  SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-  WORKFLOWS_DIR="$SCRIPT_DIR/../.github/workflows"
-fi
-
-if [[ ! -d "$WORKFLOWS_DIR" ]]; then
-  echo "Workflows directory not found: $WORKFLOWS_DIR" >&2
-  exit 2
-fi
+[[ -n "$WORKFLOWS_DIR" ]] || WORKFLOWS_DIR="$(check_repo_path ".github/workflows")"
+check_require_dir "$WORKFLOWS_DIR"
 
 # Canonical (workflow, tool) pairs. bash 3.2 has no associative arrays, so a
 # parallel-indexed pair list is used.

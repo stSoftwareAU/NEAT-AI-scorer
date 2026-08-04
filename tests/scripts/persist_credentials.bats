@@ -6,6 +6,8 @@
 # repo security.yml so the enforced rule and the shipped workflow cannot drift
 # apart.
 
+load 'test_helper'
+
 setup() {
   SCRIPT_UNDER_TEST="${BATS_TEST_DIRNAME}/../../scripts/check-persist-credentials.sh"
   [ -x "$SCRIPT_UNDER_TEST" ] || chmod +x "$SCRIPT_UNDER_TEST"
@@ -136,15 +138,11 @@ EOF
 }
 
 @test "reports an error when the workflow file does not exist" {
-  run "$SCRIPT_UNDER_TEST" --workflow "$TMP_WF_DIR/does-not-exist.yml"
-  [ "$status" -ne 0 ]
-  [[ "$output" == *"not found"* ]]
+  assert_missing_target_rejected "$SCRIPT_UNDER_TEST" --workflow "$TMP_WF_DIR/does-not-exist.yml"
 }
 
 @test "unknown flag prints usage and exits non-zero" {
-  run "$SCRIPT_UNDER_TEST" --nonsense
-  [ "$status" -ne 0 ]
-  [[ "$output" == *"Usage"* ]]
+  assert_unknown_flag_rejected "$SCRIPT_UNDER_TEST"
 }
 
 @test "real repository ci.yml disables credential persistence everywhere (Issue #378)" {

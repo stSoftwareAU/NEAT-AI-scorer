@@ -26,6 +26,10 @@
 # relative to the repo root.
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=scripts/lib/check-harness.sh
+source "$SCRIPT_DIR/lib/check-harness.sh"
+
 usage() {
   cat <<'EOF'
 Usage: check-run-block-safety.sh [--workflows DIR]
@@ -41,25 +45,8 @@ Exits 1 (listing each offender as `file:line`) when any such block does not.
 EOF
 }
 
-WORKFLOWS_DIR=""
-while [[ $# -gt 0 ]]; do
-  case "$1" in
-    --workflows)
-      WORKFLOWS_DIR="${2:-}"
-      [[ -n "$WORKFLOWS_DIR" ]] || { echo "--workflows requires a directory argument" >&2; exit 2; }
-      shift 2
-      ;;
-    -h|--help)
-      usage
-      exit 0
-      ;;
-    *)
-      echo "Unknown argument: $1" >&2
-      usage >&2
-      exit 2
-      ;;
-  esac
-done
+parse_check_args --workflows "" "$@"
+WORKFLOWS_DIR="$CHECK_TARGET"
 
 # In default mode also scan local composite actions: the NEAT-AI-core sibling
 # symlink block now lives in `.github/actions/setup-neat-core/action.yml`
@@ -67,9 +54,8 @@ done
 # --workflows override scans only that directory (keeps test fixtures isolated).
 ACTIONS_DIR=""
 if [[ -z "$WORKFLOWS_DIR" ]]; then
-  SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-  WORKFLOWS_DIR="$SCRIPT_DIR/../.github/workflows"
-  ACTIONS_DIR="$SCRIPT_DIR/../.github/actions"
+  WORKFLOWS_DIR="$(check_repo_path ".github/workflows")"
+  ACTIONS_DIR="$(check_repo_path ".github/actions")"
 fi
 
 if [[ ! -d "$WORKFLOWS_DIR" ]]; then

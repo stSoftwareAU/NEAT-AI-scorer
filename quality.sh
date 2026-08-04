@@ -22,7 +22,9 @@ fi
 SHELLCHECK_FAILED=0
 while IFS= read -r script; do
   echo "  shellcheck: $script"
-  if ! shellcheck -s bash "$script"; then
+  # -x follows `# shellcheck source=` directives so the shared guard-script
+  # harness (scripts/lib/check-harness.sh, Issue #512) is analysed in context.
+  if ! shellcheck -x -s bash "$script"; then
     SHELLCHECK_FAILED=1
   fi
 done < <(find . -name "*.sh" -type f -not -path "./target/*" -not -path "./.git/*")

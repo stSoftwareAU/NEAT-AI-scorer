@@ -22,6 +22,10 @@
 # `.github/workflows` relative to the repo root.
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=scripts/lib/check-harness.sh
+source "$SCRIPT_DIR/lib/check-harness.sh"
+
 usage() {
   cat <<'EOF'
 Usage: check-shellcheck-dedup.sh [--workflows DIR]
@@ -38,34 +42,9 @@ or duplicated across more than one workflow file.
 EOF
 }
 
-WORKFLOWS_DIR=""
-while [[ $# -gt 0 ]]; do
-  case "$1" in
-    --workflows)
-      WORKFLOWS_DIR="$2"
-      shift 2
-      ;;
-    -h|--help)
-      usage
-      exit 0
-      ;;
-    *)
-      echo "Unknown argument: $1" >&2
-      usage >&2
-      exit 2
-      ;;
-  esac
-done
-
-if [[ -z "$WORKFLOWS_DIR" ]]; then
-  SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-  WORKFLOWS_DIR="$SCRIPT_DIR/../.github/workflows"
-fi
-
-if [[ ! -d "$WORKFLOWS_DIR" ]]; then
-  echo "Workflows directory not found: $WORKFLOWS_DIR" >&2
-  exit 2
-fi
+parse_check_args --workflows ".github/workflows" "$@"
+WORKFLOWS_DIR="$CHECK_TARGET"
+check_require_dir "$WORKFLOWS_DIR"
 
 # Collect every workflow file that *invokes* ShellCheck. A workflow counts when
 # it either references the action on a `uses:` line (ignoring leading `- `) or
