@@ -138,6 +138,9 @@ echo "📖 Validating README 'matches CI' block aligns with the CI quality job (
 echo "📚 Validating read-chunk docs match read_tuning.rs constants (Issue #504)..."
 ./scripts/check-read-bytes-docs.sh
 
+echo "🖥️  Validating gpuBackend docs match GpuBackendLabel (Issue #507)..."
+./scripts/check-gpu-backend-docs.sh
+
 echo "🔗 Validating cross-document citations resolve (Issue #505)..."
 ./scripts/check-docs-cross-references.sh
 
