@@ -540,10 +540,66 @@ For forward-only single-creature fused scoring, activation parallelism also
 defaults to all available CPU cores. Set `NEAT_SCORER_ACTIVATION_THREADS` only
 when you want to tune down/up manually.
 
+### Parallel training-data file reads (Issue #529)
+
+Record order does not matter — the fused accumulator is a plain sum over
+records — so a multi-file corpus is read by **several concurrent readers**
+instead of one. Production splits ~80 GB across 26 `.bin` files; each reader
+takes the next unread file, streams it, unpacks it and scores it independently,
+and the per-file partial losses are folded back **in file order** so the result
+does not depend on which reader got which file.
+
+```mermaid
+flowchart LR
+    subgraph before["Before: one reader"]
+        R1[read chunk] --> U1[unpack f32 — serial] --> A1[activate: fork/join over N threads] --> R1
+    end
+    subgraph after["After: W readers, one file each"]
+        F0[0.bin] --> W0[read → unpack → score] --> P0[partial loss]
+        F1[1.bin] --> W1[read → unpack → score] --> P1[partial loss]
+        FN[25.bin] --> WN[read → unpack → score] --> PN[partial loss]
+        P0 & P1 & PN --> S[fold in file order → total]
+    end
+```
+
+| Knob | Default | Purpose |
+|---|---|---|
+| `NEAT_SCORER_FILE_THREADS` | one reader per CPU, never more than there are files | `.bin` files read and scored concurrently. `1` restores the single sequential reader. |
+
+The two parallel axes share one CPU budget: with `W` readers, each reader gets
+`NEAT_SCORER_ACTIVATION_THREADS / W` activation workers (at least one), and the
+readers share the same total read-buffer budget as a single reader — so neither
+threads nor memory grow with the file count. The resolved reader count is
+echoed back as the `fileReadWorkers` JSON field whenever it is `> 1`.
+
+Falls back to the single sequential reader for a one-file corpus and for a
+corpus whose files are **not** each a whole number of records (records spliced
+across a file boundary can only be reassembled by one continuous stream —
+[`corpus_guard`](rust_scorer/src/corpus_guard.rs) rejects such a corpus at the
+CLI anyway).
+
+**Scores are unchanged.** The kept record set is identical at every reader
+count, including under `--sample-rate` (each reader seeds its sampler with its
+file's global record offset, and the stride is a pure function of that index).
+On a corpus whose per-record errors are not exactly representable, the total can
+move in the last floating-point bits because records group into different SIMD
+batches — the same effect the existing `NEAT_SCORER_READ_BYTES` knob already
+has, measured well below `1e-6` relative
+(`tests/parallel_file_reads_tdd.rs`).
+
+Measured on an Apple M4 (10 cores) over a 200 MB corpus in 26 files — see
+[`docs/performance-baseline.md`](docs/performance-baseline.md#parallel-file-reads--5-august-2026-issue-529):
+
+| Record width | Sequential reader | Parallel readers (auto) | Change |
+|---|---|---|---|
+| 40 B/record (8 in / 2 out) | 178.28 ms | 77.06 ms | **−56.8 %** |
+| 9848 B/record (production width) | 109.77 ms | 60.00 ms | **−45.3 %** |
+
 ### Malformed tuning values are reported, not silently ignored (Issue #204)
 
 The numeric performance knobs `NEAT_SCORER_READ_BYTES`,
-`NEAT_SCORER_ACTIVATION_THREADS` and `NEAT_SCORER_GPU_SCRATCH_BYTES` used to
+`NEAT_SCORER_ACTIVATION_THREADS`, `NEAT_SCORER_FILE_THREADS` and
+`NEAT_SCORER_GPU_SCRATCH_BYTES` used to
 fall back to their default on an invalid value with no feedback, so a typo
 such as `NEAT_SCORER_READ_BYTES=2MB` looked like it took effect when it was
 ignored. Each now prints a single diagnostic to stderr and continues with the

@@ -444,9 +444,15 @@ pub struct ScoreResult {
     /// Effective `read` buffer size (bytes) after record alignment; set when fused path ran.
     #[serde(rename = "readBufLen", skip_serializing_if = "Option::is_none")]
     pub read_buf_len: Option<usize>,
-    /// Fused path only: parallel activation workers when `> 1` (`NEAT_SCORER_ACTIVATION_THREADS`).
+    /// Fused path only: parallel activation workers **per file reader** when
+    /// `> 1` (`NEAT_SCORER_ACTIVATION_THREADS`, divided by `fileReadWorkers`).
     #[serde(rename = "activationThreads", skip_serializing_if = "Option::is_none")]
     pub activation_threads: Option<usize>,
+    /// Issue #529 — fused path only: `.bin` files read and scored concurrently
+    /// when `> 1` (`NEAT_SCORER_FILE_THREADS`). Absent for a single sequential
+    /// reader, so existing consumers see no new field on a one-file corpus.
+    #[serde(rename = "fileReadWorkers", skip_serializing_if = "Option::is_none")]
+    pub file_read_workers: Option<usize>,
     /// Fused path + `activationThreads` > 1: how many pending-buffer batches actually ran via Rayon (`0` = still sequential).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub parallel_activation_batches: Option<usize>,

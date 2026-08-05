@@ -17,6 +17,8 @@
 #   BENCH_SCORING_INPUTS  inputs per record (default 8)
 #   BENCH_SCORING_OUTPUTS outputs per record (default 2)
 #   BENCH_SCORING_HIDDEN  hidden neurons per synthetic creature (default 8)
+#   BENCH_FUSED_FILES     .bin shards for the `fused_multi_file` parallel-read
+#                         group (default 26 — production's file count, #529)
 #
 # Production creature bench (Issue #296) — `production_single_creature` /
 # `production_multi_creature`. This public repo ships no production creature and
@@ -51,6 +53,7 @@ echo "   BENCH_SCORING_BYTES=${BENCH_SCORING_BYTES:-16777216 (default)}"
 echo "   BENCH_SCORING_INPUTS=${BENCH_SCORING_INPUTS:-8 (default)}"
 echo "   BENCH_SCORING_OUTPUTS=${BENCH_SCORING_OUTPUTS:-2 (default)}"
 echo "   BENCH_SCORING_HIDDEN=${BENCH_SCORING_HIDDEN:-8 (default)}"
+echo "   BENCH_FUSED_FILES=${BENCH_FUSED_FILES:-26 (default)}"
 echo "   BENCH_PROD_CREATURE=${BENCH_PROD_CREATURE:-<unset — production benches skipped; supply a local network.json>}"
 echo "   BENCH_PROD_BYTES=${BENCH_PROD_BYTES:-67108864 (default 64 MiB)}"
 echo "   BENCH_PROD_CREATURES=${BENCH_PROD_CREATURES:-4 (default)}"

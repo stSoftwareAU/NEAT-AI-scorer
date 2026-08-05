@@ -17,6 +17,7 @@ the runs with [`scripts/run-benches.sh`](../scripts/run-benches.sh) or
 | `unpack_and_mse_inner/unpack_then_mse` | Micro-benchmark of the little-endian `f32` unpack + `mse_sum_batch_packed` inner loop on a fixed in-memory chunk (16 K records). | Mirrors the shared inner loop in `unpack_f32s_le` + `mse_sum_batch_packed` so vectorisation work can be measured in isolation. |
 | `production_single_creature/forward_only` | End-to-end forward-only fused MSE accumulate over the **production**-scale creature (Issue #296). | Requires a **local** `network.json` supplied via `BENCH_PROD_CREATURE` — this public repo ships none and fetches nothing (Issue #448); the bench skips when it is unset and is otherwise **fail-loud** (panics rather than falling back to the synthetic fixture). See [`prod_fixture`](../rust_scorer/src/prod_fixture.rs). |
 | `production_multi_creature/creatures/N` | Directory mode over copies of the production creature (`N=1`, `N=BENCH_PROD_CREATURES`). | The candidate optimisations #297–#299 A/B against this on the real creature, not the synthetic fixture. |
+| `fused_multi_file/file_workers/W` | Forward-only fused accumulate over the **same** corpus split across `BENCH_FUSED_FILES` files, at `W` concurrent `.bin` readers (Issue #529). | `W=1` reproduces the pre-#529 single sequential reader; `auto` is the shipped default (one reader per CPU, capped at the file count). Calls [`accumulate_cost_sum_forward_only_fused_with_workers`](../rust_scorer/src/stream_score.rs). |
 
 CLI-level GPU-vs-CPU wall-clock A/Bs live outside Criterion:
 [`scripts/bench-shallow-gpu.sh`](../scripts/bench-shallow-gpu.sh) (Issue #467)
@@ -32,6 +33,7 @@ locally generated corpus at the caller's record width. It skips cleanly when
 | `BENCH_SCORING_INPUTS` | `8` | inputs per record |
 | `BENCH_SCORING_OUTPUTS` | `2` | outputs per record |
 | `BENCH_SCORING_HIDDEN` | `8` | hidden neurons in the synthetic creature |
+| `BENCH_FUSED_FILES` | `26` | `.bin` shards the `fused_multi_file` corpus is split across (Issue #529 — production ships 26 files) |
 | `BENCH_SCORING_HIDDEN_SQUASH` | `TANH` | hidden-layer activation (Issue #305). `MIXED` cycles a production squash set (GELU/SELU/SINE/ABSOLUTE/BENT_IDENTITY/Cube/HARD_TANH/…) so the GPU-vs-CPU A/B exercises the coverage the shader now hosts; a literal name applies one squash to every hidden neuron. |
 
 The realistic perf target is the **50–200 MB** range called out in the issue.
@@ -39,6 +41,73 @@ Defaults are kept conservative so `cargo bench` finishes in a few minutes on
 typical dev hardware; sweep upwards via `BENCH_SCORING_BYTES` for the full
 target. **Always re-run the baseline at the same `BENCH_SCORING_BYTES`** — the
 absolute numbers below are fixture-size-specific.
+
+## Parallel file reads — 5 August 2026 (Issue #529)
+
+**Positive result: 1.8–2.3× faster on a multi-file corpus.** Reading the
+corpus through one sequential reader left the `f32` unpack and the per-chunk
+fork/join barrier on the critical path; the activation workers idled through
+both. Production splits ~80 GB across 26 `.bin` files and record order does not
+matter, so the files are now read, unpacked and scored concurrently (one reader
+per CPU by default, `NEAT_SCORER_FILE_THREADS`).
+
+### Host
+
+| | |
+|---|---|
+| Machine | Apple M4, 10 cores, 24 GB, local NVMe |
+| Corpus | `BENCH_SCORING_BYTES=200000000` split across `BENCH_FUSED_FILES=26` files |
+| Bench | `fused_multi_file/file_workers/W`, Criterion, 10 samples, 16 s measurement |
+
+### Wall-clock (median, 95 % CI)
+
+Small records — `BENCH_SCORING_INPUTS=8 BENCH_SCORING_OUTPUTS=2` (40 B/record,
+5 M records):
+
+| Readers | Median | 95 % CI | vs sequential |
+|---|---|---|---|
+| **before** (pre-#529 sequential reader) | **178.28 ms** | [169.64, 192.91] | — |
+| 1 (`file_workers/1`, in-run control) | 161.85 ms | [104.41, 202.74] | −9.2 % |
+| 2 | 163.13 ms | [158.28, 169.67] | −8.5 % |
+| 4 | 111.78 ms | [108.23, 115.19] | −37.3 % |
+| 8 | 80.59 ms | [76.91, 84.64] | −54.8 % |
+| **auto (10)** | **77.06 ms** | [76.24, 78.78] | **−56.8 %** |
+
+Production-width records — `BENCH_SCORING_INPUTS=2461 BENCH_SCORING_OUTPUTS=1
+BENCH_SCORING_HIDDEN=19` (9848 B/record, 20 301 records):
+
+| Readers | Median | 95 % CI | vs sequential |
+|---|---|---|---|
+| **before** (pre-#529 sequential reader) | **109.77 ms** | [106.33, 112.41] | — |
+| 1 (`file_workers/1`, in-run control) | 125.53 ms | [121.76, 128.09] | +14.4 % |
+| 2 | 123.79 ms | [114.80, 132.61] | +12.8 % |
+| 4 | 83.50 ms | [81.79, 84.92] | −23.9 % |
+| 8 | 63.38 ms | [62.11, 64.28] | −42.3 % |
+| **auto (10)** | **60.00 ms** | [58.73, 60.91] | **−45.3 %** |
+
+Both clear the issue's ≥ 10 % bar by a wide margin. Scaling is sub-linear past
+8 readers — with 26 equal files over 10 readers the tail is a full extra file
+per reader, and the shared read budget shrinks each reader's chunk.
+
+### Reproduce
+
+```bash
+BENCH_SCORING_BYTES=200000000 ./scripts/run-benches.sh -- fused_multi_file
+# production record width
+BENCH_SCORING_BYTES=200000000 BENCH_SCORING_INPUTS=2461 \
+  BENCH_SCORING_OUTPUTS=1 BENCH_SCORING_HIDDEN=19 \
+  ./scripts/run-benches.sh -- fused_multi_file
+```
+
+### Score parity
+
+Reader count does not change which records are scored — each reader seeds its
+sampler with its file's global record offset, so `--sample-rate` keeps the same
+stratified stride (`tests/parallel_file_reads_tdd.rs`, bit-identical totals on
+an exactly-representable corpus). On a corpus whose per-record errors are not
+exactly representable the total moves in the last bits (records group into
+different 8-way SIMD batches), measured below `1e-6` relative — the same effect
+the shipped `NEAT_SCORER_READ_BYTES` knob already has.
 
 ## Shallow-creature GPU A/B — 26 July 2026 (Issue #467)
 
