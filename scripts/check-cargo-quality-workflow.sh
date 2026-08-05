@@ -4,7 +4,8 @@
 # The cargo-quality workflow must:
 #   1. Trigger on pull_request so every change is fmt + clippy checked.
 #   2. Declare an explicit `permissions:` block (least privilege).
-#   3. Pin `actions/checkout` to a numeric major version (Node 24 policy).
+#   3. Pin `actions/checkout` to a numeric major version or a 40-char SHA
+#      (Node 24 policy).
 #   4. Install a Rust toolchain via `dtolnay/rust-toolchain` with the
 #      `rustfmt` and `clippy` components.
 #   5. Invoke `cargo fmt --check` (any flag form) so unformatted code fails CI.
@@ -18,6 +19,18 @@
 # can exercise it against fixtures. When called with no argument it validates
 # `.github/workflows/cargo-quality.yml` relative to the repo root.
 set -euo pipefail
+
+# Shared workflow-validation helpers (Issues #511, #514) — the `actions/checkout`
+# pin rule and the least-privilege `permissions:` rule each live in one place
+# instead of inline copies that drift apart.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+WORKFLOW_CHECKS_LIB="$SCRIPT_DIR/lib/workflow-checks.sh"
+if [[ ! -r "$WORKFLOW_CHECKS_LIB" ]]; then
+  echo "Missing shared helper: $WORKFLOW_CHECKS_LIB" >&2
+  exit 2
+fi
+# shellcheck source=lib/workflow-checks.sh disable=SC1091
+source "$WORKFLOW_CHECKS_LIB"
 
 usage() {
   cat <<'EOF'
@@ -54,7 +67,6 @@ while [[ $# -gt 0 ]]; do
 done
 
 if [[ -z "$WORKFLOW" ]]; then
-  SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
   WORKFLOW="$SCRIPT_DIR/../.github/workflows/cargo-quality.yml"
 fi
 
@@ -80,23 +92,14 @@ else
   fail "workflow is not triggered on pull_request"
 fi
 
-# 2. Explicit permissions block (least privilege).
-if grep -qE '^permissions:[[:space:]]*$' "$WORKFLOW" \
-  && grep -qE '^[[:space:]]+contents:[[:space:]]*read' "$WORKFLOW"; then
-  ok "permissions block grants only contents: read"
-else
-  fail "no 'permissions: contents: read' block — least-privilege required"
-fi
+# 2. Explicit permissions block (least privilege), via the shared rule in
+#    scripts/lib/workflow-checks.sh (Issue #514).
+require_readonly_permissions "$WORKFLOW"
 
-# 3. actions/checkout pinned to a numeric major (vN). Branch refs disallowed.
-checkout_line="$(grep -nE 'uses:[[:space:]]*actions/checkout@' "$WORKFLOW" || true)"
-if [[ -z "$checkout_line" ]]; then
-  fail "actions/checkout step missing — workflow cannot fetch the repo"
-elif echo "$checkout_line" | grep -qE 'actions/checkout@v?[0-9]+'; then
-  ok "actions/checkout pinned to a numeric major"
-else
-  fail "actions/checkout is not pinned — branch refs disallowed"
-fi
+# 3. actions/checkout pinned to a numeric major (vN) or a 40-char SHA, via the
+#    shared rule in scripts/lib/workflow-checks.sh (Issue #511). Branch refs
+#    disallowed.
+require_pinned_checkout "$WORKFLOW"
 
 # 4. Rust toolchain provisioned via dtolnay/rust-toolchain with rustfmt +
 #    clippy components.

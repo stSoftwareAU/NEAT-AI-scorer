@@ -24,6 +24,10 @@
 # `*.yml`/`*.yaml` file under `.github/workflows/` relative to the repo root.
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=scripts/lib/check-harness.sh
+source "$SCRIPT_DIR/lib/check-harness.sh"
+
 usage() {
   cat <<'EOF'
 Usage: check-workflow-timeouts.sh [--workflow PATH]...
@@ -44,49 +48,38 @@ WORKFLOWS=()
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --workflow)
-      [[ $# -ge 2 ]] || { echo "--workflow requires a PATH argument" >&2; exit 2; }
+      check_flag_value --workflow $#
       WORKFLOWS+=("$2")
       shift 2
       ;;
-    -h|--help)
+    -h | --help)
       usage
       exit 0
       ;;
     *)
-      echo "Unknown argument: $1" >&2
-      usage >&2
-      exit 2
+      check_unknown_arg "$1"
       ;;
   esac
 done
 
 if [[ ${#WORKFLOWS[@]} -eq 0 ]]; then
-  SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-  WF_DIR="$SCRIPT_DIR/../.github/workflows"
+  WF_DIR="$(check_repo_path ".github/workflows")"
   while IFS= read -r f; do
     WORKFLOWS+=("$f")
   done < <(find "$WF_DIR" -maxdepth 1 -type f \( -name '*.yml' -o -name '*.yaml' \) | sort)
 fi
 
 if [[ ${#WORKFLOWS[@]} -eq 0 ]]; then
-  echo "No workflow files to validate" >&2
-  exit 2
+  check_die 2 "No workflow files to validate"
 fi
-
-EXIT_CODE=0
-fail() {
-  echo "FAIL $1: ${*:2}" >&2
-  EXIT_CODE=1
-}
-ok() {
-  echo "OK   $1: ${*:2}"
-}
 
 # Maximum permitted timeout — GitHub caps a job at 360 minutes regardless.
 MAX_TIMEOUT=360
 
 validate_workflow() {
   local wf="$1"
+  # Each ok/fail line is about this workflow file.
+  local CHECK_SUBJECT="$wf"
 
   if [[ ! -f "$wf" ]]; then
     echo "Workflow file not found: $wf" >&2
@@ -184,7 +177,7 @@ PY
   )"
 
   if [[ -z "$report" ]]; then
-    fail "$wf" "no jobs found — cannot verify timeouts"
+    fail "no jobs found — cannot verify timeouts"
     return
   fi
 
@@ -193,28 +186,28 @@ PY
     if [[ "$is_reusable" == "1" ]]; then
       # Reusable-call jobs must not declare timeout-minutes.
       if [[ "$has_timeout" == "1" ]]; then
-        fail "$wf" "job '$name' calls a reusable workflow and must not declare timeout-minutes (set it in the called workflow's jobs)"
+        fail "job '$name' calls a reusable workflow and must not declare timeout-minutes (set it in the called workflow's jobs)"
       else
-        ok "$wf" "job '$name' is a reusable-workflow call (timeout belongs in the called workflow)"
+        ok "job '$name' is a reusable-workflow call (timeout belongs in the called workflow)"
       fi
       continue
     fi
 
     if [[ "$has_timeout" != "1" ]]; then
-      fail "$wf" "job '$name' has no timeout-minutes — it inherits GitHub's 360-minute default"
+      fail "job '$name' has no timeout-minutes — it inherits GitHub's 360-minute default"
       continue
     fi
 
     if [[ ! "$value" =~ ^[0-9]+$ ]]; then
-      fail "$wf" "job '$name' timeout-minutes must be a positive integer (found: '$value')"
+      fail "job '$name' timeout-minutes must be a positive integer (found: '$value')"
       continue
     fi
     if [[ "$value" -lt 1 || "$value" -gt "$MAX_TIMEOUT" ]]; then
-      fail "$wf" "job '$name' timeout-minutes must be between 1 and $MAX_TIMEOUT (found: $value)"
+      fail "job '$name' timeout-minutes must be between 1 and $MAX_TIMEOUT (found: $value)"
       continue
     fi
 
-    ok "$wf" "job '$name' declares timeout-minutes: $value"
+    ok "job '$name' declares timeout-minutes: $value"
   done <<< "$report"
 }
 

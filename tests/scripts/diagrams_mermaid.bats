@@ -2,7 +2,7 @@
 # Tests for Issue #48 — all diagrams in the repository's living docs use
 # Mermaid rather than ASCII art.
 #
-# Historical PR summaries under docs/pr-summary-*.md are intentionally
+# Historical PR summaries under docs/archive/pr-summaries/ are intentionally
 # excluded: they capture the state of the repo at the time of merge and are
 # not living documentation.
 

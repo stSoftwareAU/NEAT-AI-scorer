@@ -5,6 +5,8 @@
 # workflow YAML in temporary directories so behaviour (exit codes, reported
 # failures) is verified end-to-end without mutating the real workflow file.
 
+load 'test_helper'
+
 setup() {
   SCRIPT_UNDER_TEST="${BATS_TEST_DIRNAME}/../../scripts/check-markdown-lint-workflow.sh"
   [ -x "$SCRIPT_UNDER_TEST" ] || chmod +x "$SCRIPT_UNDER_TEST"
@@ -166,6 +168,16 @@ PY
   [[ "$output" == *"not pinned"* ]]
 }
 
+@test "accepts a 40-char checkout SHA starting with a hex letter (Issue #511)" {
+  # The pre-#136 `v?[0-9]+` regex this validator used to carry rejected SHAs
+  # whose leading character is a-f. The shared helper accepts them.
+  write_markdown_lint_workflow "$TMP_WF/markdown-lint.yml"
+  sed -i.bak 's|actions/checkout@v5|actions/checkout@a1d282b9c3e4f5061728394a5b6c7d8e9f001122|' "$TMP_WF/markdown-lint.yml"
+  run "$SCRIPT_UNDER_TEST" --workflow "$TMP_WF/markdown-lint.yml"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"actions/checkout pinned"* ]]
+}
+
 @test "fails when actions/setup-node is unpinned" {
   write_markdown_lint_workflow "$TMP_WF/markdown-lint.yml"
   sed -i.bak 's|actions/setup-node@v4|actions/setup-node@main|' "$TMP_WF/markdown-lint.yml"
@@ -209,15 +221,11 @@ PY
 }
 
 @test "reports an error when the workflow file does not exist" {
-  run "$SCRIPT_UNDER_TEST" --workflow "$TMP_WF/does-not-exist.yml"
-  [ "$status" -ne 0 ]
-  [[ "$output" == *"not found"* ]]
+  assert_missing_target_rejected "$SCRIPT_UNDER_TEST" --workflow "$TMP_WF/does-not-exist.yml"
 }
 
 @test "unknown flag prints usage and exits non-zero" {
-  run "$SCRIPT_UNDER_TEST" --nonsense
-  [ "$status" -ne 0 ]
-  [[ "$output" == *"Usage"* ]]
+  assert_unknown_flag_rejected "$SCRIPT_UNDER_TEST"
 }
 
 @test "real repository markdown-lint workflow satisfies every rule" {

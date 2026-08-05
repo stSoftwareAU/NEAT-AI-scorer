@@ -6,6 +6,8 @@
 # directory exercise the pass/fail behaviour (exit codes, reported output) so
 # the real README is not mutated by the tests.
 
+load 'test_helper'
+
 setup() {
   SCRIPT_UNDER_TEST="${BATS_TEST_DIRNAME}/../../scripts/check-readme-ci-alignment.sh"
   [ -x "$SCRIPT_UNDER_TEST" ] || chmod +x "$SCRIPT_UNDER_TEST"
@@ -118,9 +120,7 @@ EOF
 }
 
 @test "reports an error when the README file does not exist" {
-  run "$SCRIPT_UNDER_TEST" --readme "$TMP_DIR/does-not-exist.md"
-  [ "$status" -ne 0 ]
-  [[ "$output" == *"not found"* ]]
+  assert_missing_target_rejected "$SCRIPT_UNDER_TEST" --readme "$TMP_DIR/does-not-exist.md"
 }
 
 @test "unknown flag prints usage and exits non-zero" {
@@ -133,4 +133,125 @@ EOF
   run "$SCRIPT_UNDER_TEST" --readme "$REPO_ROOT/README.md"
   [ "$status" -eq 0 ]
   [[ "$output" != *"FAIL"* ]]
+}
+
+# --- Issue #506: README ↔ workflow alignment for the CI section.
+
+# Workflow fixture whose shell-checks job runs the runner's pre-installed
+# shellcheck binary — i.e. the current ci.yml, with no wrapper action.
+write_binary_shellcheck_workflow() {
+  mkdir -p "$TMP_DIR/workflows"
+  cat >"$TMP_DIR/workflows/ci.yml" <<'EOF'
+name: CI
+jobs:
+  shell-checks:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Run ShellCheck (pre-installed on the runner)
+        run: shellcheck --severity=style script.sh
+EOF
+}
+
+# Minimal stand-in for check-workflow-action-versions.sh's `required:` table.
+write_versions_script() {
+  cat >"$TMP_DIR/versions.sh" <<'EOF'
+#!/usr/bin/env bash
+case "$action" in
+    actions/dependency-review-action) echo "required:5" ;;
+    rustsec/audit-check)              echo "required:2" ;;
+esac
+EOF
+}
+
+@test "fails when the README names a wrapper action no workflow invokes (Issue #506)" {
+  write_aligned_readme "$TMP_DIR/README.md"
+  write_binary_shellcheck_workflow
+  write_versions_script
+  printf 'The shell-checks job invokes `ludeeus/action-shellcheck@2.0.0`.\n' \
+    >>"$TMP_DIR/README.md"
+  run "$SCRIPT_UNDER_TEST" --readme "$TMP_DIR/README.md" \
+    --workflows "$TMP_DIR/workflows" --versions-script "$TMP_DIR/versions.sh"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"ludeeus/action-shellcheck"* ]]
+  [[ "$output" == *"no workflow invokes"* ]]
+}
+
+@test "allows the wrapper in the README while a workflow still uses it (Issue #506)" {
+  write_aligned_readme "$TMP_DIR/README.md"
+  write_versions_script
+  mkdir -p "$TMP_DIR/workflows"
+  cat >"$TMP_DIR/workflows/ci.yml" <<'EOF'
+name: CI
+jobs:
+  shell-checks:
+    steps:
+      - uses: ludeeus/action-shellcheck@00cae500b08a931fb5698e11e79bfbd38e612a38  # v2.0.0
+EOF
+  printf 'The shell-checks job invokes `ludeeus/action-shellcheck@2.0.0`.\n' \
+    >>"$TMP_DIR/README.md"
+  run "$SCRIPT_UNDER_TEST" --readme "$TMP_DIR/README.md" \
+    --workflows "$TMP_DIR/workflows" --versions-script "$TMP_DIR/versions.sh"
+  [ "$status" -eq 0 ]
+}
+
+@test "fails when the README understates a required action major (Issue #506)" {
+  write_aligned_readme "$TMP_DIR/README.md"
+  write_binary_shellcheck_workflow
+  write_versions_script
+  printf 'Tracked Node 20 exception: `actions/dependency-review-action@v4`.\n' \
+    >>"$TMP_DIR/README.md"
+  run "$SCRIPT_UNDER_TEST" --readme "$TMP_DIR/README.md" \
+    --workflows "$TMP_DIR/workflows" --versions-script "$TMP_DIR/versions.sh"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"actions/dependency-review-action@v4"* ]]
+  [[ "$output" == *"major >= 5"* ]]
+}
+
+@test "passes when the README names the required action major (Issue #506)" {
+  write_aligned_readme "$TMP_DIR/README.md"
+  write_binary_shellcheck_workflow
+  write_versions_script
+  printf 'Runs `actions/dependency-review-action@v5`; exception: `rustsec/audit-check@v2`.\n' \
+    >>"$TMP_DIR/README.md"
+  run "$SCRIPT_UNDER_TEST" --readme "$TMP_DIR/README.md" \
+    --workflows "$TMP_DIR/workflows" --versions-script "$TMP_DIR/versions.sh"
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"FAIL"* ]]
+}
+
+# A SHA pin such as `@5f6978fa…` starts with a digit; it must not be read as
+# "major 5" and compared against the action's floor.
+@test "ignores SHA-pinned uses: references when checking majors (Issue #506)" {
+  write_aligned_readme "$TMP_DIR/README.md"
+  write_binary_shellcheck_workflow
+  cat >"$TMP_DIR/versions.sh" <<'EOF'
+#!/usr/bin/env bash
+case "$action" in
+    peter-evans/create-pull-request)  echo "required:8" ;;
+esac
+EOF
+  printf 'uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1  # v8\n' \
+    >>"$TMP_DIR/README.md"
+  run "$SCRIPT_UNDER_TEST" --readme "$TMP_DIR/README.md" \
+    --workflows "$TMP_DIR/workflows" --versions-script "$TMP_DIR/versions.sh"
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"FAIL"* ]]
+}
+
+@test "reports an error when the workflows directory is missing (Issue #506)" {
+  write_aligned_readme "$TMP_DIR/README.md"
+  write_versions_script
+  run "$SCRIPT_UNDER_TEST" --readme "$TMP_DIR/README.md" \
+    --workflows "$TMP_DIR/no-such-dir" --versions-script "$TMP_DIR/versions.sh"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"workflows directory not found"* ]]
+}
+
+@test "reports an error when the action-version validator is missing (Issue #506)" {
+  write_aligned_readme "$TMP_DIR/README.md"
+  write_binary_shellcheck_workflow
+  run "$SCRIPT_UNDER_TEST" --readme "$TMP_DIR/README.md" \
+    --workflows "$TMP_DIR/workflows" --versions-script "$TMP_DIR/nope.sh"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"validator not found"* ]]
 }

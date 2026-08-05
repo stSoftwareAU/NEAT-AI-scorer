@@ -5,6 +5,8 @@
 # behaviour (exit codes, reported typos, ignore list) is verified end-to-end
 # without touching the real repository content.
 
+load 'test_helper'
+
 setup() {
   SCRIPT_UNDER_TEST="${BATS_TEST_DIRNAME}/../../scripts/spell-check.sh"
   [ -x "$SCRIPT_UNDER_TEST" ] || chmod +x "$SCRIPT_UNDER_TEST"
@@ -78,9 +80,7 @@ EOF
 }
 
 @test "unknown flag prints usage and exits non-zero" {
-  run "$SCRIPT_UNDER_TEST" --nonsense
-  [ "$status" -ne 0 ]
-  [[ "$output" == *"Usage"* ]]
+  assert_unknown_flag_rejected "$SCRIPT_UNDER_TEST"
 }
 
 @test "real repository passes the spell check" {

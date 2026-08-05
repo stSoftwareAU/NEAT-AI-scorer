@@ -10,6 +10,8 @@
 # directory so behaviour (exit codes, messages) is verified end-to-end without
 # touching the real baseline file or the sibling clone.
 
+load 'test_helper'
+
 setup() {
   SCRIPT_UNDER_TEST="${BATS_TEST_DIRNAME}/../../scripts/check-neat-core-version.sh"
   [ -x "$SCRIPT_UNDER_TEST" ] || chmod +x "$SCRIPT_UNDER_TEST"
@@ -159,9 +161,7 @@ EOF
 }
 
 @test "unknown flag prints usage and exits non-zero" {
-  run "$SCRIPT_UNDER_TEST" --nonsense
-  [ "$status" -ne 0 ]
-  [[ "$output" == *"Usage"* ]]
+  assert_unknown_flag_rejected "$SCRIPT_UNDER_TEST"
 }
 
 @test "real repository baseline matches the sibling neat-core when present" {

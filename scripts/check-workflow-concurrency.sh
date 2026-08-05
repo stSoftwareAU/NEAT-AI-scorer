@@ -27,6 +27,10 @@
 # root.
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=scripts/lib/check-harness.sh
+source "$SCRIPT_DIR/lib/check-harness.sh"
+
 usage() {
   cat <<'EOF'
 Usage: check-workflow-concurrency.sh [--workflow PATH]
@@ -43,36 +47,13 @@ descriptive message otherwise.
 EOF
 }
 
-WORKFLOW=""
-while [[ $# -gt 0 ]]; do
-  case "$1" in
-    --workflow)
-      WORKFLOW="$2"
-      shift 2
-      ;;
-    -h|--help)
-      usage
-      exit 0
-      ;;
-    *)
-      echo "Unknown argument: $1" >&2
-      usage >&2
-      exit 2
-      ;;
-  esac
-done
-
-EXIT_CODE=0
-fail() {
-  echo "FAIL $1: ${*:2}" >&2
-  EXIT_CODE=1
-}
-ok() {
-  echo "OK   $1: ${*:2}"
-}
+parse_check_args --workflow "" "$@"
+WORKFLOW="$CHECK_TARGET"
 
 check_workflow() {
   local wf="$1"
+  # Each ok/fail line is about this workflow file.
+  local CHECK_SUBJECT="$wf"
 
   if [[ ! -f "$wf" ]]; then
     echo "Workflow file not found: $wf" >&2
@@ -82,31 +63,30 @@ check_workflow() {
 
   # 1. Top-level concurrency: block.
   if ! grep -qE '^concurrency:[[:space:]]*$' "$wf"; then
-    fail "$wf" "no top-level 'concurrency:' block — overlapping runs will pile up"
+    fail "no top-level 'concurrency:' block — overlapping runs will pile up"
     return
   fi
-  ok "$wf" "declares a top-level concurrency block"
+  ok "declares a top-level concurrency block"
 
   # 2. group: keyed by the ref so there is one in-flight run per branch/PR.
   if grep -qE '^[[:space:]]+group:[[:space:]]*.*\$\{\{[[:space:]]*github\.ref[[:space:]]*\}\}' "$wf"; then
-    ok "$wf" "concurrency group is keyed by github.ref"
+    ok "concurrency group is keyed by github.ref"
   else
-    fail "$wf" "concurrency group is not keyed by \${{ github.ref }}"
+    fail "concurrency group is not keyed by \${{ github.ref }}"
   fi
 
   # 3. cancel-in-progress: true so superseded runs are cancelled.
   if grep -qE '^[[:space:]]+cancel-in-progress:[[:space:]]*true[[:space:]]*$' "$wf"; then
-    ok "$wf" "cancel-in-progress is true"
+    ok "cancel-in-progress is true"
   else
-    fail "$wf" "cancel-in-progress is not set to true — superseded runs would keep running"
+    fail "cancel-in-progress is not set to true — superseded runs would keep running"
   fi
 }
 
 if [[ -n "$WORKFLOW" ]]; then
   check_workflow "$WORKFLOW"
 else
-  SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-  WF_DIR="$SCRIPT_DIR/../.github/workflows"
+  WF_DIR="$(check_repo_path ".github/workflows")"
   # Pile-up-prone workflows that must declare a concurrency group (Issue #156).
   PILE_UP_PRONE=(
     ci.yml

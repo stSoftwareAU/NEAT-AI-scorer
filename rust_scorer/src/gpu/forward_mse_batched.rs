@@ -1190,43 +1190,14 @@ fn map_readback_result<E: std::fmt::Debug>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::fixture_json::{
+        creature_envelope, dense_mlp_creature_json, neuron_json, synapse_json,
+    };
     use neat_core::creature::compile_creature;
     use neat_core::creature::parse_creature_json;
 
     fn synthetic_creature(num_inputs: usize, num_outputs: usize, hidden: usize) -> CompiledNetwork {
-        let mut neurons: Vec<String> = Vec::new();
-        for h in 0..hidden {
-            neurons.push(format!(
-                r#"{{"type":"hidden","uuid":"hidden-{h}","bias":0.05,"squash":"TANH"}}"#
-            ));
-        }
-        for o in 0..num_outputs {
-            neurons.push(format!(
-                r#"{{"type":"output","uuid":"output-{o}","bias":0.0,"squash":"IDENTITY"}}"#
-            ));
-        }
-        let mut synapses: Vec<String> = Vec::new();
-        for i in 0..num_inputs {
-            for h in 0..hidden {
-                let w = 0.05 + 0.001 * ((i * hidden + h) as f64);
-                synapses.push(format!(
-                    r#"{{"fromUUID":"input-{i}","toUUID":"hidden-{h}","weight":{w}}}"#
-                ));
-            }
-        }
-        for h in 0..hidden {
-            for o in 0..num_outputs {
-                let w = 0.1 + 0.001 * ((h * num_outputs + o) as f64);
-                synapses.push(format!(
-                    r#"{{"fromUUID":"hidden-{h}","toUUID":"output-{o}","weight":{w}}}"#
-                ));
-            }
-        }
-        let json = format!(
-            r#"{{"input":{num_inputs},"output":{num_outputs},"forwardOnly":true,"semanticVersion":"4.0.0","neurons":[{}],"synapses":[{}]}}"#,
-            neurons.join(","),
-            synapses.join(","),
-        );
+        let json = dense_mlp_creature_json(num_inputs, num_outputs, hidden, "TANH");
         let creature = parse_creature_json(&json).expect("parse creature");
         compile_creature(&creature).expect("compile")
     }
@@ -1444,31 +1415,24 @@ mod tests {
     fn sparse_creature(num_inputs: usize, hidden: usize) -> CompiledNetwork {
         let mut neurons: Vec<String> = Vec::new();
         for h in 0..hidden {
-            neurons.push(format!(
-                r#"{{"type":"hidden","uuid":"hidden-{h}","bias":0.05,"squash":"TANH"}}"#
-            ));
+            neurons.push(neuron_json("hidden", &format!("hidden-{h}"), 0.05, "TANH"));
         }
-        neurons
-            .push(r#"{"type":"output","uuid":"output-0","bias":0.0,"squash":"IDENTITY"}"#.into());
+        neurons.push(neuron_json("output", "output-0", 0.0, "IDENTITY"));
 
         let mut synapses: Vec<String> = Vec::new();
         for h in 0..hidden {
             let i = h % num_inputs;
-            synapses.push(format!(
-                r#"{{"fromUUID":"input-{i}","toUUID":"hidden-{h}","weight":0.1}}"#
+            synapses.push(synapse_json(
+                &format!("input-{i}"),
+                &format!("hidden-{h}"),
+                0.1,
             ));
-            synapses.push(format!(
-                r#"{{"fromUUID":"hidden-{h}","toUUID":"output-0","weight":0.1}}"#
-            ));
+            synapses.push(synapse_json(&format!("hidden-{h}"), "output-0", 0.1));
         }
         if hidden == 0 {
-            synapses.push(r#"{"fromUUID":"input-0","toUUID":"output-0","weight":0.1}"#.into());
+            synapses.push(synapse_json("input-0", "output-0", 0.1));
         }
-        let json = format!(
-            r#"{{"input":{num_inputs},"output":1,"forwardOnly":true,"semanticVersion":"4.0.0","neurons":[{}],"synapses":[{}]}}"#,
-            neurons.join(","),
-            synapses.join(","),
-        );
+        let json = creature_envelope(num_inputs, 1, &neurons, &synapses);
         let creature = parse_creature_json(&json).expect("parse creature");
         compile_creature(&creature).expect("compile")
     }

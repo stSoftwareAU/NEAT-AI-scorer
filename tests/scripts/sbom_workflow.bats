@@ -5,6 +5,8 @@
 # temporary directories so behaviour (exit codes, reported failures) is
 # verified end-to-end without mutating the real workflow file.
 
+load 'test_helper'
+
 setup() {
   SCRIPT_UNDER_TEST="${BATS_TEST_DIRNAME}/../../scripts/check-sbom-workflow.sh"
   [ -x "$SCRIPT_UNDER_TEST" ] || chmod +x "$SCRIPT_UNDER_TEST"
@@ -145,6 +147,16 @@ PY
   [[ "$output" == *"not pinned"* ]]
 }
 
+@test "fails when only one of several checkout steps is unpinned (Issue #511)" {
+  # sbom.yml checks out two repositories; every checkout step must be pinned,
+  # not merely one of them.
+  write_sbom_workflow "$TMP_WF/sbom.yml"
+  perl -0pi -e 's|actions/checkout\@v5|actions/checkout\@main|' "$TMP_WF/sbom.yml"
+  run "$SCRIPT_UNDER_TEST" --workflow "$TMP_WF/sbom.yml"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"not pinned"* ]]
+}
+
 @test "fails when dtolnay/rust-toolchain is missing" {
   write_sbom_workflow "$TMP_WF/sbom.yml"
   sed -i.bak '/dtolnay\/rust-toolchain/d' "$TMP_WF/sbom.yml"
@@ -186,15 +198,11 @@ PY
 }
 
 @test "reports an error when the workflow file does not exist" {
-  run "$SCRIPT_UNDER_TEST" --workflow "$TMP_WF/does-not-exist.yml"
-  [ "$status" -ne 0 ]
-  [[ "$output" == *"not found"* ]]
+  assert_missing_target_rejected "$SCRIPT_UNDER_TEST" --workflow "$TMP_WF/does-not-exist.yml"
 }
 
 @test "unknown flag prints usage and exits non-zero" {
-  run "$SCRIPT_UNDER_TEST" --nonsense
-  [ "$status" -ne 0 ]
-  [[ "$output" == *"Usage"* ]]
+  assert_unknown_flag_rejected "$SCRIPT_UNDER_TEST"
 }
 
 @test "real repository SBOM workflow satisfies every rule" {

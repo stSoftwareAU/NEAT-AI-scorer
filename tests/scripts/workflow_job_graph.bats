@@ -5,6 +5,8 @@
 # temporary directories, plus one assertion against the real repo workflow
 # so the enforced graph and the shipped workflow cannot drift apart.
 
+load 'test_helper'
+
 setup() {
   SCRIPT_UNDER_TEST="${BATS_TEST_DIRNAME}/../../scripts/check-ci-job-graph.sh"
   [ -x "$SCRIPT_UNDER_TEST" ] || chmod +x "$SCRIPT_UNDER_TEST"
@@ -249,9 +251,7 @@ EOF
 }
 
 @test "unknown flag prints usage and exits non-zero" {
-  run "$SCRIPT_UNDER_TEST" --nonsense
-  [ "$status" -ne 0 ]
-  [[ "$output" == *"Usage"* ]]
+  assert_unknown_flag_rejected "$SCRIPT_UNDER_TEST"
 }
 
 @test "real repository ci.yml satisfies the job graph rules" {

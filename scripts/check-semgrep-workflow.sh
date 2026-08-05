@@ -27,6 +27,18 @@
 # `.github/workflows/semgrep.yml` relative to the repo root.
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=scripts/lib/check-harness.sh
+source "$SCRIPT_DIR/lib/check-harness.sh"
+# Shared workflow-validation helpers (Issues #511, #514).
+WORKFLOW_CHECKS_LIB="$SCRIPT_DIR/lib/workflow-checks.sh"
+if [[ ! -r "$WORKFLOW_CHECKS_LIB" ]]; then
+  echo "Missing shared helper: $WORKFLOW_CHECKS_LIB" >&2
+  exit 2
+fi
+# shellcheck source=lib/workflow-checks.sh disable=SC1091
+source "$WORKFLOW_CHECKS_LIB"
+
 usage() {
   cat <<'EOF'
 Usage: check-semgrep-workflow.sh [--workflow PATH]
@@ -41,43 +53,10 @@ Exits non-zero with a descriptive message otherwise.
 EOF
 }
 
-WORKFLOW=""
-while [[ $# -gt 0 ]]; do
-  case "$1" in
-    --workflow)
-      WORKFLOW="$2"
-      shift 2
-      ;;
-    -h|--help)
-      usage
-      exit 0
-      ;;
-    *)
-      echo "Unknown argument: $1" >&2
-      usage >&2
-      exit 2
-      ;;
-  esac
-done
-
-if [[ -z "$WORKFLOW" ]]; then
-  SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-  WORKFLOW="$SCRIPT_DIR/../.github/workflows/semgrep.yml"
-fi
-
-if [[ ! -f "$WORKFLOW" ]]; then
-  echo "Workflow file not found: $WORKFLOW" >&2
-  exit 2
-fi
-
-EXIT_CODE=0
-fail() {
-  echo "FAIL $WORKFLOW: $*" >&2
-  EXIT_CODE=1
-}
-ok() {
-  echo "OK   $WORKFLOW: $*"
-}
+parse_check_args --workflow ".github/workflows/semgrep.yml" "$@"
+WORKFLOW="$CHECK_TARGET"
+check_require_file "$WORKFLOW"
+check_subject "$WORKFLOW"
 
 # 1. Triggered on pull_request events.
 if grep -qE '^on:[[:space:]]*$' "$WORKFLOW" && grep -qE '^[[:space:]]+pull_request:' "$WORKFLOW"; then
@@ -88,13 +67,9 @@ else
   fail "workflow is not triggered on pull_request"
 fi
 
-# 2. Explicit permissions block (least privilege).
-if grep -qE '^permissions:[[:space:]]*$' "$WORKFLOW" \
-  && grep -qE '^[[:space:]]+contents:[[:space:]]*read' "$WORKFLOW"; then
-  ok "permissions block grants only contents: read"
-else
-  fail "no 'permissions: contents: read' block — least-privilege required"
-fi
+# 2. Explicit permissions block (least privilege), via the shared rule in
+#    scripts/lib/workflow-checks.sh (Issue #514).
+require_readonly_permissions "$WORKFLOW"
 
 # 3. Semgrep entry point: either pinned container image OR pinned action.
 container_line="$(grep -nE '^[[:space:]]+image:[[:space:]]*semgrep/semgrep' "$WORKFLOW" || true)"

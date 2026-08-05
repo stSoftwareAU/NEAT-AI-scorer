@@ -21,6 +21,10 @@
 # repo root.
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=scripts/lib/check-harness.sh
+source "$SCRIPT_DIR/lib/check-harness.sh"
+
 usage() {
   cat <<'EOF'
 Usage: check-persist-credentials.sh [--workflow PATH]
@@ -38,29 +42,8 @@ message otherwise.
 EOF
 }
 
-WORKFLOW=""
-while [[ $# -gt 0 ]]; do
-  case "$1" in
-    --workflow)
-      if [[ $# -lt 2 ]]; then
-        echo "Missing value for --workflow" >&2
-        usage >&2
-        exit 2
-      fi
-      WORKFLOW="$2"
-      shift 2
-      ;;
-    -h|--help)
-      usage
-      exit 0
-      ;;
-    *)
-      echo "Unknown argument: $1" >&2
-      usage >&2
-      exit 2
-      ;;
-  esac
-done
+parse_check_args --workflow "" "$@"
+WORKFLOW="$CHECK_TARGET"
 
 # Build the list of workflows to validate. An explicit --workflow overrides the
 # default set; otherwise every guarded workflow is checked in one run
@@ -69,16 +52,13 @@ WORKFLOWS=()
 if [[ -n "$WORKFLOW" ]]; then
   WORKFLOWS=("$WORKFLOW")
 else
-  SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
   WORKFLOWS=(
-    "$SCRIPT_DIR/../.github/workflows/ci.yml"
-    "$SCRIPT_DIR/../.github/workflows/security.yml"
-    "$SCRIPT_DIR/../.github/workflows/semgrep.yml"
-    "$SCRIPT_DIR/../.github/workflows/cargo-quality.yml"
+    "$(check_repo_path ".github/workflows/ci.yml")"
+    "$(check_repo_path ".github/workflows/security.yml")"
+    "$(check_repo_path ".github/workflows/semgrep.yml")"
+    "$(check_repo_path ".github/workflows/cargo-quality.yml")"
   )
 fi
-
-EXIT_CODE=0
 
 validate_workflow() {
   local WORKFLOW="$1"

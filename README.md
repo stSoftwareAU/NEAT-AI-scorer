@@ -97,6 +97,10 @@ Configuration (ignore list, skip paths, check-filenames / check-hidden flags) is
 - `renderD` — DRM device node name (e.g. `renderD128`).
 - `mape` / `MAPE` — Mean Absolute Percentage Error (a `neat-core` loss function).
 
+### Binaries
+
+This section is the single documented home for the workspace's binary list; `rust_scorer/Cargo.toml` owns it and `CONTRIBUTING.md` / `AGENTS.md` cite it rather than keeping their own copies (Issue #509). `scripts/check-binary-list-docs.sh` (invoked from `quality.sh`, covered by `tests/scripts/binary_list_docs.bats`) fails the gate when a manifest binary is missing here, or when either of those documents restates the list.
+
 Binaries: `rust_scorer`, `float_scan_bench`, `cost_scan_bench`, `gpu_pipeline_alloc_bench` (see `rust_scorer/Cargo.toml`). `cost_scan_bench` (Issue #124) sweeps every supported [`CostKind`](rust_scorer/src/cost.rs) through the forward-only fused path against a single creature and a `.bin` corpus, emitting a JSON summary for per-cost CPU baseline comparison. `gpu_pipeline_alloc_bench` (Issue #202) counts heap allocations during a multi-chunk pipelined (`inflight_chunks == 2`) GPU directory run; it skips cleanly on CPU-only hosts.
 
 ## CLI
@@ -450,7 +454,7 @@ single positional argument (`<training_data_dir>`).
 
 ### Output
 
-Single-creature mode JSON includes **`forwardOnly`** (from the creature) and **`trainingReadBackend`**: on a native release build you should see **`pipelined_double_buffer`** when `forwardOnly` is `true` (fused scoring + `training_bin_stream`). If `forwardOnly` is `false`, you get **`record_iterator`** instead (no pipelining — much slower on large data). The **`gpuBackend`** field reports which `wgpu` backend the scorer would run on (`"cpu-fallback"` until GPU kernels land; see [GPU mode](#gpu-mode-issues-80--83) above). When record-level sub-sampling runs (`--sample-rate < 1`, see [Record-level sub-sampling](#record-level-sub-sampling----sample-rate-issue-310)) a **`sampleRate`** field echoes the effective rate and `recordCount` is the number of *sampled* records scored; the field is absent for a full-corpus run.
+Single-creature mode JSON includes **`forwardOnly`** (from the creature) and **`trainingReadBackend`**: on a native release build you should see **`pipelined_double_buffer`** when `forwardOnly` is `true` (fused scoring + `training_bin_stream`). If `forwardOnly` is `false`, you get **`record_iterator`** instead (no pipelining — much slower on large data). The **`gpuBackend`** field reports the `wgpu` backend that **actually ran** the scoring kernel — `"metal"`, `"vulkan"`, `"dx12"` or `"gl"` when a GPU hosted the run, and `"cpu-fallback"` when the CPU pipeline ran (see [GPU mode](#gpu-mode-issues-80--83) above for the routing rules). When record-level sub-sampling runs (`--sample-rate < 1`, see [Record-level sub-sampling](#record-level-sub-sampling----sample-rate-issue-310)) a **`sampleRate`** field echoes the effective rate and `recordCount` is the number of *sampled* records scored; the field is absent for a full-corpus run. **`compileTimeSecs`** (Issue #42) reports the wall-clock seconds spent in `compile_creature` — plus any per-worker `CompiledNetwork` clone — before scoring starts, so the fixed startup share of `timeTaken` can be told apart from scoring time; it is omitted when no compile timing was recorded.
 
 In directory mode, output is a top-level object keyed by creature filename stem, where each value has the same shape as a single-creature `ScoreResult`.
 
@@ -550,18 +554,50 @@ default, mirroring how `NEAT_SCORER_GPU` already rejects invalid values:
 ```
 
 Unset or blank values stay silent, and a valid value is honoured without any
-warning.
+warning. The default quoted in the message is the **record-size adaptive**
+default described below, so it reads `33554432` on production-sized records.
 
-### Large-record hosts: raise `NEAT_SCORER_READ_BYTES` (Issue #307)
+### Large-record hosts: adaptive `NEAT_SCORER_READ_BYTES` default (Issues #307, #504)
 
-The default `NEAT_SCORER_READ_BYTES` (2 MiB) is tuned for the synthetic
-small-record fixtures. **Production records are 9848 bytes**
-(2461 inputs + 1 output, `f32`), so a 2 MiB chunk holds only ~213 records —
-too few to amortise the per-chunk Rayon dispatch across the worker pool. A
-sweep on the #296 production fixture (see
-[`docs/performance-baseline.md`](docs/performance-baseline.md)) shows larger
-aligned reads recover **~20 %** on the single-creature path, with the sweet
-spot at **16–32 MiB**:
+The read-chunk default is **record-size adaptive** — the constants live in
+[`rust_scorer/src/read_tuning.rs`](rust_scorer/src/read_tuning.rs) and apply to
+every scoring path (single-creature, directory/multi-creature, streaming, CLI
+and `float_scan_bench`):
+
+| Record size | Default read chunk when `NEAT_SCORER_READ_BYTES` is **unset** |
+|---|---|
+| < 8000 B/record (synthetic fixtures) | **2 MiB** (`DEFAULT_READ_BYTES`) |
+| ≥ 8000 B/record (`LARGE_RECORD_BYTES_THRESHOLD`) | **32 MiB** (`LARGE_RECORD_DEFAULT_READ_BYTES`) |
+
+**Production records are 9848 bytes** (2461 inputs + 1 output, `f32`), so
+production runs already read 32 MiB chunks with **no environment variable set**
+— exporting `NEAT_SCORER_READ_BYTES=33554432` by hand is now redundant.
+
+```mermaid
+flowchart TD
+    A[Scoring path needs a read chunk] --> B{NEAT_SCORER_READ_BYTES set?}
+    B -- yes --> C[Use the env value]
+    B -- no --> D{record_bytes >= 8000?}
+    D -- yes --> E[32 MiB default]
+    D -- no --> F[2 MiB default]
+    C --> G[Clamp to record_bytes..64 MiB cap]
+    E --> G
+    F --> G
+    G --> H[Round down to a whole number of records]
+```
+
+`NEAT_SCORER_READ_BYTES` still **overrides** the adaptive default when you want
+a different size. Any value — env or default — is clamped to the **64 MiB** cap
+(`MAX_READ_BYTES`, and to at least one record) and rounded down to a whole
+number of records, so a chunk never splits a record.
+
+#### Why 32 MiB (the supporting sweep)
+
+A 2 MiB chunk holds only ~213 production records — too few to amortise the
+per-chunk Rayon dispatch across the worker pool. A sweep on the #296 production
+fixture (see [`docs/performance-baseline.md`](docs/performance-baseline.md))
+shows larger aligned reads recover **~20 %** on the single-creature path, with
+the sweet spot at **16–32 MiB**:
 
 | `NEAT_SCORER_READ_BYTES` | `production_single_creature` | `production_multi_creature/1` | `production_multi_creature/4` |
 |---|---:|---:|---:|
@@ -576,27 +612,33 @@ back-to-back on one Apple Silicon host; absolute times are host-load
 sensitive, so the table reports the relative improvement each cell held across
 repeated interleaved runs.)
 
-On production hosts with these large records, export a bigger chunk before scoring:
+Those numbers are why the ≥ 8000 B/record default is **32 MiB**; no export is
+needed to get them. To pick a different size — for example `16777216` (16 MiB),
+which captures most of the gain at half the transient read buffer — set the env
+explicitly:
 
 ```bash
-# ~24 % faster forward-only scoring on 9848-byte production records.
-export NEAT_SCORER_READ_BYTES=33554432   # 32 MiB
+# Override the adaptive default; 32 MiB (33554432) is already the default here.
+export NEAT_SCORER_READ_BYTES=16777216   # 16 MiB
 ```
 
-`16777216` (16 MiB) captures most of the gain at half the transient read
-buffer. The read buffer is **per-scan, not per-worker** — directory mode runs
+The read buffer is **per-scan, not per-worker** — directory mode runs
 a single shared scan and partitions the unpacked records across the worker
 pool — so a 32 MiB setting adds at most ~64 MiB of transient buffer (the
 pipelined path double-buffers), not 32 MiB × worker count. That stays well
 within production host RAM headroom.
 
-The global default is intentionally **left at 2 MiB**: the gain is specific to
-large (> ~1 KiB) records, and raising it globally would enlarge the buffer for
-the small-record synthetic path for no benefit. Set the env per-host instead.
+The default is raised **per record size, not globally**: the gain is specific to
+large records, so the small-record synthetic path keeps its 2 MiB buffer while
+large-record corpora get 32 MiB automatically. The #307 sweep originally shipped
+as env-var advice with the global default fixed at 2 MiB; that recommendation was
+superseded when the adaptive default landed in `read_tuning.rs` (see the
+supersession note in
+[`docs/performance-baseline.md`](docs/performance-baseline.md)).
 
 ## Local layout
 
-Place **NEAT-AI-core** and **NEAT-AI-scorer** as **siblings** (e.g. `…/src/NEAT-AI-core` and `…/src/NEAT-AI-scorer`). The path in `rust_scorer/Cargo.toml` is `../../NEAT-AI-core/neat-core` so `cargo build` resolves `neat-core` from your local **NEAT-AI-core** tree. CI does the same via a second checkout (`../NEAT-AI-core`).
+Place **NEAT-AI-core** and **NEAT-AI-scorer** as **siblings** (e.g. `…/src/NEAT-AI-core` and `…/src/NEAT-AI-scorer`). The path in `rust_scorer/Cargo.toml` is `../../NEAT-AI-core/neat-core` so `cargo build` resolves `neat-core` from your local **NEAT-AI-core** tree. CI does the same via a second checkout, but indirectly: `actions/checkout` **refuses any `path:` that resolves outside `$GITHUB_WORKSPACE`**, so the [`setup-neat-core`](./.github/actions/setup-neat-core/action.yml) composite action clones into the in-workspace `NEAT-AI-core/` and symlinks `$GITHUB_WORKSPACE/../NEAT-AI-core` at it (Issue #18). `scripts/check-workflow-paths.sh` fails the gate if a workflow reintroduces an out-of-workspace `path:`.
 
 ### neat-core breaking-bump gate (Issue #252)
 
@@ -1020,12 +1062,16 @@ covered end-to-end by `tests/scripts/milestone_branch_filter.bats`. The workflow
 `scripts/check-cargo-quality-workflow.sh` (invoked from `quality.sh`) and
 covered end-to-end by `tests/scripts/cargo_quality_workflow.bats`.
 
-ShellCheck runs in exactly one place: `ci.yml`'s `shell-checks` job invokes
-`ludeeus/action-shellcheck@2.0.0` alongside the `bash -n` syntax check and
-the bats helper-test suite, and feeds the `ci-required` aggregator that
-branch protection gates on. A standalone `shellcheck.yml` previously ran the
-identical invocation, doubling the maintenance surface (Issue #157); it was
-removed so the ShellCheck configuration lives in a single home. The dedup
+ShellCheck runs in exactly one place: `ci.yml`'s `shell-checks` job runs the
+[`koalaman/shellcheck`](https://github.com/koalaman/shellcheck) binary
+**pre-installed on the `ubuntu-latest` runner** directly — no third-party
+wrapper action enters the supply chain (PR #184 dropped the wrapper, whose
+unauthenticated release-asset download also failed the job on a transient
+error) — alongside the `bash -n` syntax check and the bats helper-test suite,
+and feeds the `ci-required` aggregator that branch protection gates on. A
+standalone `shellcheck.yml` previously ran the identical invocation, doubling
+the maintenance surface (Issue #157); it was removed so the ShellCheck
+configuration lives in a single home. The dedup
 invariant is enforced by `scripts/check-shellcheck-dedup.sh` (invoked from
 `quality.sh`) and covered end-to-end by
 `tests/scripts/shellcheck_dedup.bats`, which fail if a second workflow
@@ -1149,13 +1195,49 @@ the SHA and the comment in the same PR, and note the changelog highlights
 in the PR description.
 
 The same script also enforces the Node 24 deprecation policy from the
-trailing comment: minimum majors, tracked Node 20 exceptions
-(`actions/dependency-review-action@v4`, `rustsec/audit-check@v2` — no
-Node 24 release upstream yet), and a composite/shell allow-list. The
+trailing comment: minimum majors, the single remaining tracked Node 20
+exception (`rustsec/audit-check@v2` — no Node 24 tag upstream yet, so the pin
+is the `master` HEAD commit that already declares `using: node24`), and a
+composite/shell allow-list. `actions/dependency-review-action` is no longer an
+exception (Issue #136): the validator requires major **5**, and both
+`dependency-review.yml` and `security.yml` pin `v5.0.0`, which ships on
+Node 24. The
 policy lives in `scripts/check-workflow-action-versions.sh` and is
 covered end-to-end by `tests/scripts/workflow_action_versions.bats`.
 `quality.sh` invokes the script so any unpinned or outdated `uses:`
 reference fails the local gate before CI (Issues #24 and #100).
+
+Six per-workflow validators (`check-actionlint-workflow.sh`,
+`check-cargo-audit-workflow.sh`, `check-cargo-quality-workflow.sh`,
+`check-dependency-review-workflow.sh`, `check-markdown-lint-workflow.sh` and
+`check-sbom-workflow.sh`) additionally assert that their own workflow has a
+pinned `actions/checkout` step. That rule used to be an inline `grep` block in
+each script and had drifted into three generations of the same regex, so a
+future bump to a SHA starting with a hex letter would have failed two gates
+spuriously. Issue #511 extracted it into a single helper,
+`require_pinned_checkout`, in `scripts/lib/workflow-checks.sh` — the one place
+the acceptance rule (`vN` or a 40-character SHA, branch refs disallowed) now
+lives. The helper is covered by `tests/scripts/workflow_checks_lib.bats`.
+
+The least-privilege `permissions:` rule — the workflow declares a bare top-level
+`permissions:` key and grants `contents: read` — was the same story one step
+earlier: seven validators (the six above plus
+`check-semgrep-workflow.sh`) carried a byte-identical six-line `grep` pair, so
+any change to the acceptance rule needed seven identical edits. Issue #514
+extracted it into `require_readonly_permissions` in the same library, alongside
+the checkout rule.
+
+```mermaid
+flowchart LR
+    L["scripts/lib/workflow-checks.sh<br/>require_pinned_checkout<br/>require_readonly_permissions"]
+    A[check-actionlint-workflow.sh] --> L
+    B[check-cargo-audit-workflow.sh] --> L
+    C[check-cargo-quality-workflow.sh] --> L
+    D[check-dependency-review-workflow.sh] --> L
+    E[check-markdown-lint-workflow.sh] --> L
+    F[check-sbom-workflow.sh] --> L
+    G["check-semgrep-workflow.sh<br/>(permissions rule only)"] --> L
+```
 
 ## How to bench
 
@@ -1177,8 +1259,11 @@ BENCH_SCORING_BYTES=200000000 ./scripts/run-benches.sh
 Tunables (all optional): `BENCH_SCORING_BYTES`, `BENCH_SCORING_INPUTS`,
 `BENCH_SCORING_OUTPUTS`, `BENCH_SCORING_HIDDEN`. Recorded baselines and
 host-specific numbers live in [`docs/performance-baseline.md`](docs/performance-baseline.md).
-Per `AGENTS.md`, performance PRs without before/after Criterion evidence are
-rejected.
+Per the
+[Performance Task Workflow](CONTRIBUTING.md#performance-task-workflow) in
+`CONTRIBUTING.md`, performance PRs without before/after Criterion evidence are
+rejected, and a change that misses its acceptance bar is recorded as a
+`negative-result` on the issue instead of raised as a PR.
 
 ## How to flamegraph (Issue #37)
 
@@ -1309,7 +1394,9 @@ fixture the helper wrote to `target/pgo-fixture/`.
 
 Producing the PGO binary as a release artefact in CI requires committing a
 new workflow YAML, which the worker is not authorised to push (no
-`workflow` OAuth scope — see `AGENTS.md` "Human Escalation"). Run the
+`workflow` OAuth scope — see
+[Human escalation](CONTRIBUTING.md#human-escalation) in `CONTRIBUTING.md`).
+Run the
 helper locally for now, or have a maintainer wire `build-pgo.sh` into a
 manually triggered workflow under `.github/workflows/`.
 

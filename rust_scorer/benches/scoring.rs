@@ -46,6 +46,7 @@ use neat_core::training_data::{TrainingDataConfig, find_bin_files};
 use std::sync::Arc;
 
 use rust_scorer::cost::CostKind;
+use rust_scorer::fixture_json::{creature_envelope, neuron_json, synapse_json};
 use rust_scorer::gpu::{GpuBackendLabel, GpuMode, resolve_backend, select_adapter};
 use rust_scorer::multi_score::{
     EarlyExit, score_from_creature_dir, score_from_creature_dir_gpu,
@@ -123,13 +124,14 @@ fn synthetic_creature_json(num_inputs: usize, num_outputs: usize, hidden: usize)
     let mut neurons: Vec<String> = Vec::with_capacity(hidden + num_outputs);
     for h in 0..hidden {
         let squash = bench_hidden_squash(h);
-        neurons.push(format!(
-            r#"{{"type":"hidden","uuid":"hidden-{h}","bias":0.05,"squash":"{squash}"}}"#
-        ));
+        neurons.push(neuron_json("hidden", &format!("hidden-{h}"), 0.05, &squash));
     }
     for o in 0..num_outputs {
-        neurons.push(format!(
-            r#"{{"type":"output","uuid":"output-{o}","bias":0.0,"squash":"IDENTITY"}}"#
+        neurons.push(neuron_json(
+            "output",
+            &format!("output-{o}"),
+            0.0,
+            "IDENTITY",
         ));
     }
 
@@ -139,8 +141,10 @@ fn synthetic_creature_json(num_inputs: usize, num_outputs: usize, hidden: usize)
         for h in 0..hidden {
             // Vary weight slightly so activations are non-degenerate.
             let w = 0.05 + 0.001 * ((i * hidden + h) as f64);
-            synapses.push(format!(
-                r#"{{"fromUUID":"input-{i}","toUUID":"hidden-{h}","weight":{w}}}"#
+            synapses.push(synapse_json(
+                &format!("input-{i}"),
+                &format!("hidden-{h}"),
+                w,
             ));
         }
     }
@@ -148,17 +152,15 @@ fn synthetic_creature_json(num_inputs: usize, num_outputs: usize, hidden: usize)
     for h in 0..hidden {
         for o in 0..num_outputs {
             let w = 0.1 + 0.001 * ((h * num_outputs + o) as f64);
-            synapses.push(format!(
-                r#"{{"fromUUID":"hidden-{h}","toUUID":"output-{o}","weight":{w}}}"#
+            synapses.push(synapse_json(
+                &format!("hidden-{h}"),
+                &format!("output-{o}"),
+                w,
             ));
         }
     }
 
-    format!(
-        r#"{{"input":{num_inputs},"output":{num_outputs},"forwardOnly":true,"semanticVersion":"4.0.0","neurons":[{}],"synapses":[{}]}}"#,
-        neurons.join(","),
-        synapses.join(","),
-    )
+    creature_envelope(num_inputs, num_outputs, &neurons, &synapses)
 }
 
 /// Write a single `0.bin` file holding `total_bytes` worth of synthetic packed records.

@@ -22,7 +22,9 @@ fi
 SHELLCHECK_FAILED=0
 while IFS= read -r script; do
   echo "  shellcheck: $script"
-  if ! shellcheck -s bash "$script"; then
+  # -x follows `# shellcheck source=` directives so the shared guard-script
+  # harness (scripts/lib/check-harness.sh, Issue #512) is analysed in context.
+  if ! shellcheck -x -s bash "$script"; then
     SHELLCHECK_FAILED=1
   fi
 done < <(find . -name "*.sh" -type f -not -path "./target/*" -not -path "./.git/*")
@@ -134,6 +136,21 @@ echo "🛟 Validating risk-bearing multi-line run: blocks open with set -euo pip
 
 echo "📖 Validating README 'matches CI' block aligns with the CI quality job (Issue #212)..."
 ./scripts/check-readme-ci-alignment.sh
+
+echo "📚 Validating read-chunk docs match read_tuning.rs constants (Issue #504)..."
+./scripts/check-read-bytes-docs.sh
+
+echo "🖥️  Validating gpuBackend docs match GpuBackendLabel (Issue #507)..."
+./scripts/check-gpu-backend-docs.sh
+
+echo "🗄️  Validating the PR-summary archive is single and documented (Issue #508)..."
+./scripts/check-pr-summary-archive.sh
+
+echo "📦 Validating the binary list is single-homed in the README (Issue #509)..."
+./scripts/check-binary-list-docs.sh
+
+echo "🔗 Validating cross-document citations resolve (Issue #505)..."
+./scripts/check-docs-cross-references.sh
 
 echo "🕵️  Validating README names no private repository (Issue #450)..."
 ./scripts/check-readme-private-repo-refs.sh

@@ -5,6 +5,8 @@
 # workflow YAML in temporary directories so behaviour (exit codes, reported
 # failures) is verified end-to-end without mutating the real workflow file.
 
+load 'test_helper'
+
 setup() {
   SCRIPT_UNDER_TEST="${BATS_TEST_DIRNAME}/../../scripts/check-actionlint-workflow.sh"
   [ -x "$SCRIPT_UNDER_TEST" ] || chmod +x "$SCRIPT_UNDER_TEST"
@@ -106,6 +108,16 @@ PY
   [[ "$output" == *"not pinned"* ]]
 }
 
+@test "rejects an over-long hex checkout ref (Issue #511)" {
+  # The hybrid regex this validator used to carry had no `\b` anchor, so a
+  # 41-character ref matched on its first 40 characters and passed.
+  write_actionlint_workflow "$TMP_WF/actionlint.yml"
+  sed -i.bak 's|actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd  # v5|actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd0|' "$TMP_WF/actionlint.yml"
+  run "$SCRIPT_UNDER_TEST" --workflow "$TMP_WF/actionlint.yml"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"not pinned"* ]]
+}
+
 @test "fails when actions/checkout step is missing" {
   write_actionlint_workflow "$TMP_WF/actionlint.yml"
   sed -i.bak '/actions\/checkout/d' "$TMP_WF/actionlint.yml"
@@ -159,15 +171,11 @@ PY
 }
 
 @test "reports an error when the workflow file does not exist" {
-  run "$SCRIPT_UNDER_TEST" --workflow "$TMP_WF/does-not-exist.yml"
-  [ "$status" -ne 0 ]
-  [[ "$output" == *"not found"* ]]
+  assert_missing_target_rejected "$SCRIPT_UNDER_TEST" --workflow "$TMP_WF/does-not-exist.yml"
 }
 
 @test "unknown flag prints usage and exits non-zero" {
-  run "$SCRIPT_UNDER_TEST" --nonsense
-  [ "$status" -ne 0 ]
-  [[ "$output" == *"Usage"* ]]
+  assert_unknown_flag_rejected "$SCRIPT_UNDER_TEST"
 }
 
 @test "real repository actionlint workflow satisfies every rule" {

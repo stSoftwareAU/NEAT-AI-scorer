@@ -23,12 +23,11 @@ Issue #450 (README) and Issue #451 (automation repo) guards.
   `rust_scorer/tests/gpu_pipelined_scratch_multi_bin.rs`,
   `rust_scorer/tests/scorer_smoke.rs`, `scripts/profile-flamegraph.sh`,
   `AGENTS.md`.
-- **Renamed identifiers** —
-  `directory_mode_auto_grq_scale_topology_uses_cpu` →
-  `directory_mode_auto_production_scale_topology_uses_cpu`,
-  `default_read_bytes_scales_for_grq_records` →
-  `default_read_bytes_scales_for_production_records`, fixture
-  `grq-scale.json` → `production-scale.json`, parity label → `"production"`.
+- **Renamed identifiers** — the two private-repo-prefixed test names became
+  `directory_mode_auto_production_scale_topology_uses_cpu` and
+  `default_read_bytes_scales_for_production_records`, the private-repo-prefixed
+  fixture became `production-scale.json`, and the parity label became
+  `"production"`.
 - **New guard** — `scripts/check-source-private-repo-refs.sh` scans tracked
   `*.rs`, `scripts/*.sh` and `AGENTS.md` for the private repo names and exits
   1 with every offending line. Wired into `quality.sh`. The guard itself and

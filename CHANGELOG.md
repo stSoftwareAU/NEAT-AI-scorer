@@ -17,6 +17,93 @@ section to the released version with its date.
 
 ### Changed
 
+- **One emitter for the creature JSON wire format (Issue #513).** The envelope
+  (`input`/`output`/`forwardOnly`/`semanticVersion`) plus the per-neuron and
+  per-synapse literal shapes were hand-encoded with `format!` across benches,
+  binaries, integration tests and both `src/` fixture modules, so a schema
+  change upstream meant the same edit fifteen times. New
+  `rust_scorer::fixture_json` owns the emission — `neuron_json`,
+  `synapse_json`, `typed_synapse_json`, `creature_envelope`, and the
+  `dense_mlp_creature_json` builder that collapses the byte-identical
+  `synthetic_creature_json` triplet in the GPU parity tests. Callers keep their
+  own loops, shapes and weight formulas, which differ between fixtures on
+  purpose.
+
+- **The docs private-repo guard covers the whole archive (Issue #510).** Four
+  archived PR summaries — the ones added by the private-repo-reference audit
+  itself — still named the private production-data and cluster-data
+  repositories, and `scripts/check-docs-private-repo-refs.sh` carved three of
+  them out of `in_scope()` on the rationale that they must quote what they
+  removed. They need not: all four are now worded at concept level, the
+  carve-out is gone, and the match is case-insensitive with `_`/`-` treated as
+  word boundaries so lower-case identifier spellings are caught too.
+
+- **One documented home for the workspace binary list (Issue #509).**
+  `rust_scorer/Cargo.toml` declares four `[[bin]]` targets, but `CONTRIBUTING.md`
+  named three (omitting `gpu_pipeline_alloc_bench`) and `AGENTS.md` named two —
+  each doc kept its own copy of a list the manifest owns, so every new binary
+  re-opened the drift. Both now cite the README **Binaries** section (given its
+  own heading so the citation resolves) instead of restating the list. New
+  `scripts/check-binary-list-docs.sh` (run from `quality.sh`, covered by
+  `tests/scripts/binary_list_docs.bats`) fails the gate when the README omits a
+  manifest binary, or when `CONTRIBUTING.md` / `AGENTS.md` name one.
+
+- **One documented home for the PR-summary archive (Issue #508).** The archive
+  — the project's durable cross-machine memory — was split between
+  `docs/pr-summary-*.md` (40 summaries, PRs 1–105) and
+  `docs/archive/pr-summaries/` (110 summaries, PRs 117+) with no documented
+  convention, so an agent mining prior learnings could sweep one location and
+  silently miss the other. The 40 root summaries moved into
+  `docs/archive/pr-summaries/`, the `.codespellrc` `skip` entry now names the
+  archive path so the Issue #21 typo-fixture exemption follows the files, and
+  the convention ("summaries live under `docs/archive/pr-summaries/`, one file
+  per PR") is recorded in a new `docs/archive/pr-summaries/README.md` and in
+  the `CONTRIBUTING.md` pull-request workflow. New
+  `scripts/check-pr-summary-archive.sh` (run from `quality.sh`, covered by
+  `tests/scripts/pr_summary_archive.bats`) fails the gate on a summary outside
+  the archive, an uncovered codespell skip list, or a missing convention doc.
+
+- **README "Output" section describes the shipped `gpuBackend` semantics
+  (Issue #507).** The section still said the field reported which `wgpu`
+  backend the scorer "would run on" (`"cpu-fallback"` "until GPU kernels
+  land"), contradicting the README's own "GPU mode" section and telling
+  readers GPU support had not shipped — kernels landed in Issues #82/#83/#182
+  and `--gpu auto` has been the default since #83. The paragraph now states
+  that the field reports the backend that **actually ran** the scoring kernel
+  and names every shipped label. New `scripts/check-gpu-backend-docs.sh` (run
+  from `quality.sh`, covered by `tests/scripts/gpu_backend_docs.bats`) derives
+  the labels from `GpuBackendLabel::as_str` and fails the gate if the section
+  loses the runtime semantics, omits a label, drops the cross-link to the GPU
+  mode section, or revives the stale wording.
+- **Dead `AGENTS.md` citations now point at a real home (Issue #505).** Four
+  places cited `AGENTS.md` sections that never existed — a "Performance Task
+  Workflow" and a "Human Escalation" section — so an agent following the
+  citation found nothing. Both rules are now written down once, in
+  `CONTRIBUTING.md`: the Performance Task Workflow (before/after Criterion
+  evidence at the documented corpus size; a change that misses its acceptance
+  bar raises no PR — post the numbers, label `negative-result`, close
+  `not planned`) and Human escalation (the automation worker holds no
+  `workflow` OAuth scope, so `.github/workflows/` changes need a maintainer,
+  and `needs-human` always travels with an explanation comment). `README.md`,
+  `docs/gpu-scoring-design.md`, `docs/performance-baseline.md` and `AGENTS.md`
+  now link those anchors. New `scripts/check-docs-cross-references.sh` (run
+  from `quality.sh`, covered by `tests/scripts/docs_cross_references.bats`)
+  fails the gate on a dead anchor, a missing canonical section, or a document
+  that re-attributes either rule to `AGENTS.md`.
+- **Read-chunk docs now describe the shipped adaptive default (Issue #504).**
+  The README "Large-record hosts" section still told readers the
+  `NEAT_SCORER_READ_BYTES` default was a fixed 2 MiB and that production hosts
+  should `export NEAT_SCORER_READ_BYTES=33554432`, contradicting both
+  `AGENTS.md` and `rust_scorer/src/read_tuning.rs`, where records ≥ 8000 B
+  default to 32 MiB reads. The section now documents the record-size adaptive
+  default (with a Mermaid flowchart), keeps the #307 sweep as its supporting
+  evidence, and states the 64 MiB `MAX_READ_BYTES` clamp.
+  `docs/performance-baseline.md` keeps its dated #307 decision text unedited
+  and carries an appended supersession banner. New
+  `scripts/check-read-bytes-docs.sh` (run from `quality.sh`, covered by
+  `tests/scripts/read_bytes_docs.bats`) reads the constants from
+  `read_tuning.rs` and fails the gate if either document drifts again.
+
 - **Acknowledged the neat-core 0.5.0 → 0.8.1 breaking bumps (Issue #252 gate).**
   neat-core removed three dead WASM/SIMD surfaces —
   `apply_derivative_simd_4way` / `derivative_batch_4way` (0.6.0),

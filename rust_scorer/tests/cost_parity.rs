@@ -41,6 +41,7 @@
 use neat_core::creature::{compile_creature, parse_creature_json};
 use neat_core::network::CompiledNetwork;
 use rust_scorer::cost::{CostKind, accumulate_cost_sum};
+use rust_scorer::fixture_json::{creature_envelope, neuron_json, synapse_json};
 
 /// 1e-9 absolute tolerance for smooth/algebraic costs (`MSE`, `MAE`, `MAPE`,
 /// `HINGE`). At our chosen value ranges all per-record terms have magnitude
@@ -63,19 +64,13 @@ const TS_LOSS_EPSILON: f64 = 1e-15;
 /// the predicted value is exactly the packed input — letting the expected
 /// values be computed directly from the records without re-running activation.
 fn identity_1_in_1_out() -> CompiledNetwork {
-    let json = r#"{
-        "input": 1,
-        "output": 1,
-        "forwardOnly": true,
-        "semanticVersion": "4.0.0",
-        "neurons": [
-            {"type": "output", "uuid": "output-0", "bias": 0.0, "squash": "IDENTITY"}
-        ],
-        "synapses": [
-            {"fromUUID": "input-0", "toUUID": "output-0", "weight": 1.0}
-        ]
-    }"#;
-    compile_creature(&parse_creature_json(json).expect("parse identity_1_in_1_out"))
+    let json = creature_envelope(
+        1,
+        1,
+        &[neuron_json("output", "output-0", 0.0, "IDENTITY")],
+        &[synapse_json("input-0", "output-0", 1.0)],
+    );
+    compile_creature(&parse_creature_json(&json).expect("parse identity_1_in_1_out"))
         .expect("compile identity_1_in_1_out")
 }
 
@@ -84,21 +79,19 @@ fn identity_1_in_1_out() -> CompiledNetwork {
 /// output is always index 0, so a multi-output topology is needed to exercise
 /// the misclassification path).
 fn identity_2_in_2_out() -> CompiledNetwork {
-    let json = r#"{
-        "input": 2,
-        "output": 2,
-        "forwardOnly": true,
-        "semanticVersion": "4.0.0",
-        "neurons": [
-            {"type": "output", "uuid": "output-0", "bias": 0.0, "squash": "IDENTITY"},
-            {"type": "output", "uuid": "output-1", "bias": 0.0, "squash": "IDENTITY"}
+    let json = creature_envelope(
+        2,
+        2,
+        &[
+            neuron_json("output", "output-0", 0.0, "IDENTITY"),
+            neuron_json("output", "output-1", 0.0, "IDENTITY"),
         ],
-        "synapses": [
-            {"fromUUID": "input-0", "toUUID": "output-0", "weight": 1.0},
-            {"fromUUID": "input-1", "toUUID": "output-1", "weight": 1.0}
-        ]
-    }"#;
-    compile_creature(&parse_creature_json(json).expect("parse identity_2_in_2_out"))
+        &[
+            synapse_json("input-0", "output-0", 1.0),
+            synapse_json("input-1", "output-1", 1.0),
+        ],
+    );
+    compile_creature(&parse_creature_json(&json).expect("parse identity_2_in_2_out"))
         .expect("compile identity_2_in_2_out")
 }
 

@@ -9,8 +9,10 @@ and submit changes. It mirrors the local gate documented in
 ## Repository layout
 
 This is a multi-binary Rust workspace. The sole workspace member is
-**`rust_scorer`** (the `rust_scorer`, `float_scan_bench`, and
-`cost_scan_bench` binaries). The shared scoring logic lives in
+**`rust_scorer`**. Its `[[bin]]` targets are owned by
+[`rust_scorer/Cargo.toml`](./rust_scorer/Cargo.toml) and documented in the
+README [Binaries](./README.md#binaries) section — this guide deliberately keeps
+no copy of that list (Issue #509). The shared scoring logic lives in
 **`neat-core`**, resolved as a **path dependency** on a sibling clone of
 [NEAT-AI-core](https://github.com/stSoftwareAU/NEAT-AI-core).
 
@@ -73,6 +75,57 @@ quarantine-gated bumps go through [`./bump-deps.sh`](./bump-deps.sh) instead.
 
 Keep re-running `./quality.sh < /dev/null` until it passes cleanly.
 
+### Guard-script harness
+
+Every `scripts/check-*.sh` validator shares one CLI contract, and that contract
+lives in a single place: [`scripts/lib/check-harness.sh`](./scripts/lib/check-harness.sh)
+(Issue #512). The harness owns the `--FLAG PATH` / `-h` argument loop,
+default-target resolution relative to the repo root, the "file not found" guard
+(`exit 2`), and the accumulate-and-report protocol — an `OK` line on stdout, a
+`FAIL` line on stderr, `EXIT_CODE=1` without aborting so a run lists every
+violation. Only
+the per-script rule checks live in the individual validators.
+
+```mermaid
+flowchart LR
+    A["scripts/check-*.sh"] -->|source| H["scripts/lib/check-harness.sh"]
+    H --> P["parse_check_args<br/>--FLAG / -h / exit 2"]
+    H --> G["check_require_file<br/>check_require_dir"]
+    H --> R["ok / fail / EXIT_CODE"]
+    A --> C["per-script rule checks"]
+    C --> R
+```
+
+Writing a new validator:
+
+```bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=scripts/lib/check-harness.sh
+source "$SCRIPT_DIR/lib/check-harness.sh"
+
+usage() { cat <<'EOF'
+Usage: check-thing.sh [--workflow PATH]
+EOF
+}
+
+parse_check_args --workflow ".github/workflows/thing.yml" "$@"
+WORKFLOW="$CHECK_TARGET"
+check_require_file "$WORKFLOW"
+check_subject "$WORKFLOW"   # prefixes every OK/FAIL line with the file
+
+# ... per-script rule checks calling ok "…" / fail "…" ...
+
+exit "$EXIT_CODE"
+```
+
+`shellcheck` must be run with `-x` so it follows the `# shellcheck source=`
+directive; `quality.sh` already does. The matching BATS contract assertions
+(`assert_missing_target_rejected`, `assert_unknown_flag_rejected`) live in
+[`tests/scripts/test_helper.bash`](./tests/scripts/test_helper.bash) — `load
+'test_helper'` rather than restating them per suite.
+
 ## Coding standards
 
 - **Australian English** throughout code, comments, and documentation
@@ -82,6 +135,20 @@ Keep re-running `./quality.sh < /dev/null` until it passes cleanly.
   assert on results, exit codes, or side effects.
 - When a domain term trips codespell, add it with a short justification to
   [`.codespellrc`](./.codespellrc) rather than silencing a whole file.
+- A precondition that guards an `unsafe` block must be an always-on `assert!`,
+  never a `debug_assert!` (Issue #103) — release builds elide the latter, which
+  turned a length check in `unpack_f32s_le` into an out-of-bounds read. Pure
+  internal-maths invariants with no memory-safety consequence may stay
+  `debug_assert!` (Issue #201).
+- Draw diagrams in the living docs with **Mermaid**, not box-drawing ASCII
+  (Issue #48); `tests/scripts/diagrams_mermaid.bats` enforces this.
+- Never hand-encode the creature JSON wire format in a test, bench, or fixture
+  (Issue #513). Emit it through
+  [`rust_scorer::fixture_json`](./rust_scorer/src/fixture_json.rs) —
+  `neuron_json`, `synapse_json`, `typed_synapse_json`, `creature_envelope`, and
+  the `dense_mlp_creature_json` builder — so a schema change upstream is one
+  edit, not fifteen. Keep your own loops, shapes, and weight formulas local:
+  those differ between fixtures on purpose.
 
 ## Pull request workflow
 
@@ -90,7 +157,11 @@ Keep re-running `./quality.sh < /dev/null` until it passes cleanly.
 3. Run `./quality.sh < /dev/null` until it passes.
 4. Update [`CHANGELOG.md`](./CHANGELOG.md) under the `## [Unreleased]`
    section, and update the README or other docs if behaviour changes.
-5. Open a pull request targeting `Develop`.
+5. Write the PR summary to
+   [`docs/archive/pr-summaries/`](./docs/archive/pr-summaries/README.md) —
+   **PR summaries live there, one file per PR** (`pr-summary-<issue>.md`), and
+   nowhere else (Issue #508).
+6. Open a pull request targeting `Develop`.
 
 On each PR the **Version Increment** workflow
 ([`.github/workflows/version-increment.yml`](./.github/workflows/version-increment.yml))
@@ -98,6 +169,68 @@ automatically bumps the patch component of `rust_scorer`'s version in
 `rust_scorer/Cargo.toml` once, if it has not already been bumped on the
 branch. Because the version is bumped automatically, the `CHANGELOG.md` is
 the human-readable record of *what* changed — please keep it current.
+
+## Performance Task Workflow
+
+This section is the **single home** for the project's performance-change rules.
+The README ["How to bench"](./README.md#how-to-bench) section,
+[`docs/performance-baseline.md`](./docs/performance-baseline.md), and
+[`docs/gpu-scoring-design.md`](./docs/gpu-scoring-design.md) point here rather
+than restating them.
+
+1. **Benchmark first.** Record the baseline with
+   [`./scripts/run-benches.sh`](./scripts/run-benches.sh) *before* changing any
+   code. Acceptance evidence is captured at the documented corpus size —
+   `BENCH_SCORING_BYTES=200000000` (200 MB) — on the same host class as the
+   baseline recorded in
+   [`docs/performance-baseline.md`](./docs/performance-baseline.md).
+2. **Implement the change.**
+3. **Re-run the same benches** and record the after numbers: the median plus the
+   95 % confidence interval for every affected bench group.
+4. **Compare against the acceptance bar.** Only raise a PR when the change
+   demonstrably improves the measured metric against the bar its issue sets (the
+   per-bench bars for the GPU work are tabulated in
+   [`docs/gpu-scoring-design.md`](./docs/gpu-scoring-design.md)). The PR summary
+   MUST carry the before/after table. **Performance PRs without before/after
+   Criterion evidence are rejected.**
+5. **A miss is a negative result, not a failure.** A change that fails to clear
+   its bar raises **no PR**. Instead: post the before/after numbers on the
+   issue, explain what was tried and why it did not help, add the
+   `negative-result` label, and close the issue as `not planned`. Negative
+   results are first-class learnings — recording one stops the same experiment
+   being re-run.
+
+```mermaid
+flowchart LR
+    base[Record baseline<br/>run-benches.sh] --> impl[Implement change]
+    impl --> after[Re-run same benches]
+    after --> bar{Clears the<br/>acceptance bar?}
+    bar -- yes --> pr[PR with before/after table]
+    bar -- no --> neg[Post numbers on issue<br/>label negative-result<br/>close not planned]
+```
+
+## Human escalation
+
+Some changes cannot be finished by the automation worker and must be handed to a
+maintainer. This section is the **single home** for that contract.
+
+**Workflow YAML needs a maintainer.** The automation worker's credentials carry
+no `workflow` OAuth scope, so it cannot create or modify anything under
+[`.github/workflows/`](./.github/workflows). When a task needs new or changed
+workflow YAML:
+
+1. Land everything that does *not* need the workflow change — scripts, docs,
+   tests — in the normal PR.
+2. Spell out the wiring a maintainer must add (file, trigger, and the exact
+   command to run) in both the PR summary and the issue.
+3. Label the issue `needs-human` **and** post a comment saying why the label was
+   applied and what the maintainer must do next. The label and its explanation
+   always travel together — never one without the other.
+4. Stop. Do not retry the push.
+
+The same escalation applies to anything else only a human can do: credentials
+the worker does not hold, repository settings (branch protection, rulesets), or
+a product decision that is not ours to make.
 
 ## Licence
 

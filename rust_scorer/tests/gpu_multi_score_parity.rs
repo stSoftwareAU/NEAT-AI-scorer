@@ -13,56 +13,11 @@ use neat_core::creature::{compile_creature, parse_creature_json};
 use neat_core::loss::mse_sum_batch_packed;
 
 use rust_scorer::cost::CostKind;
+use rust_scorer::fixture_json::{
+    creature_envelope, dense_mlp_creature_json, neuron_json, synapse_json, typed_synapse_json,
+};
 use rust_scorer::gpu::forward_mse_batched::{BatchedRunner, KernelKind, MAX_NEURONS_PER_CREATURE};
 use rust_scorer::gpu::{GpuMode, resolve_backend, select_adapter};
-
-fn synthetic_creature_json(num_inputs: usize, num_outputs: usize, hidden: usize) -> String {
-    synthetic_creature_json_squash(num_inputs, num_outputs, hidden, "TANH")
-}
-
-/// Like [`synthetic_creature_json`] but with an explicit hidden-layer squash so
-/// the CPU↔GPU parity tests can exercise every activation the shader inlines
-/// (Issue #305).
-fn synthetic_creature_json_squash(
-    num_inputs: usize,
-    num_outputs: usize,
-    hidden: usize,
-    hidden_squash: &str,
-) -> String {
-    let mut neurons: Vec<String> = Vec::new();
-    for h in 0..hidden {
-        neurons.push(format!(
-            r#"{{"type":"hidden","uuid":"hidden-{h}","bias":0.05,"squash":"{hidden_squash}"}}"#
-        ));
-    }
-    for o in 0..num_outputs {
-        neurons.push(format!(
-            r#"{{"type":"output","uuid":"output-{o}","bias":0.0,"squash":"IDENTITY"}}"#
-        ));
-    }
-    let mut synapses: Vec<String> = Vec::new();
-    for i in 0..num_inputs {
-        for h in 0..hidden {
-            let w = 0.05 + 0.001 * ((i * hidden + h) as f64);
-            synapses.push(format!(
-                r#"{{"fromUUID":"input-{i}","toUUID":"hidden-{h}","weight":{w}}}"#
-            ));
-        }
-    }
-    for h in 0..hidden {
-        for o in 0..num_outputs {
-            let w = 0.1 + 0.001 * ((h * num_outputs + o) as f64);
-            synapses.push(format!(
-                r#"{{"fromUUID":"hidden-{h}","toUUID":"output-{o}","weight":{w}}}"#
-            ));
-        }
-    }
-    format!(
-        r#"{{"input":{num_inputs},"output":{num_outputs},"forwardOnly":true,"semanticVersion":"4.0.0","neurons":[{}],"synapses":[{}]}}"#,
-        neurons.join(","),
-        synapses.join(","),
-    )
-}
 
 fn build_test_records(num_inputs: usize, num_outputs: usize, n_records: usize) -> Vec<f32> {
     let values_per_record = num_inputs + num_outputs;
@@ -99,7 +54,7 @@ fn run_parity(
         }
     };
 
-    let json = synthetic_creature_json(num_inputs, num_outputs, hidden);
+    let json = dense_mlp_creature_json(num_inputs, num_outputs, hidden, "TANH");
     let creature = parse_creature_json(&json).expect("parse creature");
     let template = compile_creature(&creature).expect("compile");
     let mut nets: Vec<_> = (0..num_creatures).map(|_| template.clone()).collect();
@@ -190,7 +145,7 @@ fn run_parity_squash(hidden_squash: &str, num_creatures: usize, hidden: usize, n
         }
     };
 
-    let json = synthetic_creature_json_squash(num_inputs, num_outputs, hidden, hidden_squash);
+    let json = dense_mlp_creature_json(num_inputs, num_outputs, hidden, hidden_squash);
     let creature = parse_creature_json(&json).expect("parse creature");
     let template = compile_creature(&creature).expect("compile");
     let mut nets: Vec<_> = (0..num_creatures).map(|_| template.clone()).collect();
@@ -321,13 +276,14 @@ fn aggregate_creature_json(
     let mut neurons: Vec<String> = Vec::new();
     for h in 0..hidden {
         // Non-zero bias so the aggregate's `+ bias` term is exercised.
-        neurons.push(format!(
-            r#"{{"type":"hidden","uuid":"hidden-{h}","bias":0.1,"squash":"{squash}"}}"#
-        ));
+        neurons.push(neuron_json("hidden", &format!("hidden-{h}"), 0.1, squash));
     }
     for o in 0..num_outputs {
-        neurons.push(format!(
-            r#"{{"type":"output","uuid":"output-{o}","bias":0.0,"squash":"IDENTITY"}}"#
+        neurons.push(neuron_json(
+            "output",
+            &format!("output-{o}"),
+            0.0,
+            "IDENTITY",
         ));
     }
     let mut synapses: Vec<String> = Vec::new();
@@ -336,29 +292,30 @@ fn aggregate_creature_json(
             let w = 0.3 + 0.05 * ((i * hidden + h) as f64);
             // Cycle condition/negative/positive/standard for IF; MIN/MAX ignore.
             let ty = match (i * hidden + h) % 4 {
-                0 => r#","type":"condition""#,
-                1 => r#","type":"negative""#,
-                2 => r#","type":"positive""#,
-                _ => "",
+                0 => Some("condition"),
+                1 => Some("negative"),
+                2 => Some("positive"),
+                _ => None,
             };
-            synapses.push(format!(
-                r#"{{"fromUUID":"input-{i}","toUUID":"hidden-{h}","weight":{w}{ty}}}"#
+            synapses.push(typed_synapse_json(
+                &format!("input-{i}"),
+                &format!("hidden-{h}"),
+                w,
+                ty,
             ));
         }
     }
     for h in 0..hidden {
         for o in 0..num_outputs {
             let w = 0.2 + 0.01 * ((h * num_outputs + o) as f64);
-            synapses.push(format!(
-                r#"{{"fromUUID":"hidden-{h}","toUUID":"output-{o}","weight":{w}}}"#
+            synapses.push(synapse_json(
+                &format!("hidden-{h}"),
+                &format!("output-{o}"),
+                w,
             ));
         }
     }
-    format!(
-        r#"{{"input":{num_inputs},"output":{num_outputs},"forwardOnly":true,"semanticVersion":"4.0.0","neurons":[{}],"synapses":[{}]}}"#,
-        neurons.join(","),
-        synapses.join(","),
-    )
+    creature_envelope(num_inputs, num_outputs, &neurons, &synapses)
 }
 
 /// CPU↔GPU parity for a creature JSON string, replicated `num_creatures` times.
