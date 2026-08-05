@@ -15,6 +15,22 @@ section to the released version with its date.
 
 ## [Unreleased]
 
+### Added
+
+- **Parallel training-data file reads (Issue #529).** The forward-only fused
+  path now streams a multi-file corpus through several concurrent `.bin`
+  readers instead of one, removing the serial `f32` unpack and the per-chunk
+  fork/join barrier from the critical path. One reader per CPU by default
+  (capped at the file count); `NEAT_SCORER_FILE_THREADS=1` restores the single
+  sequential reader. Each reader gets its share of the activation budget and of
+  one shared read-buffer budget, so neither threads nor memory grow with the
+  file count. Measured on an Apple M4 over a 200 MB corpus in 26 files:
+  **−56.8 %** wall-clock at 40 B/record and **−45.3 %** at the production
+  9848 B record width (`fused_multi_file` Criterion group,
+  `docs/performance-baseline.md`). Scores are unchanged — the kept record set is
+  identical at every reader count, including under `--sample-rate`. New
+  `fileReadWorkers` JSON field reports the resolved reader count when `> 1`.
+
 ### Changed
 
 - **One emitter for the creature JSON wire format (Issue #513).** The envelope

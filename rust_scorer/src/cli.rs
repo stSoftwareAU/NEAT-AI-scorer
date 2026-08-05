@@ -36,7 +36,7 @@ use crate::multi_score::{score_from_creature_dir_gpu_sampled, score_from_creatur
 use crate::read_tuning::{training_read_backend_label, training_read_target_bytes_from_env};
 use crate::sampling::{SampleSpec, parse_sample_rate};
 use crate::scoring::{ScoreResult, calculate_score, compute_score_components};
-use crate::stream_score::activation_worker_count_for_scorer;
+use crate::stream_score::AUTO_FILE_READ_WORKERS;
 use crate::{cost, gpu, multi_score, scoring, stream_score};
 
 /// Matches `DEFAULT_COST_OF_GROWTH` in `src/config/NeatConfig.ts` (CLI is KISS: no flag).
@@ -465,7 +465,15 @@ fn score_from_json(
         stream_score::effective_fused_read_buf_len(record_bytes, fused_read_target_bytes);
 
     let use_fused_stream = creature.forward_only;
-    let activation_threads = use_fused_stream.then(activation_worker_count_for_scorer);
+    // Issue #529: the fused reader splits the corpus across `file_read_workers`
+    // concurrent `.bin` readers, each with its own share of the activation
+    // budget. Resolved here (same inputs, no side effects) purely for the JSON
+    // diagnostics — `stream_score` resolves it again internally.
+    let file_read_workers = use_fused_stream.then(|| {
+        stream_score::resolved_file_read_workers(&bin_files, record_bytes, AUTO_FILE_READ_WORKERS)
+    });
+    let activation_threads =
+        file_read_workers.map(stream_score::activation_workers_per_file_worker);
     let training_read_backend = if use_fused_stream {
         training_read_backend_label().to_string()
     } else {
@@ -564,6 +572,7 @@ fn score_from_json(
         training_read_backend,
         gpu_backend,
         read_buf_len: use_fused_stream.then_some(fused_read_buf_len),
+        file_read_workers: file_read_workers.and_then(|n| (n > 1).then_some(n)),
         activation_threads: activation_threads.and_then(|n| (n > 1).then_some(n)),
         parallel_activation_batches: activation_threads
             .and_then(|n| (n > 1).then_some(parallel_activation_batches)),
@@ -988,6 +997,7 @@ mod tests {
             training_read_backend: "native_pipelined".to_string(),
             gpu_backend: GpuBackendLabel::CpuFallback,
             read_buf_len: Some(2_097_152),
+            file_read_workers: None,
             activation_threads: Some(8),
             parallel_activation_batches: Some(1204),
             max_activation_batch_records: Some(2609),

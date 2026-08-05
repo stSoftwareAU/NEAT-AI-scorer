@@ -1,11 +1,13 @@
 //! Criterion benchmarks for the `rust_scorer` hot paths — Issue #36.
 //!
-//! Three groups, all built on a shared lazily-created tempdir fixture so the
+//! Four groups, all built on a shared lazily-created tempdir fixture so the
 //! synthetic creature(s) and `.bin` corpus are paid for **once per process**:
 //!
 //! * `score_from_json_fused` — forward-only fused path, exercised through
 //!   [`rust_scorer::stream_score::accumulate_cost_sum_forward_only_fused`] (the
 //!   same hot path the CLI runs in default mode).
+//! * `fused_multi_file` — the same fused path over a **sharded** corpus,
+//!   sweeping the concurrent `.bin` reader count (Issue #529).
 //! * `score_from_creature_dir` — directory mode at `N=10` and `N=50` creatures,
 //!   exercised through [`rust_scorer::multi_score::score_from_creature_dir`].
 //! * `unpack_and_mse_inner` — micro-benchmark over a fixed in-memory chunk
@@ -25,6 +27,7 @@
 //! | `BENCH_SCORING_INPUTS` | `8` | inputs per record |
 //! | `BENCH_SCORING_OUTPUTS` | `2` | outputs per record |
 //! | `BENCH_SCORING_HIDDEN` | `8` | hidden neurons per synthetic creature |
+//! | `BENCH_FUSED_FILES` | `26` | `.bin` shards for the `fused_multi_file` parallel-read group (Issue #529) |
 //!
 //! Reproduce on your host with `./scripts/run-benches.sh` or
 //! `cargo bench -p rust_scorer`. Update `docs/performance-baseline.md` with
@@ -55,7 +58,10 @@ use rust_scorer::multi_score::{
 use rust_scorer::prod_fixture::{
     corpus_record_count, load_production_creature, production_creature_path_from_env,
 };
-use rust_scorer::stream_score::accumulate_cost_sum_forward_only_fused;
+use rust_scorer::stream_score::{
+    AUTO_FILE_READ_WORKERS, accumulate_cost_sum_forward_only_fused,
+    accumulate_cost_sum_forward_only_fused_with_workers,
+};
 
 use tempfile::TempDir;
 
@@ -63,6 +69,8 @@ const DEFAULT_TOTAL_BYTES: usize = 16 * 1024 * 1024;
 const DEFAULT_NUM_INPUTS: usize = 8;
 const DEFAULT_NUM_OUTPUTS: usize = 2;
 const DEFAULT_HIDDEN: usize = 8;
+/// Production splits its corpus across 26 `.bin` files (Issue #529).
+const DEFAULT_FUSED_FILES: usize = 26;
 
 fn env_usize(key: &str, default: usize) -> usize {
     std::env::var(key)
@@ -165,25 +173,46 @@ fn synthetic_creature_json(num_inputs: usize, num_outputs: usize, hidden: usize)
 
 /// Write a single `0.bin` file holding `total_bytes` worth of synthetic packed records.
 fn write_synthetic_bin(data_dir: &Path, num_inputs: usize, num_outputs: usize, total_bytes: usize) {
+    write_synthetic_bin_shards(data_dir, num_inputs, num_outputs, total_bytes, 1);
+}
+
+/// Write `shards` record-aligned `.bin` files that together hold `total_bytes`
+/// worth of synthetic packed records (Issue #529). Production splits its ~80 GB
+/// corpus across 26 files, so the parallel-read bench needs a sharded corpus.
+fn write_synthetic_bin_shards(
+    data_dir: &Path,
+    num_inputs: usize,
+    num_outputs: usize,
+    total_bytes: usize,
+    shards: usize,
+) {
     let values_per_record = num_inputs + num_outputs;
     let record_bytes = values_per_record * std::mem::size_of::<f32>();
     let n_records = (total_bytes / record_bytes).max(1);
+    let shards = shards.clamp(1, n_records);
 
-    let path = data_dir.join("0.bin");
-    let f = File::create(&path).expect("create training bin file");
-    let mut w = BufWriter::with_capacity(1 << 20, f);
-    let mut bytes = Vec::with_capacity(record_bytes);
-    for i in 0..n_records {
-        bytes.clear();
-        for k in 0..values_per_record {
-            // Deterministic but record-varying values keep the network out of a saturated
-            // regime (vs all-zeroes) so the bench reflects realistic activation work.
-            let v = ((i.wrapping_mul(31) + k) as f32 * 1.0e-3).sin();
-            bytes.extend_from_slice(&v.to_le_bytes());
+    let mut written = 0_usize;
+    for shard in 0..shards {
+        // Spread the remainder over the leading shards; every file stays a
+        // whole number of records (the `corpus_guard` invariant).
+        let take = n_records / shards + usize::from(shard < n_records % shards);
+        let path = data_dir.join(format!("{shard}.bin"));
+        let f = File::create(&path).expect("create training bin file");
+        let mut w = BufWriter::with_capacity(1 << 20, f);
+        let mut bytes = Vec::with_capacity(record_bytes);
+        for i in written..written + take {
+            bytes.clear();
+            for k in 0..values_per_record {
+                // Deterministic but record-varying values keep the network out of a saturated
+                // regime (vs all-zeroes) so the bench reflects realistic activation work.
+                let v = ((i.wrapping_mul(31) + k) as f32 * 1.0e-3).sin();
+                bytes.extend_from_slice(&v.to_le_bytes());
+            }
+            w.write_all(&bytes).expect("write training bytes");
         }
-        w.write_all(&bytes).expect("write training bytes");
+        w.flush().expect("flush bin file");
+        written += take;
     }
-    w.flush().expect("flush bin file");
 }
 
 struct Fixture {
@@ -191,6 +220,9 @@ struct Fixture {
     creature_path: PathBuf,
     creatures_root: PathBuf,
     data_dir: PathBuf,
+    /// Same corpus as `data_dir`, split across `shard_count` files (Issue #529).
+    shard_data_dir: PathBuf,
+    shard_count: usize,
     num_inputs: usize,
     num_outputs: usize,
     total_bytes: usize,
@@ -223,11 +255,26 @@ fn fixture() -> &'static Fixture {
 
         write_synthetic_bin(&data_dir, num_inputs, num_outputs, total_bytes);
 
+        // Sharded copy of the same corpus for the parallel-file-read group
+        // (Issue #529): production ships 26 files, so that is the default.
+        let shard_count = env_usize("BENCH_FUSED_FILES", DEFAULT_FUSED_FILES).max(1);
+        let shard_data_dir = tmp.path().join("data-shards");
+        fs::create_dir_all(&shard_data_dir).unwrap();
+        write_synthetic_bin_shards(
+            &shard_data_dir,
+            num_inputs,
+            num_outputs,
+            total_bytes,
+            shard_count,
+        );
+
         Fixture {
             _tmp: tmp,
             creature_path,
             creatures_root,
             data_dir,
+            shard_data_dir,
+            shard_count,
             num_inputs,
             num_outputs,
             total_bytes,
@@ -265,6 +312,59 @@ fn bench_score_from_json_fused(c: &mut Criterion) {
             BatchSize::PerIteration,
         );
     });
+    group.finish();
+}
+
+/// Issue #529: parallel training-data file reads. Scores the **same** corpus
+/// split across `BENCH_FUSED_FILES` (default 26, matching production) `.bin`
+/// files, sweeping the file-reader worker count. `file_workers/1` reproduces
+/// the pre-#529 single-reader behaviour byte-for-byte and is the "before"
+/// number; the other arms are the "after".
+fn bench_fused_multi_file(c: &mut Criterion) {
+    let fix = fixture();
+    let json = fs::read_to_string(&fix.creature_path).expect("read creature");
+    let creature = parse_creature_json(&json).expect("parse creature");
+    let bin_files = find_bin_files(&fix.shard_data_dir).expect("find sharded bin files");
+    assert_eq!(
+        bin_files.len(),
+        fix.shard_count,
+        "sharded corpus file count"
+    );
+    let config = TrainingDataConfig {
+        num_inputs: fix.num_inputs,
+        num_outputs: fix.num_outputs,
+    };
+
+    let mut group = c.benchmark_group("fused_multi_file");
+    group.sample_size(10);
+    group.measurement_time(Duration::from_secs(16));
+    group.throughput(Throughput::Bytes(fix.total_bytes as u64));
+    for &workers in &[1_usize, 2, 4, 8, AUTO_FILE_READ_WORKERS] {
+        // `AUTO_FILE_READ_WORKERS` (0) resolves from the environment / CPU count —
+        // the shipped default.
+        let label = if workers == AUTO_FILE_READ_WORKERS {
+            "auto".to_string()
+        } else {
+            workers.to_string()
+        };
+        group.bench_function(BenchmarkId::new("file_workers", label), |b| {
+            b.iter_batched(
+                || compile_creature(&creature).expect("compile"),
+                |mut net| {
+                    let r = accumulate_cost_sum_forward_only_fused_with_workers(
+                        CostKind::Mse,
+                        &bin_files,
+                        &config,
+                        &mut net,
+                        workers,
+                    )
+                    .expect("fused MSE accumulate");
+                    black_box(r);
+                },
+                BatchSize::PerIteration,
+            );
+        });
+    }
     group.finish();
 }
 
@@ -1039,6 +1139,7 @@ fn bench_early_exit_directory(c: &mut Criterion) {
 criterion_group!(
     benches,
     bench_score_from_json_fused,
+    bench_fused_multi_file,
     bench_score_from_creature_dir,
     bench_early_exit_directory,
     bench_unpack_and_mse_inner,

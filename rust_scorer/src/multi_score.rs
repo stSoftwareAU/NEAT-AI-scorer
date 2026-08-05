@@ -821,6 +821,8 @@ fn score_from_creature_dir_cpu(
                 training_read_backend: training_read_backend.clone(),
                 gpu_backend,
                 read_buf_len: Some(fused_read_buf_len),
+                // Issue #529 parallel file reads are a fused-path knob only.
+                file_read_workers: None,
                 activation_threads: Some(activation_threads),
                 parallel_activation_batches: None,
                 max_activation_batch_records: None,
@@ -1325,6 +1327,8 @@ fn score_from_creature_dir_gpu_impl(
                 training_read_backend: training_read_backend.clone(),
                 gpu_backend,
                 read_buf_len: Some(fused_read_buf_len),
+                // Issue #529 parallel file reads are a fused-path knob only.
+                file_read_workers: None,
                 activation_threads: Some(activation_threads),
                 parallel_activation_batches: None,
                 max_activation_batch_records: None,

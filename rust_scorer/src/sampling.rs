@@ -87,6 +87,31 @@ impl SampleSpec {
     pub fn sampler(&self) -> RecordSampler {
         RecordSampler::new(*self)
     }
+
+    /// Create a sampler positioned at global record index `start_index`
+    /// (Issue #529).
+    ///
+    /// Parallel per-file readers each sweep one `.bin` file, so each needs a
+    /// sampler seeded with the global index of that file's first record. The
+    /// stride is a pure function of the global index, so seeding selects
+    /// exactly the records a single sequential sweep would have kept.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use rust_scorer::sampling::SampleSpec;
+    ///
+    /// let spec = SampleSpec::new(0.5, 0).unwrap();
+    /// // Records 4..8 scored by a seeked sampler keep the same global indices
+    /// // {5, 7} a full sweep from 0 would have kept.
+    /// let mut seeked = spec.sampler_at(4);
+    /// let mut buf = vec![4.0_f32, 5.0, 6.0, 7.0];
+    /// assert_eq!(seeked.filter_in_place(&mut buf, 4, 1), 2);
+    /// assert_eq!(buf, vec![5.0, 7.0]);
+    /// ```
+    pub fn sampler_at(&self, start_index: u64) -> RecordSampler {
+        RecordSampler::new_at(*self, start_index)
+    }
 }
 
 impl Default for SampleSpec {
@@ -141,6 +166,15 @@ impl RecordSampler {
         Self {
             spec,
             next_index: 0,
+        }
+    }
+
+    /// Build a sampler positioned at global record index `start_index`
+    /// (Issue #529) — see [`SampleSpec::sampler_at`].
+    pub fn new_at(spec: SampleSpec, start_index: u64) -> Self {
+        Self {
+            spec,
+            next_index: start_index,
         }
     }
 
@@ -387,6 +421,34 @@ mod tests {
         let kept = sampler.filter_in_place(&mut buf, 4, 2);
         assert_eq!(kept, 2);
         assert_eq!(buf, vec![1.0, 11.0, 3.0, 13.0]);
+    }
+
+    /// Issue #529: a seeked sampler must keep exactly the records a single
+    /// sequential sweep would have kept for the same global index range, for
+    /// every split point — otherwise parallel per-file readers would score a
+    /// different subset than the sequential reader.
+    #[test]
+    fn seeked_samplers_partition_the_sequential_kept_set() {
+        let n = 97_usize;
+        for &(rate, phase) in &[(0.3_f64, 0_u64), (0.25, 5), (0.75, 3), (1.0, 0)] {
+            let spec = SampleSpec::new(rate, phase).unwrap();
+            let expected: Vec<f32> = (0..n as u64)
+                .filter(|&i| keep_ref(i, rate, phase))
+                .map(|i| i as f32)
+                .collect();
+
+            for split in [1_usize, 7, 32, 96] {
+                let mut kept: Vec<f32> = Vec::new();
+                for (start, len) in [(0_usize, split), (split, n - split)] {
+                    let mut sampler = spec.sampler_at(start as u64);
+                    let mut buf: Vec<f32> = (start..start + len).map(|i| i as f32).collect();
+                    let n_kept = sampler.filter_in_place(&mut buf, len, 1);
+                    assert_eq!(buf.len(), n_kept);
+                    kept.extend_from_slice(&buf);
+                }
+                assert_eq!(kept, expected, "rate {rate} phase {phase} split {split}");
+            }
+        }
     }
 
     #[test]
