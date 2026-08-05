@@ -537,8 +537,9 @@ flowchart TD
 ```
 
 For forward-only single-creature fused scoring, activation parallelism also
-defaults to all available CPU cores. Set `NEAT_SCORER_ACTIVATION_THREADS` only
-when you want to tune down/up manually.
+defaults to a **host-aware** worker count (every logical CPU on mid/large hosts;
+clamped on low-RAM machines so compiled-network clones stay within memory).
+Set `NEAT_SCORER_ACTIVATION_THREADS` only when you want to override manually.
 
 ### Parallel training-data file reads (Issue #529)
 
@@ -564,7 +565,7 @@ flowchart LR
 
 | Knob | Default | Purpose |
 |---|---|---|
-| `NEAT_SCORER_FILE_THREADS` | one reader per CPU, never more than there are files | `.bin` files read and scored concurrently. `1` restores the single sequential reader. |
+| `NEAT_SCORER_FILE_THREADS` | host-aware: one reader per CPU on mid/large hosts (fewer on low-RAM), never more than there are files | `.bin` files read and scored concurrently. `1` restores the single sequential reader. |
 
 The two parallel axes share one CPU budget: with `W` readers, each reader gets
 `NEAT_SCORER_ACTIVATION_THREADS / W` activation workers (at least one), and the
@@ -615,19 +616,28 @@ default described below, so it reads `33554432` on production-sized records.
 
 ### Large-record hosts: adaptive `NEAT_SCORER_READ_BYTES` default (Issues #307, #504)
 
-The read-chunk default is **record-size adaptive** — the constants live in
-[`rust_scorer/src/read_tuning.rs`](rust_scorer/src/read_tuning.rs) and apply to
-every scoring path (single-creature, directory/multi-creature, streaming, CLI
-and `float_scan_bench`):
+The read-chunk default is **record-size adaptive** and **host-RAM adaptive** —
+the record-size constants live in
+[`rust_scorer/src/read_tuning.rs`](rust_scorer/src/read_tuning.rs) and the host
+probe in [`rust_scorer/src/host_resources.rs`](rust_scorer/src/host_resources.rs).
+Both apply to every scoring path (single-creature, directory/multi-creature,
+streaming, CLI and `float_scan_bench`):
 
-| Record size | Default read chunk when `NEAT_SCORER_READ_BYTES` is **unset** |
+| Record size | Default read chunk when `NEAT_SCORER_READ_BYTES` is **unset** (mid-host, ≥ 16 GiB RAM) |
 |---|---|
 | < 8000 B/record (synthetic fixtures) | **2 MiB** (`DEFAULT_READ_BYTES`) |
 | ≥ 8000 B/record (`LARGE_RECORD_BYTES_THRESHOLD`) | **32 MiB** (`LARGE_RECORD_DEFAULT_READ_BYTES`) |
 
-**Production records are 9848 bytes** (2461 inputs + 1 output, `f32`), so
-production runs already read 32 MiB chunks with **no environment variable set**
-— exporting `NEAT_SCORER_READ_BYTES=33554432` by hand is now redundant.
+Self-tuning then **shrinks** that default on old / low-RAM machines (e.g. 2 MiB
+on &lt; 4 GiB RAM, 8 MiB on &lt; 8 GiB) and may take the full **64 MiB**
+`MAX_READ_BYTES` default on very large Macs (≥ 64 GiB RAM) for production-width
+records. Thread counts and the GPU scratch budget scale the same way — see
+`host_resources`.
+
+**Production records are 9848 bytes** (2461 inputs + 1 output, `f32`), so a
+typical production host already reads 32 MiB chunks with **no environment
+variable set** — exporting `NEAT_SCORER_READ_BYTES=33554432` by hand is
+redundant there.
 
 ```mermaid
 flowchart TD
@@ -637,15 +647,17 @@ flowchart TD
     D -- yes --> E[32 MiB default]
     D -- no --> F[2 MiB default]
     C --> G[Clamp to record_bytes..64 MiB cap]
-    E --> G
-    F --> G
-    G --> H[Round down to a whole number of records]
+    E --> H[Host RAM may shrink or raise]
+    F --> H
+    H --> G
+    G --> I[Round down to a whole number of records]
 ```
 
 `NEAT_SCORER_READ_BYTES` still **overrides** the adaptive default when you want
 a different size. Any value — env or default — is clamped to the **64 MiB** cap
-(`MAX_READ_BYTES`, and to at least one record) and rounded down to a whole
-number of records, so a chunk never splits a record.
+(`MAX_READ_BYTES` on mid-hosts; up to 256 MiB on ≥ 64 GiB Macs) and to at least
+one record, then rounded down to a whole number of records, so a chunk never
+splits a record.
 
 #### Why 32 MiB (the supporting sweep)
 

@@ -4,18 +4,12 @@
 //!
 //! Build: `cargo build --release -p rust_scorer --bin float_scan_bench`
 
-#[path = "../env_tuning.rs"]
-mod env_tuning;
-#[path = "../read_tuning.rs"]
-mod read_tuning;
-
 use std::path::{Path, PathBuf};
 
 use clap::Parser;
 use neat_core::training_bin_stream::for_each_read_chunk;
 use neat_core::training_data::find_bin_files;
-
-use read_tuning::{training_read_backend_label, training_read_target_bytes_from_env};
+use rust_scorer::read_tuning::{training_read_backend_label, training_read_target_bytes_from_env};
 
 const PENDING_COMPACT_HEAD_BYTES: usize = 512 * 1024;
 

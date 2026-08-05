@@ -3,7 +3,13 @@
 //! `neat_core::training_bin_stream` exposes a single [`for_each_read_chunk`] path; buffer sizing
 //! stays configurable here so callers can widen reads for parallel activation batches.
 //!
+//! Defaults are **record-size adaptive** (Issue #504) and **host-RAM adaptive**
+//! ([`crate::host_resources`]): old machines keep a small chunk while mid-range
+//! and large Macs take the production buffer.
+//!
 //! [`for_each_read_chunk`]: neat_core::training_bin_stream::for_each_read_chunk
+
+use crate::host_resources::{self, GIB, HostResources};
 
 const DEFAULT_READ_BYTES: usize = 2 * 1024 * 1024;
 
@@ -14,17 +20,41 @@ const DEFAULT_READ_BYTES: usize = 2 * 1024 * 1024;
 const LARGE_RECORD_BYTES_THRESHOLD: usize = 8000;
 const LARGE_RECORD_DEFAULT_READ_BYTES: usize = 32 * 1024 * 1024;
 
-/// Upper bound for read buffer size (matches previous `neat_core` tuner cap).
+/// Mid-host upper bound for read buffer size (matches previous `neat_core` tuner
+/// cap). Large Macs (≥ 64 GiB RAM) may clamp higher via [`max_read_bytes`].
 pub(crate) const MAX_READ_BYTES: usize = 64 * 1024 * 1024;
 
+/// Host-aware upper clamp for `NEAT_SCORER_READ_BYTES`.
+#[must_use]
+pub(crate) fn max_read_bytes() -> usize {
+    host_resources::max_read_bytes(&host_resources::host())
+}
+
 /// Default read target when `NEAT_SCORER_READ_BYTES` is unset.
-pub(crate) fn default_training_read_bytes(record_bytes: usize) -> usize {
+pub(crate) fn default_training_read_bytes_for(record_bytes: usize, host: &HostResources) -> usize {
     let rb = record_bytes.max(1);
-    if rb >= LARGE_RECORD_BYTES_THRESHOLD {
-        LARGE_RECORD_DEFAULT_READ_BYTES
+    let large_record = rb >= LARGE_RECORD_BYTES_THRESHOLD;
+    let desired = if large_record {
+        match host.physical_ram_bytes {
+            // Very large Macs: take the full mid-host cap by default.
+            Some(ram) if ram >= 64 * GIB => MAX_READ_BYTES,
+            _ => LARGE_RECORD_DEFAULT_READ_BYTES,
+        }
     } else {
         DEFAULT_READ_BYTES
-    }
+    };
+
+    // RAM ceiling: never ask an old machine for the production 32 MiB default.
+    let ram_cap = match host.physical_ram_bytes {
+        Some(ram) if ram < 4 * GIB => DEFAULT_READ_BYTES,
+        Some(ram) if ram < 8 * GIB => 8 * 1024 * 1024,
+        Some(ram) if ram < 16 * GIB => 16 * 1024 * 1024,
+        // Unknown RAM: do not invent a tighter cap than the record-size default.
+        None => desired,
+        Some(_) => host_resources::max_read_bytes(host),
+    };
+
+    desired.min(ram_cap).max(rb)
 }
 
 /// Target bytes per `read` (rounded down to a multiple of `record_bytes`).
@@ -44,7 +74,8 @@ pub(crate) fn default_training_read_bytes(record_bytes: usize) -> usize {
 pub fn training_read_target_bytes_from_env(record_bytes: usize) -> usize {
     let rb = record_bytes.max(1);
     let env = std::env::var("NEAT_SCORER_READ_BYTES").ok();
-    let default = default_training_read_bytes(rb);
+    let host = host_resources::host();
+    let default = default_training_read_bytes_for(rb, &host);
     let (parsed, warning) = crate::env_tuning::parse_tuning_var(
         "NEAT_SCORER_READ_BYTES",
         env.as_deref(),
@@ -54,7 +85,7 @@ pub fn training_read_target_bytes_from_env(record_bytes: usize) -> usize {
     if let Some(warning) = warning {
         eprintln!("{warning}");
     }
-    let raw = parsed.clamp(rb, MAX_READ_BYTES);
+    let raw = parsed.clamp(rb, host_resources::max_read_bytes(&host));
     (raw / rb) * rb
 }
 
@@ -83,17 +114,38 @@ pub fn training_read_backend_label() -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::host_resources::{GIB, HostResources};
 
     #[test]
-    fn default_read_bytes_scales_for_production_records() {
-        assert_eq!(default_training_read_bytes(256), DEFAULT_READ_BYTES);
+    fn default_read_bytes_scales_for_production_records_on_mid_host() {
+        let mid = HostResources::synthetic(10, Some(24 * GIB));
         assert_eq!(
-            default_training_read_bytes(LARGE_RECORD_BYTES_THRESHOLD),
+            default_training_read_bytes_for(256, &mid),
+            DEFAULT_READ_BYTES
+        );
+        assert_eq!(
+            default_training_read_bytes_for(LARGE_RECORD_BYTES_THRESHOLD, &mid),
             LARGE_RECORD_DEFAULT_READ_BYTES
         );
         assert_eq!(
-            default_training_read_bytes(9848),
+            default_training_read_bytes_for(9848, &mid),
             LARGE_RECORD_DEFAULT_READ_BYTES
         );
+    }
+
+    #[test]
+    fn default_read_bytes_shrinks_on_low_ram() {
+        let old = HostResources::synthetic(4, Some(3 * GIB));
+        assert_eq!(
+            default_training_read_bytes_for(9848, &old),
+            DEFAULT_READ_BYTES
+        );
+    }
+
+    #[test]
+    fn large_mac_takes_full_mid_host_cap_for_production_records() {
+        let big = HostResources::synthetic(32, Some(128 * GIB));
+        assert_eq!(default_training_read_bytes_for(9848, &big), MAX_READ_BYTES);
+        assert_eq!(host_resources::max_read_bytes(&big), 256 * 1024 * 1024);
     }
 }

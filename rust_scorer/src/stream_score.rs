@@ -5,19 +5,21 @@
 //! (see [`crate::read_tuning::training_read_target_bytes_from_env`]).
 //!
 //! Optional **multi-threaded activation** for large in-memory batches (forward-only only):
-//! set **`NEAT_SCORER_ACTIVATION_THREADS`** to a value `> 1` (clamped to 64). Each worker owns
-//! its own [`CompiledNetwork`]; the caller-supplied template network is cloned once per
-//! additional worker so activation/hint/trace scratch buffers stay independent without paying
-//! a second `compile_creature` cost (Issue #42 — `CompiledNetwork: Clone` landed upstream).
-//! Any batch with at least two whole records may be split across workers (very small batches
-//! still pay Rayon scheduling cost). Summation order may differ slightly (floating-point).
-//! JSON **`parallelActivationBatches`** counts how many batches actually used Rayon.
+//! set **`NEAT_SCORER_ACTIVATION_THREADS`** to a value `> 1` (clamped by the host-aware
+//! worker ceiling). Each worker owns its own [`CompiledNetwork`]; the caller-supplied
+//! template network is cloned once per additional worker so activation/hint/trace scratch
+//! buffers stay independent without paying a second `compile_creature` cost (Issue #42 —
+//! `CompiledNetwork: Clone` landed upstream). Any batch with at least two whole records may
+//! be split across workers (very small batches still pay Rayon scheduling cost). Summation
+//! order may differ slightly (floating-point). JSON **`parallelActivationBatches`** counts
+//! how many batches actually used Rayon.
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Instant;
 
 use crate::cost::{CostKind, accumulate_cost_sum};
-use crate::read_tuning::{MAX_READ_BYTES, training_read_target_bytes_from_env};
+use crate::host_resources::{self, HostResources};
+use crate::read_tuning::{max_read_bytes, training_read_target_bytes_from_env};
 use crate::sampling::SampleSpec;
 use crate::stream_io::run_io_loop;
 use neat_core::network::CompiledNetwork;
@@ -25,26 +27,28 @@ use neat_core::training_bin_stream::for_each_read_chunk;
 use neat_core::training_data::TrainingDataConfig;
 use rayon::prelude::*;
 
-const MAX_ACTIVATION_WORKERS: usize = 64;
-
-/// Parsed `NEAT_SCORER_ACTIVATION_THREADS`: missing defaults to all available CPUs.
-/// Clamped to `[1, MAX_ACTIVATION_WORKERS]`.
+/// Parsed `NEAT_SCORER_ACTIVATION_THREADS`: missing defaults to a host-aware
+/// worker count (every logical CPU on mid/large hosts; clamped on low-RAM
+/// machines). Clamped to `[1, max_worker_count(host)]`.
 ///
 /// # Examples
 ///
 /// ```
 /// use rust_scorer::stream_score::activation_worker_count_for_scorer;
 ///
-/// // Always at least one worker and never above the internal cap of 64.
+/// // Always at least one worker and never above the host ceiling.
 /// let workers = activation_worker_count_for_scorer();
-/// assert!((1..=64).contains(&workers));
+/// assert!((1..=256).contains(&workers));
 /// ```
 pub fn activation_worker_count_for_scorer() -> usize {
-    // Unset/blank/malformed all resolve to "all available CPUs"; a malformed
+    activation_worker_count_for(&host_resources::host())
+}
+
+/// Testable variant of [`activation_worker_count_for_scorer`].
+pub(crate) fn activation_worker_count_for(host: &HostResources) -> usize {
+    // Unset/blank/malformed all resolve to the host default; a malformed
     // value additionally warns instead of falling back silently (Issue #204).
-    let default = std::thread::available_parallelism()
-        .map(|n| n.get())
-        .unwrap_or(1);
+    let default = host_resources::default_worker_count(host);
     let env = std::env::var("NEAT_SCORER_ACTIVATION_THREADS").ok();
     let (parsed, warning) = crate::env_tuning::parse_tuning_var(
         "NEAT_SCORER_ACTIVATION_THREADS",
@@ -55,7 +59,7 @@ pub fn activation_worker_count_for_scorer() -> usize {
     if let Some(warning) = warning {
         eprintln!("{warning}");
     }
-    parsed.clamp(1, MAX_ACTIVATION_WORKERS)
+    parsed.clamp(1, host_resources::max_worker_count(host))
 }
 
 /// Aligned fused read size (same rounding as [`training_read_target_bytes_from_env`]).
@@ -83,7 +87,7 @@ pub fn effective_fused_read_buf_len(record_bytes: usize, target_read_bytes: usiz
     if worker_count > 1 {
         len = len.max(rb.saturating_mul(2));
     }
-    let capped = (MAX_READ_BYTES / rb) * rb;
+    let capped = (max_read_bytes() / rb) * rb;
     len.min(capped.max(rb))
 }
 
@@ -91,20 +95,13 @@ pub fn effective_fused_read_buf_len(record_bytes: usize, target_read_bytes: usiz
 /// count" (Issue #529).
 pub const AUTO_FILE_READ_WORKERS: usize = 0;
 
-/// Upper bound on concurrent `.bin` file readers (Issue #529).
-const MAX_FILE_READ_WORKERS: usize = 64;
-
-/// Total bytes of read buffer the parallel readers may hold between them.
-/// Matches the single-reader cap so W readers cost no more memory than one
-/// reader at the largest supported chunk size (Issue #529).
-const MAX_TOTAL_READ_BYTES: usize = MAX_READ_BYTES;
-
 /// Parsed `NEAT_SCORER_FILE_THREADS`: how many `.bin` files are read and scored
 /// concurrently on the forward-only fused path (Issue #529).
 ///
-/// Missing/blank defaults to "one reader per CPU, never more than there are
-/// files"; the value is clamped to `[1, min(num_files, 64)]`, so `1` disables
-/// parallel file reads and a corpus of one file is always sequential.
+/// Missing/blank defaults to a host-aware reader count (one per logical CPU on
+/// mid/large hosts, fewer on low-RAM machines), never more than there are
+/// files. `1` disables parallel file reads; a corpus of one file is always
+/// sequential.
 ///
 /// # Examples
 ///
@@ -117,13 +114,15 @@ const MAX_TOTAL_READ_BYTES: usize = MAX_READ_BYTES;
 /// assert!(file_read_worker_count(4) <= 4);
 /// ```
 pub fn file_read_worker_count(num_files: usize) -> usize {
+    file_read_worker_count_for(num_files, &host_resources::host())
+}
+
+/// Testable variant of [`file_read_worker_count`].
+pub(crate) fn file_read_worker_count_for(num_files: usize, host: &HostResources) -> usize {
     if num_files <= 1 {
         return 1;
     }
-    let cpus = std::thread::available_parallelism()
-        .map(|n| n.get())
-        .unwrap_or(1);
-    let default = cpus.min(num_files);
+    let default = host_resources::default_worker_count(host).min(num_files);
     let env = std::env::var("NEAT_SCORER_FILE_THREADS").ok();
     let (parsed, warning) = crate::env_tuning::parse_tuning_var(
         "NEAT_SCORER_FILE_THREADS",
@@ -134,7 +133,7 @@ pub fn file_read_worker_count(num_files: usize) -> usize {
     if let Some(warning) = warning {
         eprintln!("{warning}");
     }
-    parsed.clamp(1, num_files.min(MAX_FILE_READ_WORKERS))
+    parsed.clamp(1, num_files.min(host_resources::max_worker_count(host)))
 }
 
 /// Activation workers *per file reader* (Issue #529).
@@ -239,16 +238,20 @@ fn resolve_file_read_workers(
     } else {
         requested
     };
-    resolved.clamp(1, num_files.min(MAX_FILE_READ_WORKERS))
+    resolved.clamp(
+        1,
+        num_files.min(host_resources::max_worker_count(&host_resources::host())),
+    )
 }
 
 /// Per-reader read-buffer size (Issue #529). Shares one total read budget
 /// across the readers so W concurrent readers never hold more buffer memory
-/// than a single reader at the maximum chunk size, while staying a whole number
-/// of records.
+/// than a single reader at the host's maximum chunk size, while staying a
+/// whole number of records.
 fn per_reader_read_buf_len(record_bytes: usize, read_buf_len: usize, readers: usize) -> usize {
     let rb = record_bytes.max(1);
-    let budget = (MAX_TOTAL_READ_BYTES / readers.max(1)).max(rb);
+    let total_budget = max_read_bytes();
+    let budget = (total_budget / readers.max(1)).max(rb);
     let len = read_buf_len.min(budget);
     ((len / rb) * rb).max(rb)
 }
@@ -749,9 +752,10 @@ mod tests {
     // the shared `crate::stream_io` module in Issue #203; the canonical copy of
     // those tests now lives there.
     use super::{
-        AUTO_FILE_READ_WORKERS, MAX_TOTAL_READ_BYTES, partition_packed_records,
-        per_reader_read_buf_len, record_aligned_file_starts, resolve_file_read_workers,
+        AUTO_FILE_READ_WORKERS, partition_packed_records, per_reader_read_buf_len,
+        record_aligned_file_starts, resolve_file_read_workers,
     };
+    use crate::read_tuning::max_read_bytes;
     use std::io::Write;
 
     #[test]
@@ -845,7 +849,7 @@ mod tests {
             assert_eq!(per % record_bytes, 0, "buffer must be record-aligned");
             assert!(per >= record_bytes, "buffer must hold at least one record");
             assert!(
-                per * readers <= MAX_TOTAL_READ_BYTES,
+                per * readers <= max_read_bytes(),
                 "{readers} readers x {per} B exceeds the shared read budget"
             );
         }

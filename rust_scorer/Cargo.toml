@@ -68,6 +68,8 @@ rayon = "1.12"
 wgpu = "29"
 pollster = "0.4"
 bytemuck = "1.25"
+# Host RAM probe for self-tuning defaults (old machines ↔ large Macs).
+libc = "0.2"
 
 [dev-dependencies]
 tempfile = "3"

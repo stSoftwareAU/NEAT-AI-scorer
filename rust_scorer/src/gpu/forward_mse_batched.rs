@@ -73,11 +73,32 @@ pub(crate) const MAX_SHALLOW_NON_INPUT_NEURONS: u32 = 256;
 /// creature (observed maxima are in the low thousands).
 pub(crate) const MAX_NEURONS_ABSOLUTE: u32 = 1 << 20;
 
-/// Default activation-scratch memory budget for the `forward_mse_scratch`
-/// kernel, in bytes (512 MiB). The host caps the grid-stride thread count so
-/// `num_creatures * G_x * WG_SIZE * max_neurons * 4` bytes stays within this
-/// budget. Override with `NEAT_SCORER_GPU_SCRATCH_BYTES` (used by benchmarks).
+/// Historical mid-host default for the `forward_mse_scratch` activation
+/// scratch budget (512 MiB). Prefer [`default_scratch_budget_bytes`], which
+/// scales with physical RAM so old machines stay within memory and large Macs
+/// can host a wider grid. Override with `NEAT_SCORER_GPU_SCRATCH_BYTES`.
 pub(crate) const DEFAULT_SCRATCH_BUDGET_BYTES: u64 = 512 * 1024 * 1024;
+
+/// Host-aware default scratch budget.
+///
+/// Mid-range and unknown-RAM hosts resolve to
+/// [`DEFAULT_SCRATCH_BUDGET_BYTES`]; low-RAM and large-Mac hosts scale via
+/// [`crate::host_resources::default_gpu_scratch_bytes`].
+fn default_scratch_budget_bytes() -> u64 {
+    let host = crate::host_resources::host();
+    match host.physical_ram_bytes {
+        // Preserve the historical constant as the mid-host / unknown answer so
+        // a rename of `DEFAULT_SCRATCH_BUDGET_BYTES` fails to compile here.
+        None => DEFAULT_SCRATCH_BUDGET_BYTES,
+        Some(ram)
+            if (16 * crate::host_resources::GIB..64 * crate::host_resources::GIB)
+                .contains(&ram) =>
+        {
+            DEFAULT_SCRATCH_BUDGET_BYTES
+        }
+        Some(_) => crate::host_resources::default_gpu_scratch_bytes(&host),
+    }
+}
 
 /// Highest point-wise squash discriminant the kernels inline (Issue #305).
 ///
@@ -1140,13 +1161,13 @@ pub(crate) fn scratch_workgroups_x_for(
 }
 
 /// Resolve the scratch-kernel memory budget from `NEAT_SCORER_GPU_SCRATCH_BYTES`,
-/// falling back to [`DEFAULT_SCRATCH_BUDGET_BYTES`] (Issue #182).
+/// falling back to the host-aware default (Issue #182).
 fn scratch_budget_bytes_from_env() -> u64 {
     let env = std::env::var("NEAT_SCORER_GPU_SCRATCH_BYTES").ok();
     let (parsed, warning) = crate::env_tuning::parse_tuning_var(
         "NEAT_SCORER_GPU_SCRATCH_BYTES",
         env.as_deref(),
-        DEFAULT_SCRATCH_BUDGET_BYTES,
+        default_scratch_budget_bytes(),
         // A zero budget is semantically invalid, so treat it like a parse
         // failure (warn + default) rather than a silent fallback.
         |s| s.parse::<u64>().ok().filter(|&b| b > 0),
