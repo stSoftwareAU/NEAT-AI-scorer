@@ -21,6 +21,16 @@
 //! Earlier revisions ran an outer `par_iter_mut` over creatures and an inner
 //! `par_iter_mut` over per-creature worker networks, which oversubscribed the
 //! global Rayon pool with `creatures × workers` tasks.
+//!
+//! ## Task granularity (Issue #537)
+//!
+//! `NEAT_SCORER_WORKER_SPLIT=k` multiplies that worker budget by `k`, so each
+//! creature's chunk is split into ~`k` times as many record sub-ranges and a
+//! straggling task exposes ~1/`k` of the previous tail. `k = 1` is the shipped
+//! default and reproduces the partition above exactly; the total is still
+//! clamped to the host `max_worker_count` RAM ceiling (one `CompiledNetwork`
+//! clone per worker). Raising `k` re-associates a creature's f64 partial sums,
+//! so scores move by rounding-level amounts only.
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -250,19 +260,85 @@ fn load_creatures_from_dir(creatures_dir: &Path) -> Result<Vec<LoadedCreature>, 
     Ok(loaded)
 }
 
-/// Compute per-creature worker counts so total parallelism is approximately
-/// `activation_threads`. When `loaded.len() >= activation_threads` each
-/// creature gets exactly one worker (the inner record split is dropped); when
-/// `loaded.len() < activation_threads` the budget is spread across creatures
-/// so total worker count equals `activation_threads`.
+/// Environment override for the directory-mode task-granularity multiplier
+/// (Issue #537). Unset (or invalid) keeps the pre-#537 granularity.
+pub(crate) const WORKER_SPLIT_ENV: &str = "NEAT_SCORER_WORKER_SPLIT";
+
+/// Shipped granularity multiplier when [`WORKER_SPLIT_ENV`] is unset.
+pub(crate) const DEFAULT_WORKER_SPLIT: usize = 1;
+
+/// Ceiling for the multiplier, so a typo'd override cannot ask for a
+/// pathological number of `CompiledNetwork` clones before the
+/// `max_worker_count` RAM clamp is even consulted.
+const MAX_WORKER_SPLIT: usize = 64;
+
+/// Resolve the granularity multiplier from the environment (Issue #537).
+///
+/// `k = 1` is the shipped default and reproduces the pre-#537 partition
+/// exactly. `k > 1` splits every creature's chunk into roughly `k` times as
+/// many record sub-ranges, so the Rayon pool sees finer tasks and the tail of
+/// each chunk idles fewer threads.
+fn worker_split_factor() -> usize {
+    let env = std::env::var(WORKER_SPLIT_ENV).ok();
+    let (parsed, warning) = crate::env_tuning::parse_tuning_var(
+        WORKER_SPLIT_ENV,
+        env.as_deref(),
+        DEFAULT_WORKER_SPLIT,
+        |s| s.parse::<usize>().ok().filter(|&v| v > 0),
+    );
+    if let Some(warning) = warning {
+        eprintln!("{warning}");
+    }
+    parsed.clamp(1, MAX_WORKER_SPLIT)
+}
+
+/// Pre-#537 per-creature worker counts — the reference the `split = 1` parity
+/// test compares against (the scoring path calls
+/// [`workers_per_creature_split`] directly).
+///
+/// When `n_creatures >= activation_threads` each creature gets exactly one
+/// worker (the inner record split is dropped); otherwise the thread budget is
+/// spread across creatures so the total worker count equals
+/// `activation_threads`.
+#[cfg(test)]
 fn workers_per_creature(n_creatures: usize, activation_threads: usize) -> Vec<usize> {
+    workers_per_creature_split(
+        n_creatures,
+        activation_threads,
+        DEFAULT_WORKER_SPLIT,
+        usize::MAX,
+    )
+}
+
+/// Compute per-creature worker counts at granularity multiplier `split`
+/// (Issue #537).
+///
+/// The `split = 1` budget is the pre-#537 one: `max(n_creatures,
+/// activation_threads)` workers in total. A larger `split` multiplies that
+/// budget, so each creature's chunk is partitioned into more, smaller record
+/// sub-ranges and a straggling task exposes ~1/`split` of the previous tail.
+/// The total is clamped to `max_total_workers` (the host RAM ceiling — one
+/// `CompiledNetwork` clone is held per worker), but never below one worker per
+/// creature, which is the irreducible minimum.
+///
+/// Every creature's workers are contiguous and folded back in worker order, so
+/// the per-creature partial sums are added in a fixed order and the result
+/// stays deterministic for a given `split`.
+fn workers_per_creature_split(
+    n_creatures: usize,
+    activation_threads: usize,
+    split: usize,
+    max_total_workers: usize,
+) -> Vec<usize> {
     debug_assert!(n_creatures > 0);
     let threads = activation_threads.max(1);
-    if n_creatures >= threads {
-        return vec![1; n_creatures];
-    }
-    let base = threads / n_creatures;
-    let rem = threads % n_creatures;
+    let split = split.max(1);
+    let target = threads
+        .max(n_creatures)
+        .saturating_mul(split)
+        .min(max_total_workers.max(n_creatures));
+    let base = target / n_creatures;
+    let rem = target % n_creatures;
     (0..n_creatures)
         .map(|i| (base + usize::from(i < rem)).max(1))
         .collect()
@@ -537,7 +613,15 @@ fn score_from_creature_dir_cpu(
     // pool — no nested Rayon — so the global thread pool sees at most
     // `activation_threads` concurrent activation tasks regardless of
     // population size.
-    let workers_per = workers_per_creature(loaded.len(), activation_threads);
+    // Issue #537: `NEAT_SCORER_WORKER_SPLIT` multiplies the task count so the
+    // Rayon tail idles fewer threads; `k = 1` is the shipped default and keeps
+    // the pre-#537 partition.
+    let workers_per = workers_per_creature_split(
+        loaded.len(),
+        activation_threads,
+        worker_split_factor(),
+        crate::host_resources::max_worker_count(&crate::host_resources::host()),
+    );
     let total_workers: usize = workers_per.iter().sum();
 
     // Prefix-sum offsets: worker i for creature c lives at
@@ -678,8 +762,10 @@ fn score_from_creature_dir_cpu(
                 Ok(())
             })?;
 
-        // Reduce per-worker sums into per-creature totals (sequential —
-        // total_workers ≤ activation_threads, so this is cheap). Inactive
+        // Reduce per-worker sums into per-creature totals (sequential — a few
+        // hundred adds at most, so this is cheap). Worker order is fixed, so a
+        // creature's partials always fold in the same order (Issue #537).
+        // Inactive
         // creatures had `None` ranges → their worker sums are `0.0`, so this
         // leaves their frozen totals untouched.
         for (worker_idx, &s) in worker_sums.iter().enumerate() {
@@ -1385,6 +1471,72 @@ mod tests {
         // Defensive: activation_threads should already be >=1 from the
         // env parser, but a zero must not produce zero workers.
         assert_eq!(workers_per_creature(3, 0), vec![1, 1, 1]);
+    }
+
+    /// Issue #537: `split = 1` must reproduce the pre-#537 partition for every
+    /// population/thread combination, so the shipped default is unchanged.
+    #[test]
+    fn workers_per_creature_split_one_matches_legacy_partition() {
+        for n in 1..=64_usize {
+            for threads in [1_usize, 2, 8, 10, 12, 16, 64] {
+                assert_eq!(
+                    workers_per_creature_split(n, threads, 1, usize::MAX),
+                    workers_per_creature(n, threads),
+                    "split=1 must match the legacy partition at n={n}, threads={threads}"
+                );
+            }
+        }
+    }
+
+    /// Issue #537: at the production population (N=50 on 10 threads) the legacy
+    /// partition hands the pool 50 indivisible tasks. A `split` of `k` must
+    /// hand it `k × 50` finer tasks instead.
+    #[test]
+    fn workers_per_creature_split_multiplies_task_count_above_thread_count() {
+        for k in [2_usize, 4, 8] {
+            let w = workers_per_creature_split(50, 10, k, usize::MAX);
+            assert_eq!(w.len(), 50);
+            assert_eq!(
+                w.iter().sum::<usize>(),
+                50 * k,
+                "split={k} must multiply the 50-worker budget"
+            );
+            assert!(
+                w.iter().all(|&x| x == k),
+                "split={k} must divide evenly across an exact-multiple population, got {w:?}"
+            );
+        }
+    }
+
+    /// Issue #537: below the thread count the `activation_threads` budget is
+    /// the base, so `split` multiplies that instead of the population size.
+    #[test]
+    fn workers_per_creature_split_multiplies_thread_budget_below_population() {
+        // 3 creatures, 8 threads, k=2 → 16 workers → base=5, rem=1.
+        let w = workers_per_creature_split(3, 8, 2, usize::MAX);
+        assert_eq!(w, vec![6, 5, 5]);
+        assert_eq!(w.iter().sum::<usize>(), 16);
+    }
+
+    /// Issue #537: the total worker count must honour the host RAM ceiling —
+    /// one `CompiledNetwork` clone is held per worker.
+    #[test]
+    fn workers_per_creature_split_clamps_to_host_worker_ceiling() {
+        let w = workers_per_creature_split(50, 10, 8, 256);
+        assert_eq!(
+            w.iter().sum::<usize>(),
+            256,
+            "400 requested workers must clamp to the 256 ceiling, got {w:?}"
+        );
+        assert!(w.iter().all(|&x| x >= 1), "every creature keeps a worker");
+    }
+
+    /// Issue #537: a ceiling below the population cannot starve a creature —
+    /// one worker per creature is the irreducible minimum.
+    #[test]
+    fn workers_per_creature_split_never_drops_below_one_per_creature() {
+        let w = workers_per_creature_split(50, 10, 4, 4);
+        assert_eq!(w, vec![1; 50]);
     }
 
     #[test]
