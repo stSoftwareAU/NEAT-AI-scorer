@@ -4,12 +4,30 @@
 //! Splitting each creature's chunk into `k` record sub-ranges hands the Rayon
 //! pool `k` times as many tasks, so the tail of every chunk idles fewer
 //! threads. These tests pin the observable contract: the split is invisible in
-//! the scores (bar f64 re-association at the rounding level), every creature is
-//! still reported, and a malformed override falls back loudly to the default.
+//! the scores (bar activation-level rounding, see [`SPLIT_SCORE_TOLERANCE`]),
+//! every creature is still reported, and a malformed override falls back
+//! loudly to the default.
 
 use std::io::Write;
 use std::path::Path;
 use std::process::Command;
+
+/// Relative tolerance for a split-versus-unsplit score comparison.
+///
+/// A sub-range boundary changes how many records a worker sees, and the
+/// upstream `loss::*_sum_batch_packed` kernels select an 8-record SIMD, a
+/// 4-record SIMD, or a scalar path from that count. Those paths group the
+/// **f32** activations differently, so a record's output can move by an ulp or
+/// so — around `f32::EPSILON` (1.2e-7) relative — before the per-record errors
+/// are ever accumulated in f64. Averaged over a corpus those ulp-level
+/// differences partially cancel; measured drift on this fixture is ~2e-9.
+///
+/// `1e-6` sits an order of magnitude above the f32 rounding floor the kernels
+/// can guarantee, and orders of magnitude below any difference that would mean
+/// records were dropped, duplicated, or scored by the wrong network — the
+/// failure modes these tests actually guard. `recordCount` equality is
+/// asserted separately and exactly.
+const SPLIT_SCORE_TOLERANCE: f64 = 1e-6;
 
 /// Forward-only creature with `hidden` TANH neurons fed by every input — big
 /// enough that a chunk split is a real partition of work, small enough to stay
@@ -94,7 +112,8 @@ fn score_with_split(creatures_dir: &Path, data_dir: &Path, split: &str) -> serde
 
 /// Issue #537: a split run must score every creature over the whole corpus and
 /// land on the same error as the unsplit run — the partial sums are folded in a
-/// fixed worker order, so only f64 re-association at the rounding level moves.
+/// fixed worker order, so only activation-level rounding moves
+/// (see [`SPLIT_SCORE_TOLERANCE`]).
 #[test]
 fn split_run_matches_unsplit_scores() {
     let tmp = tempfile::tempdir().expect("create tempdir");
@@ -122,8 +141,8 @@ fn split_run_matches_unsplit_scores() {
             );
             let rel = (a - b).abs() / a.abs().max(f64::MIN_POSITIVE);
             assert!(
-                rel < 1e-9,
-                "split={split} creature '{key}' error drifted beyond f64 re-association: {a} vs {b} (rel {rel:e})"
+                rel < SPLIT_SCORE_TOLERANCE,
+                "split={split} creature '{key}' error drifted beyond f32 activation rounding: {a} vs {b} (rel {rel:e})"
             );
         }
     }
@@ -147,7 +166,7 @@ fn split_run_matches_unsplit_scores_for_small_population() {
             got["error"].as_f64().expect("split error"),
         );
         assert!(
-            (a - b).abs() / a.abs().max(f64::MIN_POSITIVE) < 1e-9,
+            (a - b).abs() / a.abs().max(f64::MIN_POSITIVE) < SPLIT_SCORE_TOLERANCE,
             "creature '{key}' error drifted: {a} vs {b}"
         );
     }

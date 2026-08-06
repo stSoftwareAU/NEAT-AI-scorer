@@ -29,8 +29,11 @@
 //! straggling task exposes ~1/`k` of the previous tail. `k = 1` is the shipped
 //! default and reproduces the partition above exactly; the total is still
 //! clamped to the host `max_worker_count` RAM ceiling (one `CompiledNetwork`
-//! clone per worker). Raising `k` re-associates a creature's f64 partial sums,
-//! so scores move by rounding-level amounts only.
+//! clone per worker). Raising `k` changes each worker's record count, which
+//! re-associates a creature's f64 partial sums *and* selects a different
+//! 8-record / 4-record / scalar SIMD path in the upstream loss kernels. The
+//! latter dominates: it regroups the f32 activations, so scores move by
+//! f32-rounding amounts (~1e-9 relative in practice), never more.
 
 use std::collections::BTreeMap;
 use std::fs;
