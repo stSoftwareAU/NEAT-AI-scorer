@@ -55,7 +55,12 @@ fn write_corpus(dir: &Path, num_inputs: usize, records: usize) {
 }
 
 /// Build a directory of `n` distinct creatures plus a matching corpus.
-fn fixture(tmp: &Path, n: usize, num_inputs: usize, records: usize) -> (std::path::PathBuf, std::path::PathBuf) {
+fn fixture(
+    tmp: &Path,
+    n: usize,
+    num_inputs: usize,
+    records: usize,
+) -> (std::path::PathBuf, std::path::PathBuf) {
     let creatures_dir = tmp.join("creatures");
     let data_dir = tmp.join("data");
     std::fs::create_dir_all(&creatures_dir).expect("create creatures dir");
@@ -163,7 +168,10 @@ fn malformed_split_warns_and_falls_back_to_default() {
         .arg(&data_dir)
         .output()
         .expect("spawn scorer");
-    assert!(output.status.success(), "malformed override must still score");
+    assert!(
+        output.status.success(),
+        "malformed override must still score"
+    );
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
         stderr.contains("NEAT_SCORER_WORKER_SPLIT"),
