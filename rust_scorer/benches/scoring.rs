@@ -413,10 +413,9 @@ fn bench_score_from_creature_dir(c: &mut Criterion) {
 
 /// Local copy of the production unpack inner loop. Kept in this bench file so
 /// the micro-bench does not require widening the crate's public surface; the
-/// implementation matches `multi_score::unpack_f32s_le` and
-/// `stream_score::unpack_f32s_le` byte-for-byte (single-source-of-truth lives
-/// in those modules; this duplicate is documented and exists only inside the
-/// bench harness).
+/// implementation matches [`crate::stream_io::unpack_f32s_le`] byte-for-byte
+/// (single-source-of-truth lives there; this duplicate is documented and exists
+/// only inside the bench harness).
 fn unpack_f32s_le_bench(src: &[u8], dst: &mut Vec<f32>, n: usize) {
     debug_assert_eq!(src.len(), n * 4);
     dst.clear();
@@ -427,14 +426,11 @@ fn unpack_f32s_le_bench(src: &[u8], dst: &mut Vec<f32>, n: usize) {
     #[cfg(target_endian = "little")]
     {
         // SAFETY: `src.len() == n * 4`, capacity ≥ `n` after the reserve above;
-        // every element [0, n) is initialised before `set_len(n)`.
+        // little-endian bulk copy is bit-identical to per-element `from_bits`
+        // (Issue #539). Source and destination do not overlap.
         unsafe {
-            let out_ptr = dst.as_mut_ptr();
-            let p = src.as_ptr();
-            for i in 0..n {
-                let bits = p.add(i * 4).cast::<u32>().read_unaligned();
-                out_ptr.add(i).write(f32::from_bits(bits));
-            }
+            let out_ptr = dst.as_mut_ptr().cast::<u8>();
+            std::ptr::copy_nonoverlapping(src.as_ptr(), out_ptr, n * 4);
             dst.set_len(n);
         }
     }

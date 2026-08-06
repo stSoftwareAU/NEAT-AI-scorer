@@ -23,8 +23,11 @@ pub(crate) fn reserve_unpack_capacity(buf: &mut Vec<f32>, n: usize) {
     }
 }
 
-/// Decode little-endian `f32` bytes. On little-endian hosts, one unaligned `u32`
-/// load per float; otherwise `from_le_bytes`.
+/// Decode little-endian `f32` bytes into `dst`.
+///
+/// On little-endian hosts the bit pattern is already native `f32`, so the
+/// decode is a bulk `copy_nonoverlapping` (Issue #539) rather than a per-float
+/// load/`from_bits` loop. Big-endian hosts still convert via `from_le_bytes`.
 ///
 /// # Panics
 /// Panics if `src.len() != n * 4`. This check runs in both debug and release
@@ -45,14 +48,12 @@ pub(crate) fn unpack_f32s_le(src: &[u8], dst: &mut Vec<f32>, n: usize) {
     #[cfg(target_endian = "little")]
     {
         // SAFETY: `src.len() == n * 4`, capacity ≥ `n` after `reserve_unpack_capacity`;
-        // we initialise all `n` elements before `set_len(n)`.
+        // on little-endian hosts each 4-byte group is already a native `f32` bit
+        // pattern, so a bulk copy is bit-identical to per-element `from_bits`
+        // (Issue #539). Source and destination do not overlap.
         unsafe {
-            let out_ptr = dst.as_mut_ptr();
-            let p = src.as_ptr();
-            for i in 0..n {
-                let bits = p.add(i * 4).cast::<u32>().read_unaligned();
-                out_ptr.add(i).write(f32::from_bits(bits));
-            }
+            let out_ptr = dst.as_mut_ptr().cast::<u8>();
+            std::ptr::copy_nonoverlapping(src.as_ptr(), out_ptr, n * 4);
             dst.set_len(n);
         }
     }
