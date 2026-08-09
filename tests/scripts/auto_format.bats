@@ -38,7 +38,7 @@ teardown() {
 
 # --- auto-format.sh --------------------------------------------------------
 
-@test "commit-message prints a deterministic message mentioning rustfmt and issue 19" {
+@test "commit-message prints a deterministic message mentioning rustfmt, lock sync, and issues" {
   run "$AUTO_FORMAT" --commit-message
   [ "$status" -eq 0 ]
   first="$output"
@@ -48,7 +48,9 @@ teardown() {
   # Deterministic across invocations.
   [ "$output" = "$first" ]
   [[ "$output" == *"rustfmt"* ]]
+  [[ "$output" == *"neat-core"* ]]
   [[ "$output" == *"#19"* ]]
+  [[ "$output" == *"#542"* ]]
 }
 
 @test "check-changes exits 1 on a clean working tree" {
@@ -127,7 +129,11 @@ jobs:
         run: |
           set -euo pipefail
           cargo fmt --all
-      - name: Detect formatting changes
+      - name: Sync Cargo.lock to latest neat-core
+        run: |
+          set -euo pipefail
+          cargo update -p neat-core
+      - name: Detect formatting / lockfile changes
         id: detect
         run: |
           set -euo pipefail
@@ -136,7 +142,7 @@ jobs:
           else
             echo "changed=false" >>"$GITHUB_OUTPUT"
           fi
-      - name: Commit and push rustfmt fixes
+      - name: Commit and push rustfmt / lock sync fixes
         if: steps.detect.outputs.changed == 'true'
         env:
           GH_PAT: ${{ secrets.ACTIONS_PUSH || secrets.GITHUB_TOKEN }}
@@ -214,6 +220,46 @@ EOF
   run "$WF_CHECK" --workflow "$TMP_WF/auto-format.yml"
   [ "$status" -ne 0 ]
   [[ "$output" == *"cargo fmt"* ]]
+}
+
+@test "workflow validator fails when neat-core lock sync is missing" {
+  cat >"$TMP_WF/auto-format.yml" <<'EOF'
+name: Auto Format
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    branches:
+      - Develop
+permissions:
+  contents: write
+  pull-requests: read
+jobs:
+  auto-format:
+    name: Auto-format Code
+    runs-on: ubuntu-latest
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    steps:
+      - name: Apply cargo fmt
+        run: |
+          set -euo pipefail
+          cargo fmt --all
+      - name: Detect formatting changes
+        id: detect
+        run: |
+          set -euo pipefail
+          echo "changed=true" >>"$GITHUB_OUTPUT"
+      - name: Commit and push
+        if: steps.detect.outputs.changed == 'true'
+        env:
+          GH_PAT: ${{ secrets.ACTIONS_PUSH || secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          git commit -am "fmt"
+          git push
+EOF
+  run "$WF_CHECK" --workflow "$TMP_WF/auto-format.yml"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"neat-core"* || "$output" == *"cargo update"* ]]
 }
 
 @test "workflow validator fails when the commit step is unconditional" {

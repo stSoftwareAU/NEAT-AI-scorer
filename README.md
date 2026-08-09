@@ -979,15 +979,20 @@ lives in `scripts/version-increment.sh` and is covered by
 short-lived repo-scoped installation token (see below) so the follow-on PR
 checks run without an "Approve and run" gate (Issue #435).
 
-PRs also run an auto-format job (`.github/workflows/auto-format.yml`,
-Issue #19). The job runs `cargo fmt --all` on the PR branch; if the working
-tree changes, the formatting fix is committed with a deterministic message
-and pushed back. When there are no changes the commit step is skipped, so
-re-running on a clean branch is a no-op. Change detection and the commit
-message live in `scripts/auto-format.sh` and are covered by
-`tests/scripts/auto_format.bats`; the workflow itself is validated by
-`scripts/check-auto-format-workflow.sh` (invoked from `quality.sh`). The same
-bot-push token pattern applies here (Issue #435).
+PRs also run an auto-format / housekeeping job
+(`.github/workflows/auto-format.yml`, Issues #19 and #542). The job runs
+`cargo fmt --all` and then `cargo update -p neat-core` so `Cargo.lock`
+tracks the checked-out NEAT-AI-core path dependency (workers otherwise
+rewrite the lock on every `cargo build` and `model_fetch` resets it). If the
+working tree changes, the fix is committed with a deterministic message and
+pushed back. When there are no changes the commit step is skipped, so
+re-running on a clean branch is a no-op. The job deliberately does **not**
+bump `neat-core.expected-version` — the Issue #252 breaking-bump gate stays a
+human acknowledgement. Change detection and the commit message live in
+`scripts/auto-format.sh` and are covered by `tests/scripts/auto_format.bats`;
+the workflow itself is validated by `scripts/check-auto-format-workflow.sh`
+(invoked from `quality.sh`). The same bot-push token pattern applies here
+(Issue #435).
 
 #### Bot-push credential — repo-scoped installation token (Issue #498)
 

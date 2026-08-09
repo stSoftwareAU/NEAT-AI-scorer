@@ -1,20 +1,23 @@
 #!/usr/bin/env bash
-# Auto-format helper for the CI PR job (Issue #19).
+# Auto-format / PR housekeeping helper for the CI PR job (Issues #19, #542).
 #
 # Responsibilities:
 #   * Emit the deterministic commit message the workflow uses when pushing
-#     rustfmt-generated fixes back onto a PR branch.
+#     rustfmt and/or Cargo.lock sync fixes back onto a PR branch.
 #   * Detect whether the working tree has pending changes after `cargo fmt`
-#     ran, so the workflow can commit only when needed (idempotent guard).
+#     and `cargo update -p neat-core` ran, so the workflow can commit only
+#     when needed (idempotent guard).
 #
 # Running cargo is the workflow's job — this script does not invoke any
 # build tooling, which keeps the BATS suite hermetic (no Rust toolchain
 # required in the bash helper tests).
 set -euo pipefail
 
-COMMIT_MESSAGE="chore(fmt): apply rustfmt fixes
+COMMIT_MESSAGE="chore(fmt): apply rustfmt and sync neat-core lock
 
-Automated by the auto-format PR job (rustfmt via cargo fmt) — see issue #19."
+Automated by the auto-format PR job (rustfmt via cargo fmt; Cargo.lock
+synced to the checked-out NEAT-AI-core path dependency via
+\`cargo update -p neat-core\`) — see issues #19 and #542."
 
 usage() {
   cat <<'EOF'
@@ -70,15 +73,16 @@ case "$MODE" in
 
   check-changes)
     # Only inspect changes to tracked files. Untracked paths (lines starting
-    # with '??') are excluded because cargo fmt cannot modify files that are
-    # not part of the tracked working tree — e.g. path-dependency repos
-    # checked out alongside the workspace (such as NEAT-AI-core/).
+    # with '??') are excluded because cargo fmt / cargo update cannot modify
+    # files that are not part of the tracked working tree — e.g. path-
+    # dependency repos checked out alongside the workspace (such as
+    # NEAT-AI-core/).
     status_output="$(cd "$REPO_DIR" && git status --porcelain | grep -v '^??' || true)"
     if [[ -z "$status_output" ]]; then
-      echo "clean: no formatting changes detected"
+      echo "clean: no formatting or lockfile changes detected"
       exit 1
     else
-      echo "dirty: formatting changes detected"
+      echo "dirty: formatting or lockfile changes detected"
       exit 0
     fi
     ;;
