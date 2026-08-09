@@ -42,4 +42,13 @@
 # rust_scorer` and the full scorer test suite (303 tests) passing against the
 # sibling neat-core at 0.8.1, plus a repo-wide grep confirming no reference to
 # any removed symbol.
-0.8.1
+#
+# 0.8.1 -> 0.9.0: acknowledge the neat-core #533 / #537 struct-of-arrays hot
+# synapse view. BREAKING CHANGE is confined to
+# `weighted_sum_interleaved` / `weighted_sum_interleaved_8` signatures and
+# `CompiledNetwork` struct-literal construction (`hot_weights` / `hot_from`).
+# rust_scorer never calls those entry points and never constructs
+# `CompiledNetwork` via struct literal — every fixture goes through
+# `compile_creature` — so no scorer code change is required. Verified by a
+# clean `cargo check -p rust_scorer` against sibling neat-core 0.9.0.
+0.9.0

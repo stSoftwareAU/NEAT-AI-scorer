@@ -1,9 +1,14 @@
-# Auto-format PR job (Issue #19).
+# Auto-format / PR housekeeping job (Issues #19, #542).
 #
 # Runs on pull requests targeting Develop or a milestone/* branch. Applies
-# `cargo fmt --all` on the PR branch; if the working tree changes, the fix
-# is committed and pushed back. Re-running on a clean branch is a no-op,
-# so the job is safe/idempotent.
+# `cargo fmt --all` and refreshes `Cargo.lock` against the checked-out
+# NEAT-AI-core path dependency (`cargo update -p neat-core`) so workers stop
+# reprinting `Updating neat-core vX -> vY` after every fetch. If the working
+# tree changes, the fix is committed and pushed back. Re-running on a clean
+# branch is a no-op, so the job is safe/idempotent.
+#
+# Deliberately does NOT bump `neat-core.expected-version` — the Issue #252
+# breaking-bump gate stays a human acknowledgement.
 #
 # Permissions are scoped to the minimum: `contents: write` to push the
 # rustfmt commit. `pull-requests: read` is sufficient for the workflow's
@@ -72,10 +77,21 @@ jobs:
           set -euo pipefail
           cargo fmt --all
 
+      # Refresh Cargo.lock against the sibling neat-core path dependency
+      # (Issue #542). Without this, every worker `cargo build` rewrites the
+      # lock locally and `model_fetch` hard-resets it on the next run.
+      # Scoped to `-p neat-core` so crates.io quarantine / weekly bump policy
+      # is untouched — only the path-dep version (and the workspace member
+      # version Cargo rewrites alongside it) moves.
+      - name: Sync Cargo.lock to latest neat-core
+        run: |
+          set -euo pipefail
+          cargo update -p neat-core
+
       # Resolve the commit message here, not in the push step below: the
       # helper is PR-head code, so running it alongside $GH_PAT would hand
       # the org PAT straight to an attacker-editable script (Issue #497).
-      - name: Detect formatting changes
+      - name: Detect formatting / lockfile changes
         id: detect
         run: |
           set -euo pipefail
@@ -122,7 +138,7 @@ jobs:
       # repository hooks (a planted `.git/hooks/pre-commit` would otherwise run
       # with $GH_PAT in scope), and no repository script is executed here.
       # Enforced by `scripts/check-push-step-hardening.sh`.
-      - name: Commit and push rustfmt fixes
+      - name: Commit and push rustfmt / lock sync fixes
         if: steps.detect.outputs.changed == 'true'
         env:
           PR_HEAD_REF: ${{ github.event.pull_request.head.ref }}

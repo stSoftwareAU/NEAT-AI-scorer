@@ -15,6 +15,17 @@ section to the released version with its date.
 
 ## [Unreleased]
 
+### Fixed
+
+- **PR auto-format syncs `Cargo.lock` to latest neat-core (Issue #542).** The
+  auto-format job now runs `cargo update -p neat-core` after `cargo fmt`, so
+  every PR refreshes the path-dependency lock entry against the checked-out
+  NEAT-AI-core `Develop`. That stops workers reprinting
+  `Updating neat-core vX -> vY` after every `model_fetch` hard-reset of a
+  stale lock. The Issue #252 `neat-core.expected-version` gate is unchanged
+  (still deliberate). This PR also acknowledges neat-core `0.9.0` in the
+  baseline and commits the matching lock sync.
+
 ### Added
 
 - **Parallel training-data file reads (Issue #529).** The forward-only fused

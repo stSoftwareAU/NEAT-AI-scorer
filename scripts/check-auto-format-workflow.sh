@@ -1,18 +1,20 @@
 #!/usr/bin/env bash
-# Validate the auto-format PR workflow (Issue #19).
+# Validate the auto-format PR workflow (Issues #19, #542).
 #
 # The auto-format workflow must:
-#   1. Run on `pull_request` events only — formatting fixes push back to
-#      the PR branch, which is meaningless for `push` / scheduled events.
+#   1. Run on `pull_request` events only — formatting / lock fixes push back
+#      to the PR branch, which is meaningless for `push` / scheduled events.
 #   2. Declare minimal permissions: `contents: write` is required to push,
 #      nothing beyond what the job needs should be granted (in particular
 #      not `write-all` or scopes the workflow doesn't use).
 #   3. Invoke `cargo fmt --all` to produce the formatting fixes.
-#   4. Gate the commit/push step behind a change-detection output so the
+#   4. Invoke `cargo update -p neat-core` so Cargo.lock tracks the checked-
+#      out NEAT-AI-core path dependency (Issue #542).
+#   5. Gate the commit/push step behind a change-detection output so the
 #      job is idempotent — re-running on a clean branch is a no-op.
-#   5. Refuse to push onto a fork's PR branch (the GITHUB_TOKEN cannot
+#   6. Refuse to push onto a fork's PR branch (the GITHUB_TOKEN cannot
 #      write there anyway; skipping keeps failure messages tidy).
-#   6. Authenticate the push with the org-level ACTIONS_PUSH PAT (with
+#   7. Authenticate the push with the org-level ACTIONS_PUSH PAT (with
 #      GITHUB_TOKEN fallback) so bot `synchronize` events re-trigger PR
 #      checks without the "Approve and run" gate (Issue #435).
 set -euo pipefail
@@ -65,7 +67,16 @@ else
   fail "no 'cargo fmt --all' invocation"
 fi
 
-# 4. Change-detection guard on the commit/push step. We look for a step that
+# 4. neat-core lock sync present (Issue #542). Scoped `-p neat-core` keeps
+#    crates.io bumps on the quarantine / weekly path; only the path-dep
+#    version (and the workspace member version Cargo rewrites with it) moves.
+if grep -qE 'cargo[[:space:]]+update[[:space:]]+-p[[:space:]]+neat-core' "$WORKFLOW"; then
+  ok "cargo update -p neat-core lock sync present"
+else
+  fail "no 'cargo update -p neat-core' — PRs will leave Cargo.lock lagging NEAT-AI-core (Issue #542)"
+fi
+
+# 5. Change-detection guard on the commit/push step. We look for a step that
 #    declares `if:` and references the detection output — the specific id
 #    name is flexible but the presence of conditional commit/push is
 #    mandatory for idempotency.
@@ -78,7 +89,7 @@ else
   fail "no conditional 'if: steps.*.outputs.*' guard — commit/push must be conditional"
 fi
 
-# 5. Fork-PR safety — skip when the PR head is on a fork. Any of the common
+# 6. Fork-PR safety — skip when the PR head is on a fork. Any of the common
 #    forms satisfy this check: comparing `head.repo.full_name` to
 #    `github.repository`, or checking `head.repo.fork == false`.
 if grep -qE 'github\.event\.pull_request\.head\.repo\.full_name[[:space:]]*==' "$WORKFLOW" \
@@ -88,14 +99,14 @@ else
   fail "no head.repo check — pushes onto forks will fail silently"
 fi
 
-# 6. Strict bash in every run: block that does a commit/push sequence.
+# 7. Strict bash in every run: block that does a commit/push sequence.
 if grep -qE 'set[[:space:]]+-euo[[:space:]]+pipefail' "$WORKFLOW"; then
   ok "strict bash (set -euo pipefail) present"
 else
   fail "no 'set -euo pipefail' in run: blocks — failures may be swallowed"
 fi
 
-# 7. Bot push must use ACTIONS_PUSH (org PAT) with GITHUB_TOKEN fallback.
+# 8. Bot push must use ACTIONS_PUSH (org PAT) with GITHUB_TOKEN fallback.
 #    A bare GITHUB_TOKEN push attributes the synchronize event to
 #    github-actions[bot] and leaves required checks "awaiting approval"
 #    (Issue #435). Accept either the expression form or a GH_PAT env that
