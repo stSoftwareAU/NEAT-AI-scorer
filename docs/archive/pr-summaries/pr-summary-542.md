@@ -2,7 +2,7 @@
 
 ## Problem
 
-GRQ workers repeatedly printed `Updating neat-core v0.8.12 -> v0.9.0` even when
+Workers repeatedly printed `Updating neat-core v0.8.12 -> v0.9.0` even when
 `model_fetch` skipped the NEAT-AI-core git update. Cause: `NEAT-AI-scorer`'s
 committed `Cargo.lock` lagged the sibling path dependency. Every
 `ensure_neat_ai_native_scorer` `cargo build` rewrote the lock locally; the next
