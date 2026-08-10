@@ -22,6 +22,7 @@ pub mod cost;
 pub mod env_tuning;
 pub mod fixture_json;
 pub mod gpu;
+pub mod host_report;
 pub mod host_resources;
 pub mod multi_score;
 pub mod prod_fixture;

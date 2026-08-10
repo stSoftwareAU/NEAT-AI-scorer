@@ -28,6 +28,23 @@ section to the released version with its date.
 
 ### Added
 
+- **Host knob report and knob sweep harness (Issue #545).** `rust_scorer
+  --host-report` prints the detected host (logical CPUs, physical RAM) and every
+  resolved knob — `default_worker_count`, `max_worker_count`, `max_read_bytes`,
+  `default_training_read_bytes`, `gpu_scratch_bytes` — as one JSON object, each
+  tagged `default` or `env` so a fleet operator can see which values an override
+  actually moved. It scores nothing, creates no `wgpu` adapter, and so returns
+  the same JSON on a GPU-less host and under `--gpu off`.
+  `--record-bytes <BYTES>` picks the record width the record-size-adaptive read
+  knob is resolved for (default: the 9848 B production width).
+  [`scripts/bench-knob-sweep.sh`](./scripts/bench-knob-sweep.sh) sweeps one
+  `NEAT_SCORER_*` knob across a caller-supplied value list on the production
+  scoring path and reports the median wall-clock per value, prefixed by that
+  host's report; it skips cleanly without local inputs (Issue #448) and is
+  fail-loud once they are supplied. Measurement only — **no shipped default
+  changed**. Fleet baseline for the Apple mid tier recorded in
+  [`docs/performance-baseline.md`](./docs/performance-baseline.md).
+
 - **Parallel training-data file reads (Issue #529).** The forward-only fused
   path now streams a multi-file corpus through several concurrent `.bin`
   readers instead of one, removing the serial `f32` unpack and the per-chunk
