@@ -17,6 +17,16 @@ section to the released version with its date.
 
 ### Fixed
 
+- **`RMSE` docs no longer read as a redundant alias of `MSE` (Issue #556).**
+  The README cost-table row and the paragraph beneath it said `RMSE` "ranks
+  identically to MSE", which invited the question of why it exists at all.
+  Both now state the two facts separately: `sqrt` is monotonic, so creature
+  *ordering* matches `MSE`, while the *reported score* genuinely differs — it
+  is in the target's own units. New `scripts/check-rmse-docs.sh` (wired into
+  `quality.sh`, covered by `tests/scripts/rmse_docs.bats`) keeps the old
+  wording from returning to the row, the paragraph, or the `CostKind` rustdoc.
+  Documentation only — `--cost RMSE` and its computation are unchanged.
+
 - **PR auto-format syncs `Cargo.lock` to latest neat-core (Issue #542).** The
   auto-format job now runs `cargo update -p neat-core` after `cargo fmt`, so
   every PR refreshes the path-dependency lock entry against the checked-out
