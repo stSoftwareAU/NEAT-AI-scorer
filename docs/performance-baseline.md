@@ -172,95 +172,6 @@ timings). Tracked in
 two commands above on one x86 Linux host and append a "Tier: x86 Linux" block
 in the same shape.
 
-## Read-chunk retune at the shipped reader count — 10 August 2026 (Issue #549)
-
-**Dead ceiling removed and the aggregate footprint bounded; the chunk-size
-*retune* is a recorded `negative-result`.** The 256 MiB read ceiling for
-≥ 64 GiB hosts was unreachable by any built-in default and is gone, and the
-`readers × chunk` budget is now a bounded share of physical RAM in
-[`read_tuning`](../rust_scorer/src/read_tuning.rs) instead of a fixed clamp read
-out of `host_resources`. **No fleet host's shipped chunk size changes** — the
-A/B below is why.
-
-### Host
-
-| Field | Value |
-|---|---|
-| Machine | Apple M4, 10 logical cores (4P + 6E), 24 GB, macOS 25.6 |
-| Corpus | `BENCH_SCORING_BYTES=200000000`, `BENCH_FUSED_FILES=26` |
-| Record width | `BENCH_SCORING_INPUTS=2461`, `BENCH_SCORING_OUTPUTS=1` → 9848 B/record (production width) |
-| Bench | `fused_multi_file/file_workers/auto` — the shipped reader count (10 readers over 26 shards) |
-| Contention | Not quiescent: the unattended worker holds ~1 core (load average 5–9), so only interleaved comparisons are trusted |
-
-### A/B — per-reader chunk, interleaved (5 pairs, alternating)
-
-The two arms are the *same* binary at two per-reader chunk sizes: the shipped
-6 706 488 B (64 MiB aggregate ÷ 10 readers, record-aligned) against the
-32 MiB the isolated large-record default would give each reader.
-
-| Pair | Shipped 6 706 488 B (6.40 MiB) | Isolated 32 MiB/reader | Δ |
-|---:|---:|---:|---:|
-| 1 | 27.670 ms | 40.700 ms | +47 % |
-| 2 | 26.191 ms | 39.358 ms | +50 % |
-| 3 | 27.548 ms | 42.019 ms | +53 % |
-| 4 | 27.863 ms | 42.049 ms | +51 % |
-| 5 | 27.151 ms | 47.859 ms | +76 % |
-| **median** | **27.548 ms** | **42.019 ms** | **+53 %** |
-
-Sizing each of ten concurrent readers at the full 32 MiB default is **~50 %
-slower**, 5 of 5 interleaved pairs. Raising the aggregate budget to a share of
-RAM (which is what would let every reader take 32 MiB) therefore does not ship:
-the RAM share is applied as a `min` against the existing ceiling, exactly as the
-GPU scratch share is in Issue #548.
-
-### Sweep — per-reader chunk at 10 readers (3 rounds, same order)
-
-| Per-reader chunk | Round 1 | Round 2 | Round 3 | Median |
-|---|---:|---:|---:|---:|
-| 2 MiB | 24.298 ms | 24.698 ms | 26.497 ms | **24.698 ms** |
-| 4 MiB | 25.359 ms | 25.876 ms | 24.907 ms | 25.359 ms |
-| 6.40 MiB (shipped) | 27.190 ms | 29.050 ms | 22.284 ms | 27.190 ms |
-| 12 MiB | 30.367 ms | 31.177 ms | 24.679 ms | 30.367 ms |
-| 16 MiB | 32.299 ms | 36.631 ms | 25.375 ms | 32.299 ms |
-
-Rounds 1 and 2 rank smaller-is-faster monotonically; round 3 (a quieter
-interval — every size ran faster) inverts the order, and its fastest single
-sample is the *shipped* size. A ~9 % lead for 2 MiB that one round out of three
-contradicts, on a host under known contention, is not evidence for a fleet-wide
-default change — and the other tiers named in Issue #549 (M2 Ultra, M4 Pro,
-M1-class, and the x86 Linux control) are not reachable from this worker, so no
-per-tier retune ships. **Open lead:** a quiescent multi-tier sweep of chunk
-sizes *below* the shipped one, in the same shape as the table above.
-
-### What shipped
-
-* `host_resources::max_read_bytes` returns **one** 64 MiB ceiling on every host.
-  The ≥ 64 GiB / 256 MiB tier could only be reached by exporting
-  `NEAT_SCORER_READ_BYTES` by hand, which
-  [#544](https://github.com/stSoftwareAU/NEAT-AI-scorer/issues/544) rules out as
-  a configuration mechanism.
-* `read_tuning::aggregate_read_budget_bytes` owns the `readers × chunk` bound:
-  `min(64 MiB, RAM / 64)`. Every fleet tier from 4 GiB up already sits at the
-  64 MiB term, so the RAM share is a **guard** against a future tier, not a
-  raise. The one behavioural move is on ≥ 64 GiB Macs, whose aggregate drops
-  from the old 256 MiB clamp to 64 MiB — the direction that measured faster
-  above.
-* Per-tier chunk sizes at the shipped reader count are unchanged below 64 GiB,
-  asserted by `no_fleet_tier_gets_a_bigger_chunk_than_before` in
-  [`read_tuning`](../rust_scorer/src/read_tuning.rs).
-
-### Reproduce
-
-```bash
-export BENCH_SCORING_BYTES=200000000 BENCH_SCORING_INPUTS=2461 \
-       BENCH_SCORING_OUTPUTS=1 BENCH_FUSED_FILES=26
-# Shipped per-reader size vs the isolated 32 MiB default, alternating runs:
-NEAT_SCORER_READ_BYTES=6706488  cargo bench -p rust_scorer --bench scoring -- \
-  'fused_multi_file/file_workers/auto'
-NEAT_SCORER_READ_BYTES=33554432 cargo bench -p rust_scorer --bench scoring -- \
-  'fused_multi_file/file_workers/auto'
-```
-
 ## Performance-core probe — 10 August 2026 (Issue #546)
 
 **Probe shipped; worker retune *not* shipped — the A/B is inconclusive on the
@@ -864,6 +775,48 @@ chunks trade syscalls for locality, and a warm-cache win can invert on cold NVMe
 Shrinking the shipped budget on that evidence would be a performance change
 without evidence of gain, which
 [CONTRIBUTING](../CONTRIBUTING.md#performance-task-workflow) does not allow.
+
+### Corroborating A/B on a second host — per-reader chunk at 10 readers
+
+Captured independently on **Apple M4, 10 logical cores, 24 GB, macOS 25.6**
+(same corpus shape: `BENCH_SCORING_BYTES=200000000`, `BENCH_FUSED_FILES=26`,
+production record width 9848 B, bench `fused_multi_file/file_workers/auto`, 10
+readers over 26 shards). Not quiescent — the unattended worker holds ~1 core
+(load average 5–9) — so only *interleaved* pairs are trusted. Both arms are the
+same binary; they compare the shipped per-reader size (64 MiB aggregate ÷ 10
+readers, record-aligned) against the 32 MiB a reader-unaware default would hand
+each reader:
+
+| Pair | Shipped 6 706 488 B (6.40 MiB) | Reader-unaware 32 MiB/reader | Δ |
+|---:|---:|---:|---:|
+| 1 | 27.670 ms | 40.700 ms | +47 % |
+| 2 | 26.191 ms | 39.358 ms | +50 % |
+| 3 | 27.548 ms | 42.019 ms | +53 % |
+| 4 | 27.863 ms | 42.049 ms | +51 % |
+| 5 | 27.151 ms | 47.859 ms | +76 % |
+| **median** | **27.548 ms** | **42.019 ms** | **+53 %** |
+
+Sizing each of ten concurrent readers at the full 32 MiB default is ~50 % slower
+in 5 of 5 interleaved pairs — direct evidence for keeping the aggregate budget
+bounded rather than raising it to a RAM share that would allow 32 MiB per
+reader.
+
+A three-round sweep of the per-reader chunk on the same host is *not* evidence
+for a retune: 2 MiB medians 24.698 ms against the shipped 6.40 MiB at 27.190 ms
+(rounds 1–2 rank smaller-is-faster monotonically), but round 3 — a quieter
+interval — inverts the order and its fastest single sample is the shipped size.
+That matches probe 2 above: the host is not quiet long enough to resolve a ~9 %
+gap, so no tier's chunk moves.
+
+```bash
+export BENCH_SCORING_BYTES=200000000 BENCH_SCORING_INPUTS=2461 \
+       BENCH_SCORING_OUTPUTS=1 BENCH_FUSED_FILES=26
+# Alternate the arms, never batch them:
+NEAT_SCORER_READ_BYTES=6706488  cargo bench -p rust_scorer --bench scoring -- \
+  'fused_multi_file/file_workers/auto'
+NEAT_SCORER_READ_BYTES=33554432 cargo bench -p rust_scorer --bench scoring -- \
+  'fused_multi_file/file_workers/auto'
+```
 
 ### Decision (Issue #549)
 

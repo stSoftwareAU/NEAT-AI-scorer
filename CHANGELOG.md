@@ -40,21 +40,6 @@ section to the released version with its date.
 
 ### Fixed
 
-- **Read-chunk ceiling and aggregate reader footprint (Issue #549).**
-  `host_resources::max_read_bytes` now returns **one** 64 MiB ceiling on every
-  host: the ≥ 64 GiB / 256 MiB tier was unreachable by any built-in default —
-  `read_tuning` capped even a 192 GiB Mac at 64 MiB — so it could only be
-  reached by exporting `NEAT_SCORER_READ_BYTES` by hand, which Issue #544 rules
-  out as a configuration mechanism. The `readers × chunk` footprint is now
-  bounded by `read_tuning::aggregate_read_budget_bytes` = `min(64 MiB,
-  RAM / 64)`, which both the default and an env override pass through, instead
-  of each reader being sized in isolation against a clamp. The RAM share only
-  ever *tightens*, so **no fleet tier's chunk size changed**: giving each of ten
-  readers the full 32 MiB default measured ~50 % slower on M4 / 24 GB at the
-  shipped reader count (5 of 5 interleaved pairs) — the retune half is a
-  recorded `negative-result` in `docs/performance-baseline.md`. Env override,
-  whole-record alignment and the one-record minimum are unchanged.
-
 - **PR auto-format syncs `Cargo.lock` to latest neat-core (Issue #542).** The
   auto-format job now runs `cargo update -p neat-core` after `cargo fmt`, so
   every PR refreshes the path-dependency lock entry against the checked-out
