@@ -146,6 +146,9 @@ echo "🎛️  Validating self-tuning docs match the shipped knob tiers (Issue #
 echo "🖥️  Validating gpuBackend docs match GpuBackendLabel (Issue #507)..."
 ./scripts/check-gpu-backend-docs.sh
 
+echo "📐 Validating RMSE docs keep ordering and reported score distinct (Issue #556)..."
+./scripts/check-rmse-docs.sh
+
 echo "🗄️  Validating the PR-summary archive is single and documented (Issue #508)..."
 ./scripts/check-pr-summary-archive.sh
 
