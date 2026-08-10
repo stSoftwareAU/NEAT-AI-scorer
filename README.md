@@ -454,8 +454,9 @@ rust_scorer --host-report --record-bytes 40    # small-record corpora
 
 ```json
 {
-  "schema": "neat-scorer-host-report/1",
+  "schema": "neat-scorer-host-report/2",
   "logical_cpus": 10,
+  "performance_cpus": 4,
   "physical_ram_bytes": 25769803776,
   "record_bytes": 9848,
   "knobs": {
@@ -476,6 +477,15 @@ rust_scorer --host-report --record-bytes 40    # small-record corpora
 - `env_var` is `null` for a host-derived ceiling, which takes no override.
 - `NEAT_SCORER_FILE_THREADS` shares the `default_worker_count` default,
   additionally capped at the corpus file count.
+- `performance_cpus` (schema `/2`, Issue #546) is the **performance-core**
+  count: `hw.perflevel0.physicalcpu` on Apple silicon (falling back to
+  `hw.physicalcpu`), the highest-`cpu_capacity` tier on heterogeneous ARM
+  Linux, and otherwise — x86, Intel Macs, any probe failure — the same value as
+  `logical_cpus`. The probe never reports **fewer** cores than it can prove, so
+  a host it cannot classify keeps every historical default. The example above
+  is an M4 (4P + 6E of 10 logical); the shipped `default_worker_count` still
+  keys off `logical_cpus` (see the Issue #546 section of
+  [`docs/performance-baseline.md`](docs/performance-baseline.md) for why).
 - Keys are snake_case and named after the functions that produced them, so a
   pasted report maps 1:1 onto the code a retune has to change. This is a
   diagnostic, **not** the camelCase scoring payload.

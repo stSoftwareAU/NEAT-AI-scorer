@@ -28,6 +28,20 @@ section to the released version with its date.
 
 ### Added
 
+- **Performance-core probe (Issue #546).** `HostResources` now carries
+  `performance_cpus` beside `cpus`: `hw.perflevel0.physicalcpu` (falling back to
+  `hw.physicalcpu`) on macOS, the highest-`cpu_capacity` tier on heterogeneous
+  ARM Linux, and the logical CPU count everywhere else — x86, Intel Macs, any
+  probe failure. The probe never reports **fewer** cores than it can prove, so
+  a host it cannot classify keeps every historical default.
+  `HostResources::synthetic_with_performance_cpus` lets policy tests pin a fleet
+  tier's P/E split, and `--host-report` reports the count under the new
+  `neat-scorer-host-report/2` schema. `default_worker_count` is **unchanged** —
+  it still keys off the logical count, because the worker retune needs
+  before/after evidence the contended fleet host could not produce; the
+  inconclusive A/B is recorded in
+  [`docs/performance-baseline.md`](./docs/performance-baseline.md) and the
+  retune is tracked in Issue #553.
 - **Host knob report and knob sweep harness (Issue #545).** `rust_scorer
   --host-report` prints the detected host (logical CPUs, physical RAM) and every
   resolved knob — `default_worker_count`, `max_worker_count`, `max_read_bytes`,
