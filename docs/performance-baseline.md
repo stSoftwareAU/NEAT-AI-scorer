@@ -48,6 +48,12 @@ typical dev hardware; sweep upwards via `BENCH_SCORING_BYTES` for the full
 target. **Always re-run the baseline at the same `BENCH_SCORING_BYTES`** — the
 absolute numbers below are fixture-size-specific.
 
+> **How to read the `NEAT_SCORER_*` sweeps below (Issue #544).** Every knob this
+> document sweeps is chosen by the scorer from detected hardware; the
+> environment variables are an **emergency escape hatch** and a benchmarking
+> lever, **not per-host configuration**. A sweep value that wins here becomes a
+> tier in [`self-tuning.md`](self-tuning.md), not a per-host export.
+
 ## #544 fleet knob baseline — 10 August 2026 (Issue #545)
 
 Enabler for the [#544](https://github.com/stSoftwareAU/NEAT-AI-scorer/issues/544)

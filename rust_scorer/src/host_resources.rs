@@ -1020,4 +1020,128 @@ mod tests {
         let probed = HostResources::probe();
         assert_eq!(probed.gpu, sensed_gpu_capability());
     }
+
+    // --- Fleet tier table (Issue #550) ------------------------------------
+
+    /// Production record width: 2461 `f32` inputs + 1 output.
+    const PRODUCTION_RECORD_BYTES: usize = 9848;
+
+    /// Every row of the **Fleet tier table** in `docs/self-tuning.md`, as
+    /// `(tier, logical CPUs, probed RAM, workers, per-reader read chunk,
+    /// aggregate read budget, no-adapter GPU scratch)`.
+    ///
+    /// The read chunk is the production-width chunk **one** reader takes when
+    /// the corpus has at least as many shards as the host has CPUs (production
+    /// ships 26), so the reader count is the worker default.
+    const FLEET_TIER_TABLE: [(&str, usize, u64, usize, usize, usize, u64); 11] = [
+        ("Apple 8-core, 8 GB", 8, 8 * GIB, 8, 8_380_648, 64, 256),
+        ("Apple 8-core, 16 GB", 8, 16 * GIB, 8, 8_380_648, 64, 512),
+        ("Apple 10-core, 16 GB", 10, 16 * GIB, 10, 6_706_488, 64, 512),
+        ("Apple 10-core, 24 GB", 10, 24 * GIB, 10, 6_706_488, 64, 512),
+        ("Apple 10-core, 32 GB", 10, 32 * GIB, 10, 6_706_488, 64, 512),
+        ("Apple 12-core, 24 GB", 12, 24 * GIB, 12, 5_583_816, 64, 512),
+        (
+            "Apple 24-core, 64 GB",
+            24,
+            64 * GIB,
+            24,
+            11_177_480,
+            256,
+            1024,
+        ),
+        (
+            "x86 Linux 4-core, 8 GB",
+            4,
+            PROBED_8GB_X86_BYTES,
+            4,
+            16_771_144,
+            64,
+            256,
+        ),
+        (
+            "x86 Linux 4-core, 16 GB",
+            4,
+            PROBED_16GB_X86_BYTES_LOW,
+            4,
+            16_771_144,
+            64,
+            512,
+        ),
+        (
+            "x86 Linux 8-core, 16 GB",
+            8,
+            PROBED_16GB_X86_BYTES_HIGH,
+            8,
+            8_380_648,
+            64,
+            512,
+        ),
+        (
+            "x86 Linux 12-core, 16 GB",
+            12,
+            PROBED_16GB_X86_BYTES_LOW,
+            12,
+            5_583_816,
+            64,
+            512,
+        ),
+    ];
+
+    #[test]
+    fn every_fleet_tier_resolves_the_documented_knobs() {
+        // The tier table is documentation with teeth: `docs/self-tuning.md`
+        // publishes these exact numbers, so a knob resolver that moves a tier
+        // fails here before the doc can silently drift.
+        for (tier, cpus, ram, workers, chunk, aggregate_mib, scratch_mib) in FLEET_TIER_TABLE {
+            let host = HostResources::synthetic(cpus, Some(ram));
+            let readers = default_worker_count(&host);
+            assert_eq!(readers, workers, "{tier}: worker / reader default");
+            assert_eq!(max_worker_count(&host), 256, "{tier}: worker ceiling");
+            assert_eq!(
+                max_read_bytes(&host),
+                64 * 1024 * 1024,
+                "{tier}: read ceiling"
+            );
+            assert_eq!(
+                crate::read_tuning::aggregate_read_budget_bytes(&host),
+                aggregate_mib * 1024 * 1024,
+                "{tier}: aggregate read budget"
+            );
+            let raw = crate::read_tuning::default_training_read_bytes_for_readers(
+                PRODUCTION_RECORD_BYTES,
+                &host,
+                readers,
+            );
+            // The public resolver rounds down to whole records; the tier table
+            // publishes that aligned figure, as `--host-report` prints it.
+            let aligned = (raw / PRODUCTION_RECORD_BYTES) * PRODUCTION_RECORD_BYTES;
+            assert_eq!(aligned, chunk, "{tier}: per-reader read chunk");
+            assert!(
+                readers * aligned <= crate::read_tuning::aggregate_read_budget_bytes(&host),
+                "{tier}: readers x chunk must fit the aggregate budget"
+            );
+            assert_eq!(
+                default_gpu_scratch_bytes(&host),
+                scratch_mib * MIB,
+                "{tier}: no-adapter GPU scratch budget"
+            );
+        }
+    }
+
+    #[test]
+    fn sensing_an_apple_adapter_leaves_every_fleet_tier_row_intact() {
+        // The fleet's Macs all sense a unified-memory Metal adapter; the doc
+        // publishes one scratch column, so sensing must not split it in two.
+        for (tier, cpus, ram, _, _, _, scratch_mib) in FLEET_TIER_TABLE {
+            if !tier.starts_with("Apple") {
+                continue;
+            }
+            let sensed = HostResources::synthetic(cpus, Some(ram)).with_gpu(apple_gpu());
+            assert_eq!(
+                default_gpu_scratch_bytes(&sensed),
+                scratch_mib * MIB,
+                "{tier}: a sensed Apple adapter must not move the documented budget"
+            );
+        }
+    }
 }
