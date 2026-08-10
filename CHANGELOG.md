@@ -28,6 +28,29 @@ section to the released version with its date.
 
 ### Added
 
+- **GPU capability sensing and scratch-budget clamps (Issue #548).**
+  `HostResources` now carries `gpu: Option<GpuCapability>` — backend label,
+  whether adapter memory is unified with system RAM or discrete VRAM,
+  `max_storage_buffer_binding_size` and `max_compute_workgroups_per_dimension`.
+  It is cached once per process by `gpu::select_adapter` from the adapter that
+  call already creates, so sensing **never** initialises a `wgpu` device of its
+  own: `--gpu off` and the GPU-less x86 Linux hosts sense nothing and keep the
+  pre-#548 RAM-only tiering exactly. With an adapter sensed the
+  `forward_mse_scratch` budget is **tightened** against what that adapter
+  reports — **hard-capped at its `max_storage_buffer_binding_size`**,
+  additionally capped at one sixteenth of RAM on unified-memory hosts and at a
+  quarter of the binding limit on discrete cards, then floored to a power of two
+  so the runner's allocation cannot round back above the limit. The scratch grid
+  is also clamped to the device's `max_compute_workgroups_per_dimension`.
+  Sensing never *raises* a budget: the retune half of #548 is a
+  **negative result** — doubling the budget measured 7.9 % slower on an M4 Pro
+  (4 of 4 interleaved pairs), recorded in
+  [`docs/performance-baseline.md`](./docs/performance-baseline.md) — so every
+  fleet tier keeps its shipped value. `HostResources::with_gpu` pins a synthetic
+  adapter for deterministic policy tests; `NEAT_SCORER_GPU_SCRATCH_BYTES` still
+  overrides. The RAM-only mid-host special case in
+  `gpu/forward_mse_batched.rs` is retired — it re-stated the tier the host
+  policy already returned.
 - **Performance-core probe (Issue #546).** `HostResources` now carries
   `performance_cpus` beside `cpus`: `hw.perflevel0.physicalcpu` (falling back to
   `hw.physicalcpu`) on macOS, the highest-`cpu_capacity` tier on heterogeneous

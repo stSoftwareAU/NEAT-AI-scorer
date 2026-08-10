@@ -17,8 +17,60 @@
 
 use std::sync::OnceLock;
 
+use crate::gpu::GpuBackendLabel;
+
 /// 2 GiB.
 pub(crate) const GIB: u64 = 1024 * 1024 * 1024;
+
+/// 1 MiB.
+const MIB: u64 = 1024 * 1024;
+
+/// What the selected `wgpu` adapter can actually do (Issue #548).
+///
+/// Sensed once per process from the adapter `gpu::select_adapter` already
+/// creates — never by a probe of its own — so a `--gpu off` run and a
+/// GPU-less host both stay at zero adapter cost. `None` on
+/// [`HostResources::gpu`] means "no adapter sensed": either none exists, or
+/// nothing on this run has asked for one yet.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct GpuCapability {
+    /// Native backend hosting the adapter. Never
+    /// [`GpuBackendLabel::CpuFallback`] — a non-native backend is reported as
+    /// "no adapter" by `gpu::select_adapter`, so it never reaches here.
+    pub backend: GpuBackendLabel,
+    /// Whether adapter memory is **unified** with system RAM (Apple silicon,
+    /// integrated GPUs) rather than separate VRAM (discrete cards). A unified
+    /// scratch allocation competes with the corpus for the same DRAM, so its
+    /// budget stays bounded by physical RAM.
+    pub unified_memory: bool,
+    /// `wgpu::Limits::max_storage_buffer_binding_size`, in bytes. The scratch
+    /// activation SSBO is a single binding, so this is a hard ceiling on the
+    /// scratch budget — exceeding it yields a validation error, not a slow run.
+    pub max_storage_buffer_binding_size: u64,
+    /// `wgpu::Limits::max_compute_workgroups_per_dimension`. Bounds the
+    /// grid-stride width `G_x` the scratch kernel may dispatch, whatever the
+    /// memory budget allows.
+    pub max_compute_workgroups_per_dimension: u32,
+}
+
+impl GpuCapability {
+    /// Build a capability snapshot (also used by policy tests to pin a
+    /// synthetic adapter).
+    #[must_use]
+    pub const fn new(
+        backend: GpuBackendLabel,
+        unified_memory: bool,
+        max_storage_buffer_binding_size: u64,
+        max_compute_workgroups_per_dimension: u32,
+    ) -> Self {
+        Self {
+            backend,
+            unified_memory,
+            max_storage_buffer_binding_size,
+            max_compute_workgroups_per_dimension,
+        }
+    }
+}
 
 /// Snapshot of the host the process is running on.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -40,6 +92,11 @@ pub struct HostResources {
     /// #547) so every tier below compares against the memory the box was sold
     /// with, not the slightly smaller figure the kernel leaves usable.
     pub physical_ram_bytes: Option<u64>,
+    /// Capability of the GPU adapter sensed for this process (Issue #548), or
+    /// `None` when no adapter has been sensed — a GPU-less host, a `--gpu off`
+    /// run, or any run that has not yet needed an adapter. `None` keeps every
+    /// GPU knob on its pre-#548 RAM-derived value.
+    pub gpu: Option<GpuCapability>,
 }
 
 impl HostResources {
@@ -81,23 +138,68 @@ impl HostResources {
                 Some(raw) => Some(snap_to_nameplate_bytes(raw)),
                 None => None,
             },
+            // Sensing an adapter costs a `wgpu` initialisation, so a synthetic
+            // host starts with none; pin one with [`Self::with_gpu`].
+            gpu: None,
+        }
+    }
+
+    /// Pin a synthetic GPU capability on this host (Issue #548), so policy
+    /// tests can reproduce an adapter tier without owning one.
+    #[must_use]
+    pub const fn with_gpu(self, gpu: GpuCapability) -> Self {
+        Self {
+            cpus: self.cpus,
+            performance_cpus: self.performance_cpus,
+            physical_ram_bytes: self.physical_ram_bytes,
+            gpu: Some(gpu),
         }
     }
 
     /// Probe the real host once per process.
+    ///
+    /// CPU and RAM are probed here; the GPU capability is whatever
+    /// [`sensed_gpu_capability`] holds — this **never** creates an adapter of
+    /// its own (Issue #548), so `--gpu off` and GPU-less hosts pay nothing.
     #[must_use]
     pub fn probe() -> Self {
         let cpus = std::thread::available_parallelism()
             .map(|n| n.get())
             .unwrap_or(1)
             .max(1);
-        Self::synthetic_with_performance_cpus(
+        let host = Self::synthetic_with_performance_cpus(
             cpus,
             resolve_performance_cpus(cpus, performance_core_count()),
             physical_memory_bytes(),
-        )
+        );
+        match sensed_gpu_capability() {
+            Some(gpu) => host.with_gpu(gpu),
+            None => host,
+        }
     }
 }
+
+/// GPU capability sensed for this process, or `None` when no adapter has been
+/// sensed yet (Issue #548).
+///
+/// Populated exactly once, by `gpu::select_adapter`, from the adapter that call
+/// already creates. Reading it never creates one.
+#[must_use]
+pub fn sensed_gpu_capability() -> Option<GpuCapability> {
+    SENSED_GPU.get().copied()
+}
+
+/// Cache the capability of the adapter `gpu::select_adapter` just selected.
+///
+/// First writer wins: a process only ever selects one adapter, and later calls
+/// re-select the same one. Deliberately **not** a probe — nothing here can
+/// create an adapter, so a `--gpu off` run leaves the cell empty.
+pub(crate) fn record_gpu_capability(gpu: GpuCapability) {
+    let _ = SENSED_GPU.set(gpu);
+}
+
+/// Process-wide sensed GPU capability (lazy, write-once).
+static SENSED_GPU: OnceLock<GpuCapability> = OnceLock::new();
 
 /// Apply the P-core fallback chain: a missing, zero or oversized probe result
 /// falls back to the logical CPU count — never fewer (Issue #546).
@@ -164,10 +266,19 @@ pub const fn snap_to_nameplate_bytes(probed_bytes: u64) -> u64 {
 }
 
 /// Process-wide host probe (lazy, read-only after init).
+///
+/// The CPU/RAM probe runs once; the GPU capability is overlaid on every read
+/// (Issue #548) because an adapter is normally sensed *after* the first knob
+/// has already been resolved — a cached `None` would pin every later GPU knob
+/// to its no-adapter value.
 #[must_use]
 pub fn host() -> HostResources {
     static HOST: OnceLock<HostResources> = OnceLock::new();
-    *HOST.get_or_init(HostResources::probe)
+    let host = *HOST.get_or_init(HostResources::probe);
+    match sensed_gpu_capability() {
+        Some(gpu) => host.with_gpu(gpu),
+        None => host,
+    }
 }
 
 /// Absolute ceiling on activation / file-reader workers for this host.
@@ -223,13 +334,77 @@ pub fn max_read_bytes(host: &HostResources) -> usize {
     }
 }
 
+/// Share of unified system RAM a scratch grid may claim: one sixteenth
+/// (6.25 %).
+///
+/// On a shared-memory host the scratch SSBO and the streamed corpus live in the
+/// same DRAM, so the budget has to leave the read chunks (32 MiB each) and the
+/// compiled creature pool room. Every shipped RAM tier already sits below this
+/// share — it is the guard that keeps a *future* tier from asking a small Mac
+/// for a corpus-evicting buffer.
+const UNIFIED_RAM_SHARE_DIVISOR: u64 = 16;
+
+/// Share of a **discrete** adapter's storage-buffer binding limit a scratch
+/// grid may claim: one quarter.
+///
+/// Discrete VRAM is not system RAM, so a RAM tier describes nothing about the
+/// card; a quarter of what it can bind leaves the record, neuron, synapse and
+/// partial SSBOs their share of the device.
+const DISCRETE_BINDING_SHARE_DIVISOR: u64 = 4;
+
 /// Default GPU scratch SSBO budget (bytes) for `forward_mse_scratch`.
+///
+/// The RAM tiering below is the starting point on every host. With an adapter
+/// sensed (Issue #548) that figure is then **tightened** by what the adapter
+/// reports — its binding-size limit, and on a discrete card its own share of
+/// that limit — and floored to a power of two. Sensing never *raises* the
+/// budget: the Apple M4 Pro A/B in `docs/performance-baseline.md` measured a
+/// doubled budget **7.9 % slower** on the shallow scratch path, so the retune
+/// half of Issue #548 is a recorded negative result and only the clamp ships.
+///
+/// With no adapter sensed (GPU-less host, `--gpu off`, or a knob resolved
+/// before any adapter exists) the pre-#548 RAM-only answer is returned
+/// unchanged.
+///
+/// `NEAT_SCORER_GPU_SCRATCH_BYTES` overrides either answer — see
+/// `crate::gpu::forward_mse_batched::scratch_budget_bytes_from_env`.
+#[must_use]
+pub fn default_gpu_scratch_bytes(host: &HostResources) -> u64 {
+    match host.gpu {
+        Some(gpu) => sensed_gpu_scratch_bytes(host, &gpu),
+        None => ram_derived_gpu_scratch_bytes(host),
+    }
+}
+
+/// Scratch budget for a host with a **sensed** adapter (Issue #548).
+///
+/// Never exceeds the adapter's reported binding-size limit — the scratch
+/// activations are one binding, so a budget above it is a validation error
+/// rather than a slow run — and is floored to a power of two so the runner's
+/// `next_power_of_two` buffer allocation cannot round back above that limit.
+/// Every bound here is a `min`, so a sensed host can only ever get a *smaller*
+/// budget than the same host with no adapter sensed.
+fn sensed_gpu_scratch_bytes(host: &HostResources, gpu: &GpuCapability) -> u64 {
+    let mut budget = ram_derived_gpu_scratch_bytes(host);
+    if gpu.unified_memory {
+        // Shared DRAM: the scratch buffer competes with the streamed corpus.
+        if let Some(ram) = host.physical_ram_bytes {
+            budget = budget.min(ram / UNIFIED_RAM_SHARE_DIVISOR);
+        }
+    } else {
+        // Discrete VRAM: host RAM describes nothing, so bound by the card.
+        budget = budget.min(gpu.max_storage_buffer_binding_size / DISCRETE_BINDING_SHARE_DIVISOR);
+    }
+    // The hard clamp: a device that binds less than the tier wants wins.
+    budget = budget.min(gpu.max_storage_buffer_binding_size.max(64));
+    floor_power_of_two(budget)
+}
+
+/// Pre-#548 RAM-only tiering, kept verbatim as the no-adapter answer.
 ///
 /// Scales with physical RAM so a 4 GiB host is not asked for a 512 MiB scratch
 /// buffer, while a 64 GiB+ Mac can host a larger grid.
-#[must_use]
-pub fn default_gpu_scratch_bytes(host: &HostResources) -> u64 {
-    const MIB: u64 = 1024 * 1024;
+fn ram_derived_gpu_scratch_bytes(host: &HostResources) -> u64 {
     match host.physical_ram_bytes {
         Some(ram) if ram < 4 * GIB => 64 * MIB,
         Some(ram) if ram < 8 * GIB => 128 * MIB,
@@ -238,6 +413,14 @@ pub fn default_gpu_scratch_bytes(host: &HostResources) -> u64 {
         // Mid-range and unknown: historical 512 MiB default (Issue #182).
         Some(_) | None => 512 * MIB,
     }
+}
+
+/// Largest power of two at or below `bytes` (`0` only for `0`).
+const fn floor_power_of_two(bytes: u64) -> u64 {
+    if bytes == 0 {
+        return 0;
+    }
+    1 << (u64::BITS - 1 - bytes.leading_zeros())
 }
 
 /// Performance-core count, or `None` when this platform exposes no P/E split
@@ -584,5 +767,224 @@ mod tests {
         for bytes in [0, 1, GIB / 2, 5 * GIB, 7 * GIB, 100 * GIB, 4096 * GIB] {
             assert!(snap_to_nameplate_bytes(bytes) >= bytes);
         }
+    }
+
+    // --- GPU capability sensing (Issue #548) ------------------------------
+
+    /// `max_storage_buffer_binding_size` every shipped Apple silicon adapter
+    /// reports through `wgpu` (4 GiB − 4, the saturated `u32` limit).
+    const APPLE_BINDING_LIMIT: u64 = 4_294_967_292;
+    /// `max_compute_workgroups_per_dimension` on Metal and Vulkan.
+    const FLEET_MAX_WORKGROUPS: u32 = 65_535;
+
+    /// An Apple silicon (unified memory, Metal) adapter.
+    const fn apple_gpu() -> GpuCapability {
+        GpuCapability::new(
+            GpuBackendLabel::Metal,
+            true,
+            APPLE_BINDING_LIMIT,
+            FLEET_MAX_WORKGROUPS,
+        )
+    }
+
+    /// A discrete card with its own VRAM (Vulkan / Dx12 host).
+    const fn discrete_gpu(binding_limit: u64) -> GpuCapability {
+        GpuCapability::new(
+            GpuBackendLabel::Vulkan,
+            false,
+            binding_limit,
+            FLEET_MAX_WORKGROUPS,
+        )
+    }
+
+    #[test]
+    fn synthetic_can_pin_a_gpu_capability() {
+        let host = HostResources::synthetic(12, Some(24 * GIB)).with_gpu(apple_gpu());
+        assert_eq!(host.gpu, Some(apple_gpu()));
+        assert_eq!(host.gpu.expect("pinned").backend, GpuBackendLabel::Metal);
+        assert!(host.gpu.expect("pinned").unified_memory);
+        // Pinning a GPU must not disturb anything else the host senses.
+        assert_eq!(host.cpus, 12);
+        assert_eq!(host.physical_ram_bytes, Some(24 * GIB));
+        assert_eq!(HostResources::synthetic(12, Some(24 * GIB)).gpu, None);
+    }
+
+    #[test]
+    fn a_host_with_no_sensed_adapter_keeps_the_pre_548_scratch_budget() {
+        // The GPU-less x86 Linux boxes and every `--gpu off` run land here.
+        for (cpus, ram) in [
+            (8, Some(3 * GIB)),
+            (8, Some(8 * GIB)),
+            (12, Some(24 * GIB)),
+            (24, Some(64 * GIB)),
+            (12, None),
+        ] {
+            let host = HostResources::synthetic(cpus, ram);
+            assert_eq!(host.gpu, None);
+            assert_eq!(
+                default_gpu_scratch_bytes(&host),
+                ram_derived_gpu_scratch_bytes(&host),
+                "no adapter must behave exactly as before Issue #548 ({ram:?})"
+            );
+        }
+    }
+
+    #[test]
+    fn sensed_budget_never_exceeds_the_adapter_binding_limit() {
+        // A device that binds only 128 MiB (wgpu's conservative default) caps
+        // the budget however much RAM the host has.
+        let limited = GpuCapability::new(GpuBackendLabel::Vulkan, true, 128 * MIB, 65_535);
+        let big_ram = HostResources::synthetic(24, Some(128 * GIB)).with_gpu(limited);
+        assert_eq!(default_gpu_scratch_bytes(&big_ram), 128 * MIB);
+
+        // Even a limit below the lowest RAM tier wins — an unbindable buffer
+        // is a validation error, not a slow run.
+        let tiny = GpuCapability::new(GpuBackendLabel::Gl, true, 16 * MIB, 65_535);
+        let host = HostResources::synthetic(8, Some(64 * GIB)).with_gpu(tiny);
+        assert_eq!(default_gpu_scratch_bytes(&host), 16 * MIB);
+
+        for ram in [Some(3 * GIB), Some(24 * GIB), Some(192 * GIB), None] {
+            for gpu in [apple_gpu(), discrete_gpu(256 * MIB), discrete_gpu(u64::MAX)] {
+                let host = HostResources::synthetic(12, ram).with_gpu(gpu);
+                assert!(
+                    default_gpu_scratch_bytes(&host) <= gpu.max_storage_buffer_binding_size,
+                    "budget must fit the {} B binding limit (ram {ram:?})",
+                    gpu.max_storage_buffer_binding_size
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn sensing_an_apple_adapter_keeps_every_fleet_tier_on_its_ram_budget() {
+        // Issue #548 negative result: doubling the budget measured 7.9 % slower
+        // on the M4 Pro shallow scratch path, so sensing must not raise it.
+        // Apple silicon binds 4 GiB on every tier, so nothing tightens either.
+        for (cpus, ram_gib, expected_mib) in [
+            (8, 8, 256),    // M1 / M1 Pro, 8 GB
+            (10, 16, 512),  // M1 Pro, 16 GB
+            (12, 24, 512),  // M4 Pro / M4 / M1 Max fleet hosts, 24 GB
+            (10, 32, 512),  // M1 Max, 32 GB
+            (24, 64, 1024), // M2 Ultra, 64 GB
+        ] {
+            let host = HostResources::synthetic(cpus, Some(ram_gib * GIB)).with_gpu(apple_gpu());
+            let flat = HostResources::synthetic(cpus, Some(ram_gib * GIB));
+            assert_eq!(
+                default_gpu_scratch_bytes(&host),
+                expected_mib * MIB,
+                "{ram_gib} GiB Apple tier"
+            );
+            assert_eq!(
+                default_gpu_scratch_bytes(&host),
+                default_gpu_scratch_bytes(&flat),
+                "{ram_gib} GiB: sensing an Apple adapter must not move the budget"
+            );
+        }
+    }
+
+    #[test]
+    fn a_sensed_adapter_never_raises_the_budget() {
+        // Every bound in the sensed path is a `min`, so no adapter/RAM
+        // combination can hand a host more scratch than the RAM tier alone.
+        for ram in [
+            Some(GIB),
+            Some(3 * GIB),
+            Some(8 * GIB),
+            Some(24 * GIB),
+            Some(192 * GIB),
+            None,
+        ] {
+            let flat = HostResources::synthetic(12, ram);
+            for gpu in [
+                apple_gpu(),
+                discrete_gpu(128 * MIB),
+                discrete_gpu(4 * GIB),
+                discrete_gpu(u64::MAX),
+            ] {
+                assert!(
+                    default_gpu_scratch_bytes(&flat.with_gpu(gpu))
+                        <= default_gpu_scratch_bytes(&flat),
+                    "sensing may only tighten the budget (ram {ram:?})"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn unified_memory_hosts_stay_bounded_by_system_ram() {
+        for ram_gib in [1_u64, 3, 8, 24, 64, 192] {
+            let host = HostResources::synthetic(12, Some(ram_gib * GIB)).with_gpu(apple_gpu());
+            assert!(
+                default_gpu_scratch_bytes(&host) <= (ram_gib * GIB) / UNIFIED_RAM_SHARE_DIVISOR,
+                "{ram_gib} GiB shared-memory host must not get a corpus-evicting buffer"
+            );
+        }
+    }
+
+    #[test]
+    fn a_unified_host_with_unknown_ram_keeps_the_historical_budget() {
+        // No RAM figure bounds nothing extra — the historical default stands.
+        let unknown = HostResources::synthetic(12, None).with_gpu(apple_gpu());
+        assert_eq!(default_gpu_scratch_bytes(&unknown), 512 * MIB);
+    }
+
+    #[test]
+    fn a_discrete_adapter_is_bounded_by_its_own_binding_limit() {
+        // Host RAM describes nothing about VRAM, so a big-RAM host with a small
+        // card is bounded by the card, not by its 1 GiB RAM tier.
+        let big_host_small_card =
+            HostResources::synthetic(24, Some(128 * GIB)).with_gpu(discrete_gpu(512 * MIB));
+        assert_eq!(default_gpu_scratch_bytes(&big_host_small_card), 128 * MIB);
+        // A card with room to spare leaves the RAM tier alone.
+        let big_host_big_card =
+            HostResources::synthetic(24, Some(128 * GIB)).with_gpu(discrete_gpu(16 * GIB));
+        assert_eq!(default_gpu_scratch_bytes(&big_host_big_card), 1024 * MIB);
+    }
+
+    #[test]
+    fn every_sensed_budget_is_a_usable_power_of_two() {
+        // `BatchedRunner::ensure_scratch_buf` rounds its allocation up to a
+        // power of two, so a non-power-of-two budget could round back above the
+        // binding limit.
+        for ram in [
+            Some(GIB),
+            Some(3 * GIB),
+            Some(24 * GIB),
+            Some(96 * GIB),
+            None,
+        ] {
+            for gpu in [
+                apple_gpu(),
+                discrete_gpu(768 * MIB),
+                discrete_gpu(3 * GIB),
+                GpuCapability::new(GpuBackendLabel::Dx12, true, 100 * MIB, 65_535),
+            ] {
+                let host = HostResources::synthetic(12, ram).with_gpu(gpu);
+                let budget = default_gpu_scratch_bytes(&host);
+                assert!(budget > 0, "a sensed budget is always positive");
+                assert!(
+                    budget.is_power_of_two(),
+                    "budget {budget} for ram {ram:?} must be a power of two"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn floor_power_of_two_rounds_down() {
+        assert_eq!(floor_power_of_two(0), 0);
+        assert_eq!(floor_power_of_two(1), 1);
+        assert_eq!(floor_power_of_two(1023), 512);
+        assert_eq!(floor_power_of_two(1024), 1024);
+        assert_eq!(floor_power_of_two(1536 * MIB), 1024 * MIB);
+        assert_eq!(floor_power_of_two(u64::MAX), 1 << 63);
+    }
+
+    #[test]
+    fn probing_a_host_creates_no_adapter() {
+        // Sensing rides `gpu::select_adapter`; the host probe must never reach
+        // for `wgpu` itself, or `--gpu off` would pay for a GPU it disabled.
+        let probed = HostResources::probe();
+        assert_eq!(probed.gpu, sensed_gpu_capability());
     }
 }

@@ -78,7 +78,12 @@ pub struct Knobs {
     /// `NEAT_SCORER_READ_BYTES` and the round-down to a whole record multiple.
     pub default_training_read_bytes: Knob,
     /// `forward_mse_scratch` SSBO budget, after `NEAT_SCORER_GPU_SCRATCH_BYTES`.
-    /// Resolved from host RAM alone — no adapter is created.
+    ///
+    /// The **no-adapter** figure: the report never creates a `wgpu` device, so
+    /// nothing is sensed and the budget falls back to the RAM-derived tier. A
+    /// scoring run that selects an adapter tunes it against that adapter's
+    /// limits instead (Issue #548,
+    /// [`host_resources::default_gpu_scratch_bytes`]).
     pub gpu_scratch_bytes: Knob,
 }
 
