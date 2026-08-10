@@ -62,6 +62,15 @@ fn assert_report_shape(report: &Value) {
         report["logical_cpus"].as_u64().is_some_and(|n| n >= 1),
         "logical_cpus must be a positive integer, got: {report}"
     );
+    // Issue #546: the P-core count is always present and never exceeds the
+    // logical count — a platform with no P/E split reports the two as equal
+    // rather than dropping the field or reporting fewer.
+    let logical = report["logical_cpus"].as_u64().unwrap_or_default();
+    let performance = report["performance_cpus"].as_u64();
+    assert!(
+        performance.is_some_and(|n| n >= 1 && n <= logical),
+        "performance_cpus must be in 1..=logical_cpus, got: {report}"
+    );
     // `physical_ram_bytes` is `null` only where the platform probe is
     // unavailable; on every supported CI/fleet OS it is a positive integer.
     let ram = &report["physical_ram_bytes"];
@@ -172,6 +181,39 @@ fn env_override_flips_the_matching_knob_source_to_env() {
     let report = parse_report(&stdout);
     assert_eq!(report["knobs"]["default_worker_count"]["source"], "env");
     assert_eq!(report["knobs"]["default_worker_count"]["value"], 3);
+}
+
+/// Issue #546: sensing performance cores must not weaken the override
+/// contract — an honoured `NEAT_SCORER_ACTIVATION_THREADS` still resolves
+/// inside `[1, max_worker_count]`, whatever the host's P/E split.
+#[test]
+fn worker_override_still_clamps_into_the_host_range() {
+    for (raw, expect_floor) in [("999999", false), ("0", true)] {
+        let (code, stdout, stderr) = run_scorer(
+            &["--host-report"],
+            &[("NEAT_SCORER_ACTIVATION_THREADS", raw)],
+        );
+        assert_eq!(code, 0, "stderr: {stderr}");
+        let report = parse_report(&stdout);
+        let ceiling = report["knobs"]["max_worker_count"]["value"]
+            .as_u64()
+            .expect("max_worker_count");
+        let value = report["knobs"]["default_worker_count"]["value"]
+            .as_u64()
+            .expect("default_worker_count");
+        assert!(
+            (1..=ceiling).contains(&value),
+            "override {raw} must clamp into [1, {ceiling}], got {value}"
+        );
+        if expect_floor {
+            assert_eq!(value, 1, "override {raw} must clamp up to the floor");
+        } else {
+            assert_eq!(
+                value, ceiling,
+                "override {raw} must clamp down to the ceiling"
+            );
+        }
+    }
 }
 
 /// A malformed override is *not* honoured (the shipped resolver warns and falls

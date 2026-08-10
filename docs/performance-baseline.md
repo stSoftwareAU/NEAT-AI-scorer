@@ -172,6 +172,77 @@ timings). Tracked in
 two commands above on one x86 Linux host and append a "Tier: x86 Linux" block
 in the same shape.
 
+## Performance-core probe — 10 August 2026 (Issue #546)
+
+**Probe shipped; worker retune *not* shipped — the A/B is inconclusive on the
+one reachable host.** `HostResources` now carries `performance_cpus` beside
+`cpus` (`hw.perflevel0.physicalcpu` → `hw.physicalcpu` → logical count on
+macOS; highest-`cpu_capacity` tier → logical count on Linux; logical count
+everywhere else), and `--host-report` reports it under schema
+`neat-scorer-host-report/2`. `default_worker_count` still keys off the
+**logical** CPU count, because this project ships a performance change only
+with before/after evidence
+([Performance Task Workflow](../CONTRIBUTING.md#performance-task-workflow)) and
+the evidence below does not clear any bar.
+
+### Probe verification — Apple M4 Pro (8P + 4E, 12 logical, 24 GB)
+
+| Source | Value |
+|---|---|
+| `sysctl -n hw.perflevel0.physicalcpu` | 8 |
+| `sysctl -n hw.perflevel1.physicalcpu` | 4 |
+| `sysctl -n hw.logicalcpu` | 12 |
+| `rust_scorer --host-report` → `logical_cpus` | 12 |
+| `rust_scorer --host-report` → `performance_cpus` | **8** |
+
+The probe agrees with the kernel on the tier the issue was raised against.
+
+### Worker-count A/B — inconclusive (host contention)
+
+Three interleaved rounds of `workers ∈ {12 (today), 10, 8 (P-cores)}`, both
+knobs pinned together (`NEAT_SCORER_ACTIVATION_THREADS` =
+`NEAT_SCORER_FILE_THREADS`), Criterion, 30 samples, 20 s measurement, at
+`BENCH_SCORING_BYTES=200000000` and production record width:
+
+| Workers | `fused_multi_file/auto` per round (ms) | `score_from_json_fused/forward_only` per round (ms) |
+|---|---|---|
+| 12 (shipped default) | 42.70 · 52.12 · 74.89 | 102.86 · 105.20 · 148.31 |
+| 10 | 50.97 · 55.28 · 82.45 | 88.63 · 55.18 · 163.49 |
+| 8 (P-cores) | 40.50 · 70.47 · 38.48 | 97.50 · 131.19 · 59.99 |
+
+**These numbers cannot decide the retune.** The host was running unrelated
+production scoring throughout: the 1-minute load average climbed from 16.6 to
+29.6 across the sweep on a 12-core host. Same-arm spread reaches 1.8× (`8`
+workers on `fused_multi_file`: 38.48 → 70.47 ms) and 3.0× (`10` workers on
+`forward_only`: 55.18 → 163.49 ms), and every arm degrades monotonically with
+wall-clock time — that is the competing load, not the knob. The per-round
+medians also disagree about the winner (`8` on the multi-file path, `10` on the
+forward-only path), which is what a null result looks like through this much
+noise. The noise floor recorded for the #545 harness above (~10 %) is an order
+of magnitude tighter than what this host could deliver today.
+
+The other tiers the retune needs — M4 (4P+6E), M2 Ultra (16P+8E) and the x86
+Linux no-regression control — are not reachable from the unattended worker at
+all (same constraint as the outstanding x86 row above).
+
+### Decision (Issue #546)
+
+Ship the probe, hold the retune. The probe is the prerequisite the retune was
+blocked on and is risk-free by construction: it never reports **fewer** cores
+than it can prove, so a host it cannot classify keeps every historical default,
+and `rust_scorer/src/host_resources.rs` pins that invariant for the fleet tiers
+in `shipped_worker_default_is_unchanged_by_the_performance_core_split`.
+Re-run the A/B on a **quiescent** host of each tier — tracked in
+[Issue #553](https://github.com/stSoftwareAU/NEAT-AI-scorer/issues/553):
+
+```bash
+BENCH_SCORING_BYTES=200000000 BENCH_SCORING_INPUTS=2461 \
+  BENCH_SCORING_OUTPUTS=1 BENCH_SCORING_HIDDEN=19 \
+  NEAT_SCORER_ACTIVATION_THREADS=8 NEAT_SCORER_FILE_THREADS=8 \
+  cargo bench -p rust_scorer --bench scoring -- \
+  'fused_multi_file/file_workers/auto|score_from_json_fused'
+```
+
 ## Parallel file reads — 5 August 2026 (Issue #529)
 
 **Positive result: 1.8–2.3× faster on a multi-file corpus.** Reading the

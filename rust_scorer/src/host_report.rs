@@ -35,7 +35,9 @@ use crate::stream_score::activation_worker_count_for_scorer;
 pub const DEFAULT_REPORT_RECORD_BYTES: usize = 9848;
 
 /// Report schema tag, so a consumer can tell an old paste from a new one.
-const SCHEMA: &str = "neat-scorer-host-report/1";
+///
+/// `/2` adds `performance_cpus` (Issue #546) alongside `logical_cpus`.
+const SCHEMA: &str = "neat-scorer-host-report/2";
 
 /// Where a resolved knob value came from.
 #[derive(Serialize, Clone, Copy, Debug, PartialEq, Eq)]
@@ -83,10 +85,14 @@ pub struct Knobs {
 /// One host's detected resources and resolved knobs.
 #[derive(Serialize, Clone, Copy, Debug, PartialEq, Eq)]
 pub struct HostReport {
-    /// Schema tag (`neat-scorer-host-report/1`).
+    /// Schema tag (`neat-scorer-host-report/2`).
     pub schema: &'static str,
     /// Logical CPUs the host probe found.
     pub logical_cpus: usize,
+    /// Performance ("P") cores the host probe found (Issue #546). Equal to
+    /// `logical_cpus` on a homogeneous host, or wherever the platform exposes
+    /// no P/E split — the probe never reports fewer than it can prove.
+    pub performance_cpus: usize,
     /// Physical RAM in bytes, or `null` where the platform probe is
     /// unavailable (the knobs then take their unknown-RAM defaults).
     pub physical_ram_bytes: Option<u64>,
@@ -105,6 +111,7 @@ impl HostReport {
         Self {
             schema: SCHEMA,
             logical_cpus: host.cpus,
+            performance_cpus: host.performance_cpus,
             physical_ram_bytes: host.physical_ram_bytes,
             record_bytes,
             knobs: Knobs {
@@ -279,7 +286,16 @@ mod tests {
         let value: serde_json::Value = serde_json::from_str(&json).expect("valid JSON");
         assert_eq!(value["schema"], SCHEMA);
         assert_eq!(value["record_bytes"], DEFAULT_REPORT_RECORD_BYTES as u64);
-        assert!(value["logical_cpus"].as_u64().is_some_and(|n| n >= 1));
+        let logical = value["logical_cpus"].as_u64().expect("logical_cpus");
+        assert!(logical >= 1);
+        // Issue #546: the P-core count travels with the report so a pasted
+        // worker default can be checked against the split it was chosen from.
+        assert!(
+            value["performance_cpus"]
+                .as_u64()
+                .is_some_and(|n| n >= 1 && n <= logical),
+            "performance_cpus must be in 1..=logical_cpus, got {value}"
+        );
         for key in [
             "default_worker_count",
             "max_worker_count",
