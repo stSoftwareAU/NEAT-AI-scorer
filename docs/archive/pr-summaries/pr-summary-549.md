@@ -4,8 +4,8 @@
 
 `rust_scorer/src/read_tuning.rs` now sizes the read chunk from the **concurrent
 reader count** as well as the record width and host RAM, and the unreachable
-`≥ 64 GiB → 256 MiB` tier in `host_resources::max_read_bytes` is gone. Closes
-#549.
+`≥ 64 GiB → 256 MiB` tier in `host_resources::max_read_bytes` is gone.
+Closes #549.
 
 **The issue's premise needed correcting first.** #549 says the aggregate
 `readers × chunk` footprint "is a budget the current per-knob tiering never
