@@ -19,11 +19,17 @@ the runs with [`scripts/run-benches.sh`](../scripts/run-benches.sh) or
 | `production_multi_creature/creatures/N` | Directory mode over copies of the production creature (`N=1`, `N=BENCH_PROD_CREATURES`). | The candidate optimisations #297–#299 A/B against this on the real creature, not the synthetic fixture. |
 | `fused_multi_file/file_workers/W` | Forward-only fused accumulate over the **same** corpus split across `BENCH_FUSED_FILES` files, at `W` concurrent `.bin` readers (Issue #529). | `W=1` reproduces the pre-#529 single sequential reader; `auto` is the shipped default (one reader per CPU, capped at the file count). Calls [`accumulate_cost_sum_forward_only_fused_with_workers`](../rust_scorer/src/stream_score.rs). |
 
-CLI-level GPU-vs-CPU wall-clock A/Bs live outside Criterion:
-[`scripts/bench-shallow-gpu.sh`](../scripts/bench-shallow-gpu.sh) (Issue #467)
-times `--gpu off` / `on` / `auto` on a **shallow** creature pool against a
-locally generated corpus at the caller's record width. It skips cleanly when
-`BENCH_SHALLOW_CREATURE` is unset — see the Issue #467 section below.
+CLI-level wall-clock A/Bs live outside Criterion:
+
+* [`scripts/bench-shallow-gpu.sh`](../scripts/bench-shallow-gpu.sh) (Issue #467)
+  times `--gpu off` / `on` / `auto` on a **shallow** creature pool against a
+  locally generated corpus at the caller's record width. It skips cleanly when
+  `BENCH_SHALLOW_CREATURE` is unset — see the Issue #467 section below.
+* [`scripts/bench-knob-sweep.sh`](../scripts/bench-knob-sweep.sh) (Issue #545)
+  sweeps **one** `NEAT_SCORER_*` knob across a caller-supplied value list on the
+  production scoring path and reports the median per value. It skips cleanly
+  when `BENCH_SWEEP_CREATURE` / `BENCH_SWEEP_DATA` are unset — see the Issue
+  #545 section below.
 
 ## Fixture parameters
 
@@ -41,6 +47,130 @@ Defaults are kept conservative so `cargo bench` finishes in a few minutes on
 typical dev hardware; sweep upwards via `BENCH_SCORING_BYTES` for the full
 target. **Always re-run the baseline at the same `BENCH_SCORING_BYTES`** — the
 absolute numbers below are fixture-size-specific.
+
+## #544 fleet knob baseline — 10 August 2026 (Issue #545)
+
+Enabler for the [#544](https://github.com/stSoftwareAU/NEAT-AI-scorer/issues/544)
+self-tune chain: the retune sub-issues cite their before/after numbers from the
+harness recorded here. **Measurement only — no shipped default changed.**
+
+Two pieces:
+
+* `rust_scorer --host-report` prints what a host detected and which knob values
+  it resolved, as one JSON object (see the README
+  [Host knob report](../README.md#host-knob-report----host-report-issue-545)
+  section). It never creates a `wgpu` adapter, so it returns the same JSON on a
+  GPU-less host and under `--gpu off`.
+* [`scripts/bench-knob-sweep.sh`](../scripts/bench-knob-sweep.sh) sweeps one
+  knob across a value list on the production scoring path and prints the median
+  wall-clock per value, prefixed by that host's report.
+
+```mermaid
+flowchart LR
+    H[host probe<br/>CPUs · RAM] --> R[--host-report JSON]
+    E[NEAT_SCORER_* env] --> R
+    R --> S[bench-knob-sweep.sh]
+    V[BENCH_SWEEP_VALUES] --> S
+    C[local creature + corpus] --> S
+    S --> T[median wall-clock per value<br/>+ delta vs baseline]
+    T --> D[#544 retune sub-issue<br/>before/after evidence]
+```
+
+### Tier: Apple mid (M4, 10 cores, 24 GB)
+
+| Field | Value |
+|---|---|
+| Machine | Apple M4, 10 logical cores, 24 GB, macOS 26.6.1 (Darwin 25.6.0, arm64) |
+| Toolchain | rustc 1.95.0, release profile |
+| Fixture | synthetic shallow pool at production record width — 50 creatures (2461 in / 19 hidden / 1 out, 22 221 synapses), 20 000 records over 4 `.bin` shards (196 960 000 bytes, 9848 B/record) |
+| Inputs | generated locally: this repo ships no production creature or corpus and fetches neither (Issue #448) |
+
+`rust_scorer --host-report` (no `NEAT_SCORER_*` set):
+
+```json
+{
+  "schema": "neat-scorer-host-report/1",
+  "logical_cpus": 10,
+  "physical_ram_bytes": 25769803776,
+  "record_bytes": 9848,
+  "knobs": {
+    "default_worker_count": { "value": 10, "source": "default", "env_var": "NEAT_SCORER_ACTIVATION_THREADS" },
+    "max_worker_count": { "value": 256, "source": "default", "env_var": null },
+    "max_read_bytes": { "value": 67108864, "source": "default", "env_var": null },
+    "default_training_read_bytes": { "value": 33552136, "source": "default", "env_var": "NEAT_SCORER_READ_BYTES" },
+    "gpu_scratch_bytes": { "value": 536870912, "source": "default", "env_var": "NEAT_SCORER_GPU_SCRATCH_BYTES" }
+  }
+}
+```
+
+Every value matches the shipped policy for this tier: 10 workers (one per
+logical CPU, below the 256 ceiling for ≥ 8 GiB RAM), the 64 MiB mid-host read
+ceiling, the 32 MiB large-record read default rounded down to a whole record
+multiple (`33552136 = 3407 × 9848`), and the historical 512 MiB scratch budget
+for the 16–64 GiB RAM band. At `--record-bytes 40` the read default drops to
+`2097120` (2 MiB rounded to 52 428 records) — the record-size adaptive branch.
+
+**Single-knob-neutral baseline** (`BENCH_SWEEP_VALUES=default`, median of 5):
+
+| `--gpu` | Wall (s) | `gpuBackend` |
+|---|---|---|
+| `auto` (production omits the flag) | 7.63 | `metal` |
+| `off` | 1.55 | `cpu-fallback` |
+
+**Example sweeps** (median of 5, `--gpu off` so the sweep measures the CPU
+pipeline rather than kernel routing):
+
+| `NEAT_SCORER_READ_BYTES` | Wall (s) | vs baseline |
+|---|---|---|
+| `default` (→ 33 552 136) | 1.55 | baseline |
+| `2097152` | 1.52 | +1.9 % |
+| `8388608` | 1.54 | +0.6 % |
+| `33554432` (→ same 33 552 136) | 1.67 | −7.7 % |
+
+| `NEAT_SCORER_ACTIVATION_THREADS` | Wall (s) | vs baseline |
+|---|---|---|
+| `default` (→ 10) | 1.97 | baseline |
+| `4` | 1.79 | +9.1 % |
+| `10` | 1.68 | +14.7 % |
+| `20` | 1.63 | +17.3 % |
+
+**Noise floor — read this before citing a sweep.** `default` and `33554432`
+resolve to the *same* 33 552 136-byte chunk, yet their medians differ by 7.7 %:
+that gap is the harness's noise floor on this fixture, not a knob effect. A
+retune must therefore either clear ~10 % here or use a corpus large enough that
+one repetition takes ≥ 5 s (the two `--gpu off` sweeps above run in ~1.6 s).
+Raise `BENCH_SWEEP_REPS` and the corpus size together; the medians tighten with
+both. The activation-threads column is above that floor and monotonic, so it is
+a real (if small) effect on this synthetic pool.
+
+The `auto` row scores on Metal because the pool is shallow `ScratchOnly`
+(#467 routing) — it is recorded as the *shipped-default* baseline for this host,
+not as a GPU-vs-CPU verdict. It is **not** comparable with the #467 A/B below:
+different corpus size, pool size and synthetic (untrained) weights.
+
+Reproduce:
+
+```bash
+BENCH_SWEEP_CREATURE=/path/to/creatures_dir BENCH_SWEEP_DATA=/path/to/corpus \
+  BENCH_SWEEP_VALUES=default ./scripts/bench-knob-sweep.sh
+BENCH_SWEEP_CREATURE=/path/to/creatures_dir BENCH_SWEEP_DATA=/path/to/corpus \
+  BENCH_SWEEP_GPU=off BENCH_SWEEP_KNOB=NEAT_SCORER_READ_BYTES \
+  BENCH_SWEEP_VALUES=default,2097152,8388608,33554432 ./scripts/bench-knob-sweep.sh
+```
+
+### Tier: x86 Linux — outstanding
+
+No x86 Linux fleet host (4–12 cores, 7.6–15.5 GB RAM, no GPU adapter) is
+reachable from the unattended worker that produced this section, so the x86 row
+is **not** captured here. The report
+path itself is exercised on the GPU-less Linux CI runner by
+[`rust_scorer/tests/host_report.rs`](../rust_scorer/tests/host_report.rs), which
+asserts exit 0, valid JSON and a complete knob set on every PR — what is missing
+is the *fleet* capture (that tier's detected RAM/CPU and its neutral baseline
+timings). Tracked in
+[Issue #551](https://github.com/stSoftwareAU/NEAT-AI-scorer/issues/551); run the
+two commands above on one x86 Linux host and append a "Tier: x86 Linux" block
+in the same shape.
 
 ## Parallel file reads — 5 August 2026 (Issue #529)
 

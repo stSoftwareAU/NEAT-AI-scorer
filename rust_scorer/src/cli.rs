@@ -32,6 +32,7 @@ use std::sync::Arc;
 use crate::corpus_guard::assert_records_aligned;
 use crate::cost::CostKind;
 use crate::gpu::{GpuBackendLabel, GpuMode, ScoringPath};
+use crate::host_report::{DEFAULT_REPORT_RECORD_BYTES, HostReport};
 use crate::multi_score::{score_from_creature_dir_gpu_sampled, score_from_creature_dir_sampled};
 use crate::read_tuning::{training_read_backend_label, training_read_target_bytes_from_env};
 use crate::sampling::{SampleSpec, parse_sample_rate};
@@ -137,12 +138,48 @@ struct Cli {
     #[arg(long, value_name = "PHASE", default_value_t = 0)]
     sample_phase: u64,
 
+    /// Print the detected host resources and every resolved knob as one JSON
+    /// object, then exit — score nothing (Issue #545).
+    ///
+    /// The report names the logical CPU count, physical RAM, and the resolved
+    /// `default_worker_count`, `max_worker_count`, `max_read_bytes`,
+    /// `default_training_read_bytes` and GPU scratch budget, each tagged
+    /// `default` or `env` so a fleet operator can see which knobs an
+    /// environment override moved. Measurement only: no default changes and no
+    /// `wgpu` adapter is created, so it runs on a GPU-less host and under
+    /// `--gpu off` alike. Takes no positional arguments.
+    ///
+    /// See the README "Host knob report" section.
+    #[arg(long)]
+    host_report: bool,
+
+    /// Record width (bytes) `--host-report` resolves the read-chunk knob for.
+    ///
+    /// The read default is record-size adaptive, so the report needs a width;
+    /// it defaults to the production corpus shape (2461 inputs + 1 output as
+    /// `f32` = 9848 B). Ignored unless `--host-report` is set. Zero is
+    /// rejected — a corpus has no zero-width record.
+    #[arg(long, value_name = "BYTES", default_value_t = DEFAULT_REPORT_RECORD_BYTES, value_parser = parse_record_bytes)]
+    record_bytes: usize,
+
     /// Positional arguments.
     ///
     /// * default mode: `<creature.json> <data_dir>` (two values).
     /// * `--creature-stdin` mode: `<data_dir>` (one value).
     #[arg(num_args = 1..=2, value_name = "ARGS")]
     args: Vec<PathBuf>,
+}
+
+/// Validate `--record-bytes`: a positive record width (Issue #545).
+///
+/// Rejected rather than clamped so a typo'd `0` fails loud instead of silently
+/// reporting a knob value nobody asked for.
+fn parse_record_bytes(raw: &str) -> Result<usize, String> {
+    match raw.trim().parse::<usize>() {
+        Ok(0) => Err("--record-bytes must be greater than zero".to_string()),
+        Ok(bytes) => Ok(bytes),
+        Err(e) => Err(format!("invalid --record-bytes '{raw}': {e}")),
+    }
 }
 
 /// Resolve the `(creature_json, data_dir)` pair from parsed CLI args.
@@ -191,9 +228,18 @@ enum RunOutput {
     // (one heap pointer) and stays small.
     Single(Box<ScoreResult>),
     Multi(BTreeMap<String, ScoreResult>),
+    // Issue #545: `--host-report` scores nothing and prints the knob diagnostic.
+    Host(HostReport),
 }
 
 fn run(cli: &Cli) -> Result<RunOutput, String> {
+    // Issue #545: the knob report is measurement only and must never abort —
+    // resolved *before* GPU mode resolution or adapter selection so it works
+    // identically on a GPU-less host, under `--gpu off`, and under `--gpu on`.
+    if cli.host_report {
+        return Ok(RunOutput::Host(HostReport::resolve(cli.record_bytes)));
+    }
+
     // Resolve the GPU backend label up-front. For `--gpu off` this is a
     // constant `cpu-fallback` and never touches `wgpu`; for `auto` (the
     // default since Issue #83) and `on` it triggers adapter selection now
@@ -606,6 +652,7 @@ pub fn main() {
             .map_err(|e| format!("Failed to serialise result to JSON: {e}")),
         RunOutput::Multi(result_map) => serde_json::to_string_pretty(&result_map)
             .map_err(|e| format!("Failed to serialise multi-creature result to JSON: {e}")),
+        RunOutput::Host(report) => report.to_json(),
     });
 
     match output {
@@ -624,6 +671,7 @@ mod tests {
         match run(cli)? {
             RunOutput::Single(result) => Ok(*result),
             RunOutput::Multi(_) => Err("Expected single-creature output".to_string()),
+            RunOutput::Host(_) => Err("Expected single-creature output".to_string()),
         }
     }
 
@@ -719,6 +767,8 @@ mod tests {
             cost: CostKind::default(),
             sample_rate: None,
             sample_phase: 0,
+            host_report: false,
+            record_bytes: DEFAULT_REPORT_RECORD_BYTES,
             args: vec![creature.to_path_buf(), data.to_path_buf()],
         }
     }
@@ -1119,6 +1169,8 @@ mod tests {
             cost: CostKind::default(),
             sample_rate: None,
             sample_phase: 0,
+            host_report: false,
+            record_bytes: DEFAULT_REPORT_RECORD_BYTES,
             args: vec![PathBuf::from("/tmp/creature.json"), PathBuf::from("/tmp")],
         };
         let err = resolve_inputs(&cli).expect_err("extra positional args should fail");
@@ -1137,6 +1189,8 @@ mod tests {
             cost: CostKind::default(),
             sample_rate: None,
             sample_phase: 0,
+            host_report: false,
+            record_bytes: DEFAULT_REPORT_RECORD_BYTES,
             args: vec![PathBuf::from("/tmp")],
         };
         let err = resolve_inputs(&cli).expect_err("single positional arg should fail");
@@ -1406,6 +1460,70 @@ mod tests {
         assert!(
             help.contains("README"),
             "rendered --help must reference the README, got:\n{help}"
+        );
+    }
+
+    /// Issue #545: `--host-report` must parse with **no** positional arguments
+    /// (it scores nothing) and must resolve a report without touching `wgpu`.
+    #[test]
+    fn test_host_report_parses_without_positional_args() {
+        use clap::Parser;
+        let parsed = Cli::try_parse_from(["rust_scorer", "--host-report"])
+            .expect("--host-report must parse on its own");
+        assert!(parsed.host_report);
+        assert!(parsed.args.is_empty());
+        assert_eq!(parsed.record_bytes, DEFAULT_REPORT_RECORD_BYTES);
+
+        match run(&parsed).expect("--host-report must not fail") {
+            RunOutput::Host(report) => {
+                assert!(report.logical_cpus >= 1);
+                assert_eq!(report.record_bytes, DEFAULT_REPORT_RECORD_BYTES);
+                assert!(report.knobs.max_worker_count.value >= 1);
+                assert!(report.to_json().expect("serialises").contains("\"knobs\""));
+            }
+            _ => panic!("--host-report must yield the host report output"),
+        }
+    }
+
+    /// Issue #545: the report must resolve identically under every `--gpu`
+    /// mode, including `on` (which would otherwise demand an adapter).
+    #[test]
+    fn test_host_report_ignores_gpu_mode() {
+        use clap::Parser;
+        let mut reports = Vec::new();
+        for mode in ["auto", "on", "off"] {
+            let parsed = Cli::try_parse_from(["rust_scorer", "--host-report", "--gpu", mode])
+                .expect("flag combination must parse");
+            match run(&parsed).expect("--host-report must never abort") {
+                RunOutput::Host(report) => reports.push(report),
+                _ => panic!("--host-report must yield the host report output"),
+            }
+        }
+        assert!(
+            reports.windows(2).all(|w| w[0] == w[1]),
+            "the report must not vary with --gpu mode: {reports:?}"
+        );
+    }
+
+    /// Issue #545: `--record-bytes` selects the width the read knob is resolved
+    /// for; zero is rejected rather than silently clamped.
+    #[test]
+    fn test_record_bytes_flag_validation() {
+        use clap::Parser;
+        let parsed =
+            Cli::try_parse_from(["rust_scorer", "--host-report", "--record-bytes", "40"]).unwrap();
+        assert_eq!(parsed.record_bytes, 40);
+
+        let err = Cli::try_parse_from(["rust_scorer", "--host-report", "--record-bytes", "0"])
+            .expect_err("zero must be rejected");
+        assert!(
+            err.to_string().contains("greater than zero"),
+            "error must explain the constraint, got: {err}"
+        );
+        assert!(
+            Cli::try_parse_from(["rust_scorer", "--host-report", "--record-bytes", "wide"])
+                .is_err(),
+            "a non-numeric width must be rejected"
         );
     }
 

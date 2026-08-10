@@ -439,6 +439,54 @@ score stays stable:
 > to a released scorer through the normal dependency-bump flow once a human cuts
 > the release.
 
+### Host knob report — `--host-report` (Issue #545)
+
+Every host-tuned default is chosen from a probed snapshot of the machine
+([`host_resources`](rust_scorer/src/host_resources.rs)), so retuning one across
+the fleet first needs a way to see what a given host **detected** and **chose**.
+`--host-report` prints exactly that as one JSON object and exits without scoring
+anything:
+
+```bash
+rust_scorer --host-report                      # production record width (9848 B)
+rust_scorer --host-report --record-bytes 40    # small-record corpora
+```
+
+```json
+{
+  "schema": "neat-scorer-host-report/1",
+  "logical_cpus": 10,
+  "physical_ram_bytes": 25769803776,
+  "record_bytes": 9848,
+  "knobs": {
+    "default_worker_count": { "value": 10, "source": "default", "env_var": "NEAT_SCORER_ACTIVATION_THREADS" },
+    "max_worker_count": { "value": 256, "source": "default", "env_var": null },
+    "max_read_bytes": { "value": 67108864, "source": "default", "env_var": null },
+    "default_training_read_bytes": { "value": 33552136, "source": "default", "env_var": "NEAT_SCORER_READ_BYTES" },
+    "gpu_scratch_bytes": { "value": 536870912, "source": "default", "env_var": "NEAT_SCORER_GPU_SCRATCH_BYTES" }
+  }
+}
+```
+
+- `value` is what the scorer will actually use, **after** every clamp and the
+  round-down to a whole record multiple — not the raw env string.
+- `source` is `env` only when an override was parsed and **honoured**. A
+  malformed value (`NEAT_SCORER_READ_BYTES=2MB`) is rejected by the shipped
+  resolver, so it keeps reporting `default` and still warns on stderr.
+- `env_var` is `null` for a host-derived ceiling, which takes no override.
+- `NEAT_SCORER_FILE_THREADS` shares the `default_worker_count` default,
+  additionally capped at the corpus file count.
+- Keys are snake_case and named after the functions that produced them, so a
+  pasted report maps 1:1 onto the code a retune has to change. This is a
+  diagnostic, **not** the camelCase scoring payload.
+
+The report is measurement only: it changes no default, never creates a `wgpu`
+adapter, and therefore returns the same JSON on a GPU-less host, under
+`--gpu off`, and under `--gpu on`. `--record-bytes` selects the record width the
+read-chunk knob is resolved for (the default is record-size adaptive); zero is
+rejected rather than clamped. Pair it with the knob sweep harness in
+[How to bench](#how-to-bench) when retuning a knob.
+
 ### Stdin input mode
 
 For restricted worker/sandbox environments where writing a temp file may fail
@@ -1337,6 +1385,45 @@ Per the
 `CONTRIBUTING.md`, performance PRs without before/after Criterion evidence are
 rejected, and a change that misses its acceptance bar is recorded as a
 `negative-result` on the issue instead of raised as a PR.
+
+### Knob sweep harness (Issue #545)
+
+CLI-level wall-clock sweeps live outside Criterion.
+[`scripts/bench-knob-sweep.sh`](scripts/bench-knob-sweep.sh) runs the production
+scoring path at a caller-supplied list of values for **one** knob and reports
+the median per value, in the same table shape as
+[`scripts/bench-shallow-gpu.sh`](scripts/bench-shallow-gpu.sh):
+
+```bash
+BENCH_SWEEP_CREATURE=/path/to/creatures_dir BENCH_SWEEP_DATA=/path/to/corpus \
+  BENCH_SWEEP_KNOB=NEAT_SCORER_READ_BYTES \
+  BENCH_SWEEP_VALUES=default,2097152,8388608,33554432 \
+  ./scripts/bench-knob-sweep.sh
+```
+
+The run opens with the host's `--host-report` JSON, so a pasted sweep carries
+the machine it was measured on. The first value in the list is the baseline
+every later value is compared against; the literal `default` runs with the knob
+**unset**, which is also the single-knob-neutral baseline used for the fleet
+captures in
+[`docs/performance-baseline.md`](docs/performance-baseline.md#544-fleet-knob-baseline--10-august-2026-issue-545).
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `BENCH_SWEEP_CREATURE` | — | local creature JSON or creatures directory (**required**) |
+| `BENCH_SWEEP_DATA` | — | local training-data directory of `.bin` files (**required**) |
+| `BENCH_SWEEP_KNOB` | `NEAT_SCORER_READ_BYTES` | `NEAT_SCORER_*` variable to sweep |
+| `BENCH_SWEEP_VALUES` | `default` | comma-separated values; `default` means "knob unset" |
+| `BENCH_SWEEP_REPS` | `5` | timed repetitions per value (median reported) |
+| `BENCH_SWEEP_GPU` | `auto` | `--gpu` mode for every run (production omits the flag) |
+| `BENCH_SWEEP_SCORER` | `target/release/rust_scorer` | scorer binary (built when absent) |
+
+This repo ships no production creature or corpus and fetches neither
+(Issue #448), so with either input unset the harness **skips cleanly** (exit 0)
+exactly as the other production benches do. Once inputs are supplied it is
+**fail-loud**: an unreadable input, a rejected knob name or value, a failed
+host report, or a non-zero scoring run all exit non-zero rather than reporting
+an empty sweep as success (`tests/scripts/bench_knob_sweep.bats`).
 
 ## How to flamegraph (Issue #37)
 
