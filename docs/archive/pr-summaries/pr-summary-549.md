@@ -10,9 +10,9 @@ Closes #549.
 **The issue's premise needed correcting first.** #549 says the aggregate
 `readers × chunk` footprint "is a budget the current per-knob tiering never
 accounts for", quoting 10 × 32 MiB = 320 MiB on a 10-core 16 GB M4. The *product
-of the two knobs* is indeed 320 MiB, but the resident buffer never was: Issue
-#529 added `stream_score::per_reader_read_buf_len`, which divides one total
-budget across the readers **after** `read_tuning` has chosen. The real defect was
+of the two knobs* is indeed 320 MiB, but the resident buffer never was: Issue #529
+added `stream_score::per_reader_read_buf_len`, which divides one total budget
+across the readers **after** `read_tuning` has chosen. The real defect was
 that the budget being divided was `max_read_bytes` — the *override clamp* — so:
 
 - the chunk `read_tuning` chose was silently overridden by a second-stage
