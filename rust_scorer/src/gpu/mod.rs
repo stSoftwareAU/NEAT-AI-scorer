@@ -426,13 +426,26 @@ pub fn select_adapter() -> Result<Option<GpuContext>, GpuInitError> {
         Err(_) => return Ok(None),
     };
 
-    let backend = GpuBackendLabel::from_wgpu(adapter.get_info().backend);
+    let info = adapter.get_info();
+    let backend = GpuBackendLabel::from_wgpu(info.backend);
     if backend == GpuBackendLabel::CpuFallback {
         // wgpu picked a non-native backend (Noop / BrowserWebGpu) — treat as
         // "no GPU" so the JSON label and behaviour line up with the
         // explicit-fallback path.
         return Ok(None);
     }
+
+    // Issue #548 — cache what this adapter can actually do, so the GPU scratch
+    // budget is tuned against real limits instead of system RAM alone. Sensing
+    // rides the adapter this call already created: nothing else in the process
+    // creates one, so `--gpu off` and GPU-less hosts stay at zero cost.
+    let limits = adapter.limits();
+    crate::host_resources::record_gpu_capability(crate::host_resources::GpuCapability::new(
+        backend,
+        adapter_memory_is_unified(info.device_type),
+        limits.max_storage_buffer_binding_size,
+        limits.max_compute_workgroups_per_dimension,
+    ));
 
     // Issue #182 — request the adapter's full limits rather than wgpu's
     // conservative defaults (128 MiB `max_storage_buffer_binding_size`). The
@@ -452,6 +465,17 @@ pub fn select_adapter() -> Result<Option<GpuContext>, GpuInitError> {
         queue,
         backend,
     }))
+}
+
+/// Does this adapter share its memory with system RAM (Issue #548)?
+///
+/// Only a discrete card has its own VRAM; integrated GPUs (Apple silicon Metal
+/// reports `IntegratedGpu`), software and virtual adapters all allocate out of
+/// host memory. Anything not explicitly discrete is treated as unified, which
+/// is the conservative answer — a unified budget is additionally bounded by
+/// physical RAM.
+pub(crate) fn adapter_memory_is_unified(device_type: wgpu::DeviceType) -> bool {
+    !matches!(device_type, wgpu::DeviceType::DiscreteGpu)
 }
 
 /// Typed error returned by [`resolve_backend`] under `--gpu on` (Issue #289,
@@ -963,5 +987,19 @@ mod tests {
 
         let boxed: Box<dyn std::error::Error> = Box::new(ResolveBackendError::NoAdapter);
         assert!(boxed.downcast_ref::<ResolveBackendError>().is_some());
+    }
+
+    /// Issue #548: only a discrete card owns memory the host does not share.
+    #[test]
+    fn only_a_discrete_adapter_counts_as_non_unified_memory() {
+        // Apple silicon Metal reports `IntegratedGpu`.
+        assert!(adapter_memory_is_unified(wgpu::DeviceType::IntegratedGpu));
+        // Software and virtual adapters allocate out of host memory too, and an
+        // unclassified adapter takes the conservative (RAM-bounded) answer.
+        assert!(adapter_memory_is_unified(wgpu::DeviceType::Cpu));
+        assert!(adapter_memory_is_unified(wgpu::DeviceType::VirtualGpu));
+        assert!(adapter_memory_is_unified(wgpu::DeviceType::Other));
+        // A discrete card has its own VRAM, so host RAM bounds nothing.
+        assert!(!adapter_memory_is_unified(wgpu::DeviceType::DiscreteGpu));
     }
 }

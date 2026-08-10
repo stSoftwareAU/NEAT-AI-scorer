@@ -19,11 +19,17 @@ the runs with [`scripts/run-benches.sh`](../scripts/run-benches.sh) or
 | `production_multi_creature/creatures/N` | Directory mode over copies of the production creature (`N=1`, `N=BENCH_PROD_CREATURES`). | The candidate optimisations #297–#299 A/B against this on the real creature, not the synthetic fixture. |
 | `fused_multi_file/file_workers/W` | Forward-only fused accumulate over the **same** corpus split across `BENCH_FUSED_FILES` files, at `W` concurrent `.bin` readers (Issue #529). | `W=1` reproduces the pre-#529 single sequential reader; `auto` is the shipped default (one reader per CPU, capped at the file count). Calls [`accumulate_cost_sum_forward_only_fused_with_workers`](../rust_scorer/src/stream_score.rs). |
 
-CLI-level GPU-vs-CPU wall-clock A/Bs live outside Criterion:
-[`scripts/bench-shallow-gpu.sh`](../scripts/bench-shallow-gpu.sh) (Issue #467)
-times `--gpu off` / `on` / `auto` on a **shallow** creature pool against a
-locally generated corpus at the caller's record width. It skips cleanly when
-`BENCH_SHALLOW_CREATURE` is unset — see the Issue #467 section below.
+CLI-level wall-clock A/Bs live outside Criterion:
+
+* [`scripts/bench-shallow-gpu.sh`](../scripts/bench-shallow-gpu.sh) (Issue #467)
+  times `--gpu off` / `on` / `auto` on a **shallow** creature pool against a
+  locally generated corpus at the caller's record width. It skips cleanly when
+  `BENCH_SHALLOW_CREATURE` is unset — see the Issue #467 section below.
+* [`scripts/bench-knob-sweep.sh`](../scripts/bench-knob-sweep.sh) (Issue #545)
+  sweeps **one** `NEAT_SCORER_*` knob across a caller-supplied value list on the
+  production scoring path and reports the median per value. It skips cleanly
+  when `BENCH_SWEEP_CREATURE` / `BENCH_SWEEP_DATA` are unset — see the Issue
+  #545 section below.
 
 ## Fixture parameters
 
@@ -41,6 +47,207 @@ Defaults are kept conservative so `cargo bench` finishes in a few minutes on
 typical dev hardware; sweep upwards via `BENCH_SCORING_BYTES` for the full
 target. **Always re-run the baseline at the same `BENCH_SCORING_BYTES`** — the
 absolute numbers below are fixture-size-specific.
+
+> **How to read the `NEAT_SCORER_*` sweeps below (Issue #544).** Every knob this
+> document sweeps is chosen by the scorer from detected hardware; the
+> environment variables are an **emergency escape hatch** and a benchmarking
+> lever, **not per-host configuration**. A sweep value that wins here becomes a
+> tier in [`self-tuning.md`](self-tuning.md), not a per-host export.
+
+## #544 fleet knob baseline — 10 August 2026 (Issue #545)
+
+Enabler for the [#544](https://github.com/stSoftwareAU/NEAT-AI-scorer/issues/544)
+self-tune chain: the retune sub-issues cite their before/after numbers from the
+harness recorded here. **Measurement only — no shipped default changed.**
+
+Two pieces:
+
+* `rust_scorer --host-report` prints what a host detected and which knob values
+  it resolved, as one JSON object (see the README
+  [Host knob report](../README.md#host-knob-report----host-report-issue-545)
+  section). It never creates a `wgpu` adapter, so it returns the same JSON on a
+  GPU-less host and under `--gpu off`.
+* [`scripts/bench-knob-sweep.sh`](../scripts/bench-knob-sweep.sh) sweeps one
+  knob across a value list on the production scoring path and prints the median
+  wall-clock per value, prefixed by that host's report.
+
+```mermaid
+flowchart LR
+    H[host probe<br/>CPUs · RAM] --> R[--host-report JSON]
+    E[NEAT_SCORER_* env] --> R
+    R --> S[bench-knob-sweep.sh]
+    V[BENCH_SWEEP_VALUES] --> S
+    C[local creature + corpus] --> S
+    S --> T[median wall-clock per value<br/>+ delta vs baseline]
+    T --> D[#544 retune sub-issue<br/>before/after evidence]
+```
+
+### Tier: Apple mid (M4, 10 cores, 24 GB)
+
+| Field | Value |
+|---|---|
+| Machine | Apple M4, 10 logical cores, 24 GB, macOS 26.6.1 (Darwin 25.6.0, arm64) |
+| Toolchain | rustc 1.95.0, release profile |
+| Fixture | synthetic shallow pool at production record width — 50 creatures (2461 in / 19 hidden / 1 out, 22 221 synapses), 20 000 records over 4 `.bin` shards (196 960 000 bytes, 9848 B/record) |
+| Inputs | generated locally: this repo ships no production creature or corpus and fetches neither (Issue #448) |
+
+`rust_scorer --host-report` (no `NEAT_SCORER_*` set):
+
+```json
+{
+  "schema": "neat-scorer-host-report/1",
+  "logical_cpus": 10,
+  "physical_ram_bytes": 25769803776,
+  "record_bytes": 9848,
+  "knobs": {
+    "default_worker_count": { "value": 10, "source": "default", "env_var": "NEAT_SCORER_ACTIVATION_THREADS" },
+    "max_worker_count": { "value": 256, "source": "default", "env_var": null },
+    "max_read_bytes": { "value": 67108864, "source": "default", "env_var": null },
+    "default_training_read_bytes": { "value": 33552136, "source": "default", "env_var": "NEAT_SCORER_READ_BYTES" },
+    "gpu_scratch_bytes": { "value": 536870912, "source": "default", "env_var": "NEAT_SCORER_GPU_SCRATCH_BYTES" }
+  }
+}
+```
+
+Every value matches the shipped policy for this tier: 10 workers (one per
+logical CPU, below the 256 ceiling for ≥ 8 GiB RAM), the 64 MiB mid-host read
+ceiling, the 32 MiB large-record read default rounded down to a whole record
+multiple (`33552136 = 3407 × 9848`), and the historical 512 MiB scratch budget
+for the 16–64 GiB RAM band. At `--record-bytes 40` the read default drops to
+`2097120` (2 MiB rounded to 52 428 records) — the record-size adaptive branch.
+
+**Single-knob-neutral baseline** (`BENCH_SWEEP_VALUES=default`, median of 5):
+
+| `--gpu` | Wall (s) | `gpuBackend` |
+|---|---|---|
+| `auto` (production omits the flag) | 7.63 | `metal` |
+| `off` | 1.55 | `cpu-fallback` |
+
+**Example sweeps** (median of 5, `--gpu off` so the sweep measures the CPU
+pipeline rather than kernel routing):
+
+| `NEAT_SCORER_READ_BYTES` | Wall (s) | vs baseline |
+|---|---|---|
+| `default` (→ 33 552 136) | 1.55 | baseline |
+| `2097152` | 1.52 | +1.9 % |
+| `8388608` | 1.54 | +0.6 % |
+| `33554432` (→ same 33 552 136) | 1.67 | −7.7 % |
+
+| `NEAT_SCORER_ACTIVATION_THREADS` | Wall (s) | vs baseline |
+|---|---|---|
+| `default` (→ 10) | 1.97 | baseline |
+| `4` | 1.79 | +9.1 % |
+| `10` | 1.68 | +14.7 % |
+| `20` | 1.63 | +17.3 % |
+
+**Noise floor — read this before citing a sweep.** `default` and `33554432`
+resolve to the *same* 33 552 136-byte chunk, yet their medians differ by 7.7 %:
+that gap is the harness's noise floor on this fixture, not a knob effect. A
+retune must therefore either clear ~10 % here or use a corpus large enough that
+one repetition takes ≥ 5 s (the two `--gpu off` sweeps above run in ~1.6 s).
+Raise `BENCH_SWEEP_REPS` and the corpus size together; the medians tighten with
+both. The activation-threads column is above that floor and monotonic, so it is
+a real (if small) effect on this synthetic pool.
+
+The `auto` row scores on Metal because the pool is shallow `ScratchOnly`
+(#467 routing) — it is recorded as the *shipped-default* baseline for this host,
+not as a GPU-vs-CPU verdict. It is **not** comparable with the #467 A/B below:
+different corpus size, pool size and synthetic (untrained) weights.
+
+Reproduce:
+
+```bash
+BENCH_SWEEP_CREATURE=/path/to/creatures_dir BENCH_SWEEP_DATA=/path/to/corpus \
+  BENCH_SWEEP_VALUES=default ./scripts/bench-knob-sweep.sh
+BENCH_SWEEP_CREATURE=/path/to/creatures_dir BENCH_SWEEP_DATA=/path/to/corpus \
+  BENCH_SWEEP_GPU=off BENCH_SWEEP_KNOB=NEAT_SCORER_READ_BYTES \
+  BENCH_SWEEP_VALUES=default,2097152,8388608,33554432 ./scripts/bench-knob-sweep.sh
+```
+
+### Tier: x86 Linux — outstanding
+
+No x86 Linux fleet host (4–12 cores, 7.6–15.5 GB RAM, no GPU adapter) is
+reachable from the unattended worker that produced this section, so the x86 row
+is **not** captured here. The report
+path itself is exercised on the GPU-less Linux CI runner by
+[`rust_scorer/tests/host_report.rs`](../rust_scorer/tests/host_report.rs), which
+asserts exit 0, valid JSON and a complete knob set on every PR — what is missing
+is the *fleet* capture (that tier's detected RAM/CPU and its neutral baseline
+timings). Tracked in
+[Issue #551](https://github.com/stSoftwareAU/NEAT-AI-scorer/issues/551); run the
+two commands above on one x86 Linux host and append a "Tier: x86 Linux" block
+in the same shape.
+
+## Performance-core probe — 10 August 2026 (Issue #546)
+
+**Probe shipped; worker retune *not* shipped — the A/B is inconclusive on the
+one reachable host.** `HostResources` now carries `performance_cpus` beside
+`cpus` (`hw.perflevel0.physicalcpu` → `hw.physicalcpu` → logical count on
+macOS; highest-`cpu_capacity` tier → logical count on Linux; logical count
+everywhere else), and `--host-report` reports it under schema
+`neat-scorer-host-report/2`. `default_worker_count` still keys off the
+**logical** CPU count, because this project ships a performance change only
+with before/after evidence
+([Performance Task Workflow](../CONTRIBUTING.md#performance-task-workflow)) and
+the evidence below does not clear any bar.
+
+### Probe verification — Apple M4 Pro (8P + 4E, 12 logical, 24 GB)
+
+| Source | Value |
+|---|---|
+| `sysctl -n hw.perflevel0.physicalcpu` | 8 |
+| `sysctl -n hw.perflevel1.physicalcpu` | 4 |
+| `sysctl -n hw.logicalcpu` | 12 |
+| `rust_scorer --host-report` → `logical_cpus` | 12 |
+| `rust_scorer --host-report` → `performance_cpus` | **8** |
+
+The probe agrees with the kernel on the tier the issue was raised against.
+
+### Worker-count A/B — inconclusive (host contention)
+
+Three interleaved rounds of `workers ∈ {12 (today), 10, 8 (P-cores)}`, both
+knobs pinned together (`NEAT_SCORER_ACTIVATION_THREADS` =
+`NEAT_SCORER_FILE_THREADS`), Criterion, 30 samples, 20 s measurement, at
+`BENCH_SCORING_BYTES=200000000` and production record width:
+
+| Workers | `fused_multi_file/auto` per round (ms) | `score_from_json_fused/forward_only` per round (ms) |
+|---|---|---|
+| 12 (shipped default) | 42.70 · 52.12 · 74.89 | 102.86 · 105.20 · 148.31 |
+| 10 | 50.97 · 55.28 · 82.45 | 88.63 · 55.18 · 163.49 |
+| 8 (P-cores) | 40.50 · 70.47 · 38.48 | 97.50 · 131.19 · 59.99 |
+
+**These numbers cannot decide the retune.** The host was running unrelated
+production scoring throughout: the 1-minute load average climbed from 16.6 to
+29.6 across the sweep on a 12-core host. Same-arm spread reaches 1.8× (`8`
+workers on `fused_multi_file`: 38.48 → 70.47 ms) and 3.0× (`10` workers on
+`forward_only`: 55.18 → 163.49 ms), and every arm degrades monotonically with
+wall-clock time — that is the competing load, not the knob. The per-round
+medians also disagree about the winner (`8` on the multi-file path, `10` on the
+forward-only path), which is what a null result looks like through this much
+noise. The noise floor recorded for the #545 harness above (~10 %) is an order
+of magnitude tighter than what this host could deliver today.
+
+The other tiers the retune needs — M4 (4P+6E), M2 Ultra (16P+8E) and the x86
+Linux no-regression control — are not reachable from the unattended worker at
+all (same constraint as the outstanding x86 row above).
+
+### Decision (Issue #546)
+
+Ship the probe, hold the retune. The probe is the prerequisite the retune was
+blocked on and is risk-free by construction: it never reports **fewer** cores
+than it can prove, so a host it cannot classify keeps every historical default,
+and `rust_scorer/src/host_resources.rs` pins that invariant for the fleet tiers
+in `shipped_worker_default_is_unchanged_by_the_performance_core_split`.
+Re-run the A/B on a **quiescent** host of each tier — tracked in
+[Issue #553](https://github.com/stSoftwareAU/NEAT-AI-scorer/issues/553):
+
+```bash
+BENCH_SCORING_BYTES=200000000 BENCH_SCORING_INPUTS=2461 \
+  BENCH_SCORING_OUTPUTS=1 BENCH_SCORING_HIDDEN=19 \
+  NEAT_SCORER_ACTIVATION_THREADS=8 NEAT_SCORER_FILE_THREADS=8 \
+  cargo bench -p rust_scorer --bench scoring -- \
+  'fused_multi_file/file_workers/auto|score_from_json_fused'
+```
 
 ## Parallel file reads — 5 August 2026 (Issue #529)
 
@@ -400,6 +607,256 @@ target/release/rust_scorer            /tmp/neat-prod-creatures /tmp/neat-bench-d
 **Supersedes** the #312 "pending population-size threshold" note for the
 production `learn.sh` path: full-corpus evidence on M4 shows CPU wins at
 N=63, so the heuristic is topology-based rather than N-threshold.
+
+## GPU capability sensing — 10 August 2026 (Issue #548)
+
+Sub-issue of [#544](https://github.com/stSoftwareAU/NEAT-AI-scorer/issues/544).
+`HostResources` now senses the selected adapter
+(`GpuCapability`: backend, unified-vs-discrete memory,
+`max_storage_buffer_binding_size`, `max_compute_workgroups_per_dimension`) and
+the scratch budget is bounded by those limits instead of by system RAM alone.
+The **retune** half of the issue — spending the sensed capability on a *bigger*
+budget — is a **negative result**: a wider budget is slower on this tier, so the
+shipped budget is unchanged and sensing only ever tightens it.
+
+**Host:** Apple M4 Pro (12 logical / 8 P-cores, 16 GPU cores), 24 GB, Metal;
+release build, `rustc 1.95.0`. The host was **contended** during the capture
+(two production `rust_scorer` runs, load average ≈ 30), so absolute medians
+drift by up to 20 % between sessions — every comparison below is therefore an
+**interleaved A/B**, alternating the two budgets so drift hits both equally.
+
+**What the adapter reports** (`wgpu` 29, `adapter.limits()`):
+
+| Field | Value |
+|---|---|
+| `device_type` | `IntegratedGpu` → unified memory |
+| `max_storage_buffer_binding_size` | 4 294 967 292 B (4 GiB − 4; the saturated `u32`) |
+| `max_buffer_size` | 14 302 248 960 B |
+| `max_compute_workgroups_per_dimension` | 65 535 |
+
+Apple silicon reports the same 4 GiB binding limit on every tier, so it does
+**not** separate an M1 Max (24 GPU cores) from an M4 (10) — `wgpu` exposes no
+GPU core count at all. The limit is still worth sensing: it is the hard ceiling
+the scratch binding must respect.
+
+**A/B — shipped 512 MiB budget vs a doubled 1 GiB budget**, Criterion
+`shallow_gpu_vs_cpu/gpu/50` (synthetic Enceladus-shaped pool, 50 creatures,
+2461 in / 1 out, 32 MiB corpus), median of 10 samples per run, runs alternated:
+
+| Pair | 512 MiB (shipped) | 1024 MiB | Change |
+|---|---|---|---|
+| 1 | **428.3 ms** | 453.0 ms | +5.8 % slower |
+| 2 | **427.1 ms** | 449.5 ms | +5.2 % slower |
+| 3 | **420.0 ms** | 461.7 ms | +9.9 % slower |
+| 4 | **420.0 ms** | 461.1 ms | +9.8 % slower |
+| **Median** | **423.6 ms** | **457.0 ms** | **+7.9 % slower** |
+
+A single-session extension of the sweep points the same way — 512 MiB 460.6 ms,
+1 GiB 508.6 ms (+10.4 %), 2 GiB 529.7 ms (+15.0 %), 512 MiB again 450.0 ms.
+
+**Why a wider budget loses.** The budget bounds the scratch kernel's grid-stride
+width `G_x`; a wider grid means proportionally more activation scratch live at
+once (1–2 GB at these budgets) in the *same* unified DRAM the corpus is streaming
+through, and `BatchedRunner::ensure_scratch_buf` rounds the allocation up to a
+power of two on top. The extra parallelism does not pay for that traffic.
+
+**Decision (retune: negative result — sensing: shipped).**
+
+* The scratch budget policy is **unchanged for every fleet tier** — 256 MiB at
+  8 GiB RAM, 512 MiB at 16–64 GiB, 1 GiB at 64 GiB+ — because raising it is
+  slower and lowering it was not measurably better either (256 MiB landed inside
+  the drift band of 512 MiB across sessions).
+* Sensing **ships** regardless: it is the prerequisite for the clamp that stops
+  a budget exceeding `max_storage_buffer_binding_size` (a wgpu validation error
+  or the Metal SIGSEGV class `gpu_pipelined_scratch_multi_bin.rs` guards), and
+  for clamping `G_x` to `max_compute_workgroups_per_dimension`. Every sensed
+  bound is a `min`, pinned by
+  `host_resources::tests::a_sensed_adapter_never_raises_the_budget`.
+* Only the M4 Pro tier could be measured: the M2 Ultra, M4 and M1 hosts are not
+  reachable from this worker. Since the shipped defaults are unchanged, those
+  tiers cannot regress — a retune that *did* move them would need its own
+  capture on each.
+* **Do not re-benchmark the scratch budget** on this shape unless the scratch
+  kernel architecture or the creature topology changes materially.
+
+Reproduce (each invocation is one Criterion run; alternate the budgets):
+
+```bash
+NEAT_SCORER_GPU_SCRATCH_BYTES=536870912 \
+  cargo bench -p rust_scorer --bench scoring -- shallow_gpu_vs_cpu/gpu
+NEAT_SCORER_GPU_SCRATCH_BYTES=1073741824 \
+  cargo bench -p rust_scorer --bench scoring -- shallow_gpu_vs_cpu/gpu
+```
+
+## Read-chunk defaults vs the reader count — 10 August 2026 (Issue #549)
+
+Sub-issue of [#544](https://github.com/stSoftwareAU/NEAT-AI-scorer/issues/544).
+`read_tuning` now sizes the read chunk from the **concurrent reader count** as
+well as the record width and host RAM, and the dead `≥ 64 GiB → 256 MiB` entry in
+`max_read_bytes` is gone. **No tier's read chunk was retuned** — the resident
+buffer every fleet tier holds is byte-identical to what it shipped with — because
+this worker's host cannot resolve a chunk-size effect (evidence below). The
+structural half ships; the retune half is a recorded **blocked/negative**
+result.
+
+### What the issue premise got wrong
+
+Issue #549 states the aggregate `readers × chunk` footprint "is a budget the
+current per-knob tiering never accounts for", quoting 10 × 32 MiB = 320 MiB on a
+10-core 16 GB M4. The **product of the two knobs** is indeed 320 MiB, but the
+resident buffer never was: Issue #529 added
+`stream_score::per_reader_read_buf_len`, which divides one total budget across
+the readers *after* `read_tuning` has chosen. The bug was therefore not an
+unbounded footprint — it was that the budget being divided was
+`max_read_bytes`, the **override clamp**, so the chunk `read_tuning` chose was
+silently overridden, and the value every diagnostic printed was up to 6× wider
+than any reader actually held. Measured on the M4 Pro below, `--host-report`
+before and after:
+
+| Knob (`--record-bytes 9848`) | Before | After |
+|---|---:|---:|
+| `default_training_read_bytes` (per reader) | 33 552 136 | **5 583 816** |
+| `file_read_workers` | *absent* | **12** |
+| `aggregate_read_budget_bytes` | *absent* | **67 108 864** |
+| Buffer each reader really allocated | 5 583 816 | 5 583 816 |
+
+That is also why the 256 MiB `max_read_bytes` tier looked dead and was not: no
+default could select it, but on a ≥ 64 GiB host it was the *aggregate* budget the
+reader split consumed. It moved to `read_tuning::aggregate_read_budget_bytes`
+(64 MiB; 256 MiB at ≥ 64 GiB; never above RAM/16), where the defaults reach it,
+and the override clamp is now a flat 64 MiB on every host.
+
+### Host
+
+| | |
+|---|---|
+| Machine | Apple M4 Pro (12 logical / 8 P-cores), 24 GB, local NVMe |
+| Corpus | 199 993 184 B (20 308 records × 9848 B) across **26** `.bin` shards, page-cache warm |
+| Creature | production width: 2461 inputs / 1 output / 19 hidden, `forwardOnly` |
+| Path | forward-only fused, `--gpu off`, shipped reader count (12) |
+| Load | 5–33 (1-min average) on a 12-core host — unrelated production scoring throughout |
+
+### Before/after A/B at the shipped default
+
+15 interleaved rounds of the release binary built from the merge base and from
+this branch, alternating every round so drift hits both equally:
+
+| Build | Median `timeTaken` | Min | Mean |
+|---|---:|---:|---:|
+| before (merge base) | **28.26 ms** | 26.11 ms | 31.69 ms |
+| after (this branch) | **28.30 ms** | 25.28 ms | 30.51 ms |
+| | **+0.13 %** | | |
+
+`error`, `score` and `recordCount` are bit-identical between the two builds
+(`3.8862606350444184` / `-2.8867303150444186` / `20308`), and
+`stream_score::tests::shipped_per_reader_buffer_is_unchanged_by_the_reader_aware_default`
+pins the per-reader buffer for all eight fleet tiers, so the +0.13 % is noise
+around a change that resolves to the same bytes.
+
+### Why the retune is not shipped: this host cannot measure a chunk effect
+
+Three independent noise probes, all on the shipped path:
+
+1. **Identical configurations, 2× apart.** A Criterion sweep of
+   `NEAT_SCORER_READ_BYTES` ∈ {8, 16, 25.6, 32} MiB on
+   `fused_multi_file/file_workers/auto` at `BENCH_FUSED_FILES=26` and
+   `BENCH_SCORING_BYTES=200000000` produced medians of 54.7 / 98.9 / 107.8 /
+   64.0 ms — but **all four arms resolve to the same 5 583 816-byte buffer**
+   (12 readers share the 64 MiB budget, so every value ≥ 5.6 MiB is clamped to
+   the same figure). The whole 2× spread is host load, at load average 22–33.
+2. **Same-arm drift of 51 %.** A 30-round interleaved CLI sweep of the aggregate
+   budget (`NEAT_SCORER_READ_BYTES` ∈ {2 MiB, 4 MiB, unset} at 12 readers →
+   24 / 48 / 64 MiB aggregate) put the *default* arm's first-half median at
+   82.50 ms and its second-half median at 54.57 ms.
+3. **A signal inside that drift.** In a quieter 15-round window the same sweep
+   ranked 12–48 MiB aggregate 4–7 % ahead of the shipped 64 MiB
+   (28.1 / 28.6 / 27.8 ms vs 30.1 ms), with 6 MiB clearly worse (32.6 ms). Two
+   arms that resolve identically (`5583816` and unset) agreed to 0.4 % in that
+   window, so the harness is capable of ~1 % resolution on a quiet host — but
+   probe 2 shows this host is not quiet for long enough to trust a 4–7 % gap.
+
+A tighter aggregate budget is therefore **plausible but unproven**, and the
+corpus here is **page-cache warm** while production streams ~80 GB cold: smaller
+chunks trade syscalls for locality, and a warm-cache win can invert on cold NVMe.
+Shrinking the shipped budget on that evidence would be a performance change
+without evidence of gain, which
+[CONTRIBUTING](../CONTRIBUTING.md#performance-task-workflow) does not allow.
+
+### Corroborating A/B on a second host — per-reader chunk at 10 readers
+
+Captured independently on **Apple M4, 10 logical cores, 24 GB, macOS 25.6**
+(same corpus shape: `BENCH_SCORING_BYTES=200000000`, `BENCH_FUSED_FILES=26`,
+production record width 9848 B, bench `fused_multi_file/file_workers/auto`, 10
+readers over 26 shards). Not quiescent — the unattended worker holds ~1 core
+(load average 5–9) — so only *interleaved* pairs are trusted. Both arms are the
+same binary; they compare the shipped per-reader size (64 MiB aggregate ÷ 10
+readers, record-aligned) against the 32 MiB a reader-unaware default would hand
+each reader:
+
+| Pair | Shipped 6 706 488 B (6.40 MiB) | Reader-unaware 32 MiB/reader | Δ |
+|---:|---:|---:|---:|
+| 1 | 27.670 ms | 40.700 ms | +47 % |
+| 2 | 26.191 ms | 39.358 ms | +50 % |
+| 3 | 27.548 ms | 42.019 ms | +53 % |
+| 4 | 27.863 ms | 42.049 ms | +51 % |
+| 5 | 27.151 ms | 47.859 ms | +76 % |
+| **median** | **27.548 ms** | **42.019 ms** | **+53 %** |
+
+Sizing each of ten concurrent readers at the full 32 MiB default is ~50 % slower
+in 5 of 5 interleaved pairs — direct evidence for keeping the aggregate budget
+bounded rather than raising it to a RAM share that would allow 32 MiB per
+reader.
+
+A three-round sweep of the per-reader chunk on the same host is *not* evidence
+for a retune: 2 MiB medians 24.698 ms against the shipped 6.40 MiB at 27.190 ms
+(rounds 1–2 rank smaller-is-faster monotonically), but round 3 — a quieter
+interval — inverts the order and its fastest single sample is the shipped size.
+That matches probe 2 above: the host is not quiet long enough to resolve a ~9 %
+gap, so no tier's chunk moves.
+
+```bash
+export BENCH_SCORING_BYTES=200000000 BENCH_SCORING_INPUTS=2461 \
+       BENCH_SCORING_OUTPUTS=1 BENCH_FUSED_FILES=26
+# Alternate the arms, never batch them:
+NEAT_SCORER_READ_BYTES=6706488  cargo bench -p rust_scorer --bench scoring -- \
+  'fused_multi_file/file_workers/auto'
+NEAT_SCORER_READ_BYTES=33554432 cargo bench -p rust_scorer --bench scoring -- \
+  'fused_multi_file/file_workers/auto'
+```
+
+### Decision (Issue #549)
+
+* **Reader-aware defaults, the named aggregate budget, and the removal of the
+  dead override tier ship.** They are memory-policy and diagnostic-truthfulness
+  changes with a byte-identical resident buffer on every fleet tier.
+* **No tier's chunk is retuned.** Every tier keeps its shipped value, pinned by
+  the golden table in `stream_score`; a future retune must land there with
+  before/after medians per tier.
+* **The retune needs a quiescent host and a cold corpus.** Re-run the sweep
+  below on an idle host per tier (M2 Ultra, M4 Pro, M4, M1-class, x86 Linux
+  control), with the page cache dropped between arms, before moving any value.
+  Same constraint as [Issue #553](https://github.com/stSoftwareAU/NEAT-AI-scorer/issues/553)
+  for the P-core retune: the other fleet tiers are not reachable from this
+  unattended worker at all.
+
+Reproduce (26-shard production-width corpus; alternate the arms, never batch
+them):
+
+```bash
+rust_scorer --host-report --record-bytes 9848        # readers + aggregate budget
+
+# Aggregate-budget sweep: with W readers, NEAT_SCORER_READ_BYTES=X caps each
+# reader at min(X, budget/W), so X below budget/W is the only way to shrink the
+# aggregate without a code change.
+for x in 2097152 4194304 unset; do
+  NEAT_SCORER_READ_BYTES=$x rust_scorer creature.json data_dir --gpu off
+done
+
+# Criterion, whole-tier view (remember every X >= budget/W resolves alike):
+BENCH_SCORING_BYTES=200000000 BENCH_SCORING_INPUTS=2461 \
+  BENCH_SCORING_OUTPUTS=1 BENCH_SCORING_HIDDEN=19 BENCH_FUSED_FILES=26 \
+  cargo bench -p rust_scorer --bench scoring -- fused_multi_file/file_workers/auto
+```
 
 ## Shallow-creature GPU vs CPU — 26 July 2026 (Issue #467, negative result)
 

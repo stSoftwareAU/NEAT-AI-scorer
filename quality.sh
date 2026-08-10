@@ -140,6 +140,9 @@ echo "📖 Validating README 'matches CI' block aligns with the CI quality job (
 echo "📚 Validating read-chunk docs match read_tuning.rs constants (Issue #504)..."
 ./scripts/check-read-bytes-docs.sh
 
+echo "🎛️  Validating self-tuning docs match the shipped knob tiers (Issue #550)..."
+./scripts/check-self-tuning-docs.sh
+
 echo "🖥️  Validating gpuBackend docs match GpuBackendLabel (Issue #507)..."
 ./scripts/check-gpu-backend-docs.sh
 

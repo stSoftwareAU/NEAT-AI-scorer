@@ -2,7 +2,7 @@
 //!
 //! Uses [`neat_core::training_bin_stream::for_each_read_chunk`] plus a `pending`
 //! buffer with **head + compact**. Read tuning: **`NEAT_SCORER_READ_BYTES`**
-//! (see [`crate::read_tuning::training_read_target_bytes_from_env`]).
+//! (see [`crate::read_tuning::training_read_target_bytes_from_env_for_readers`]).
 //!
 //! Optional **multi-threaded activation** for large in-memory batches (forward-only only):
 //! set **`NEAT_SCORER_ACTIVATION_THREADS`** to a value `> 1` (clamped by the host-aware
@@ -19,7 +19,7 @@ use std::time::Instant;
 
 use crate::cost::{CostKind, accumulate_cost_sum};
 use crate::host_resources::{self, HostResources};
-use crate::read_tuning::{max_read_bytes, training_read_target_bytes_from_env};
+use crate::read_tuning::{self, max_read_bytes, training_read_target_bytes_from_env_for_readers};
 use crate::sampling::SampleSpec;
 use crate::stream_io::run_io_loop;
 use neat_core::network::CompiledNetwork;
@@ -62,7 +62,8 @@ pub(crate) fn activation_worker_count_for(host: &HostResources) -> usize {
     parsed.clamp(1, host_resources::max_worker_count(host))
 }
 
-/// Aligned fused read size (same rounding as [`training_read_target_bytes_from_env`]).
+/// Aligned fused read size (same rounding as
+/// [`training_read_target_bytes_from_env_for_readers`]).
 ///
 /// When **`NEAT_SCORER_ACTIVATION_THREADS` > 1**, bumps the buffer to at least **`2 * record_bytes`**
 /// (capped like the core I/O tuner) so `pending` can hold two whole records per activation batch.
@@ -246,12 +247,28 @@ fn resolve_file_read_workers(
 
 /// Per-reader read-buffer size (Issue #529). Shares one total read budget
 /// across the readers so W concurrent readers never hold more buffer memory
-/// than a single reader at the host's maximum chunk size, while staying a
-/// whole number of records.
+/// than the host's aggregate read budget, while staying a whole number of
+/// records.
+///
+/// **Issue #549:** the budget divided here is
+/// [`read_tuning::aggregate_read_budget_bytes`] — the named resident read-buffer
+/// budget — rather than `max_read_bytes`, the *override clamp* it borrowed
+/// before. Same value on every host (that clamp's RAM tier moved across with
+/// it), but the reader-count-aware default now computes from the same budget, so
+/// this call only has to bound a hand-set `NEAT_SCORER_READ_BYTES`.
 fn per_reader_read_buf_len(record_bytes: usize, read_buf_len: usize, readers: usize) -> usize {
+    per_reader_read_buf_len_for(record_bytes, read_buf_len, readers, &host_resources::host())
+}
+
+/// Testable variant of [`per_reader_read_buf_len`].
+fn per_reader_read_buf_len_for(
+    record_bytes: usize,
+    read_buf_len: usize,
+    readers: usize,
+    host: &HostResources,
+) -> usize {
     let rb = record_bytes.max(1);
-    let total_budget = max_read_bytes();
-    let budget = (total_budget / readers.max(1)).max(rb);
+    let budget = read_tuning::per_reader_read_budget_bytes(host, readers).max(rb);
     let len = read_buf_len.min(budget);
     ((len / rb) * rb).max(rb)
 }
@@ -471,9 +488,6 @@ pub fn accumulate_cost_sum_forward_only_fused_sampled_with_workers(
         true,
     )?;
 
-    let target_read_bytes = training_read_target_bytes_from_env(record_bytes);
-    let read_buf_len = effective_fused_read_buf_len(record_bytes, target_read_bytes);
-
     // For multi-threaded activation, each worker needs an independent `CompiledNetwork`
     // (separate activation/hint/trace buffers). `CompiledNetwork: Clone` landed upstream
     // (NEAT-AI-core#11), so we now clone the caller-supplied template once per extra worker
@@ -485,6 +499,12 @@ pub fn accumulate_cost_sum_forward_only_fused_sampled_with_workers(
     let file_start_records = record_aligned_file_starts(bin_files, record_bytes);
     let readers = resolve_file_read_workers(bin_files.len(), file_workers, &file_start_records);
     let activation_workers = activation_workers_per_file_worker(readers);
+
+    // Issue #549: every reader holds its own read buffer, so the chunk default is
+    // sized for the *aggregate* `readers × chunk` footprint — resolved here,
+    // after the reader count is known.
+    let target_read_bytes = training_read_target_bytes_from_env_for_readers(record_bytes, readers);
+    let read_buf_len = effective_fused_read_buf_len(record_bytes, target_read_bytes);
 
     let clone_started = Instant::now();
     let total_clones = readers * activation_workers;
@@ -753,9 +773,10 @@ mod tests {
     // those tests now lives there.
     use super::{
         AUTO_FILE_READ_WORKERS, partition_packed_records, per_reader_read_buf_len,
-        record_aligned_file_starts, resolve_file_read_workers,
+        per_reader_read_buf_len_for, record_aligned_file_starts, resolve_file_read_workers,
     };
-    use crate::read_tuning::max_read_bytes;
+    use crate::host_resources::{self, GIB, HostResources};
+    use crate::read_tuning;
     use std::io::Write;
 
     #[test]
@@ -849,9 +870,86 @@ mod tests {
             assert_eq!(per % record_bytes, 0, "buffer must be record-aligned");
             assert!(per >= record_bytes, "buffer must hold at least one record");
             assert!(
-                per * readers <= max_read_bytes(),
+                // Issue #549: the shared budget is the named aggregate read
+                // budget; before, this borrowed the `max_read_bytes` override
+                // clamp, which is the same value on every host below 64 GiB.
+                per * readers <= read_tuning::aggregate_read_budget_bytes(&host_resources::host()),
                 "{readers} readers x {per} B exceeds the shared read budget"
             );
+        }
+    }
+
+    /// Issue #549: the same budget on a grid of synthetic fleet hosts, so the
+    /// invariant is checked off whatever machine happens to run the suite.
+    #[test]
+    fn per_reader_read_buf_shares_one_budget_on_every_fleet_host() {
+        let record_bytes = 9848_usize;
+        for (cpus, ram_gib) in [
+            (8, 8_u64),
+            (10, 16),
+            (12, 24),
+            (10, 32),
+            (24, 64),
+            (24, 192),
+        ] {
+            let host = HostResources::synthetic(cpus, Some(ram_gib * GIB));
+            let budget = read_tuning::aggregate_read_budget_bytes(&host);
+            for readers in [1_usize, 2, 10, 12, 24, 26] {
+                // Request far more than any budget allows, so the split is what
+                // bounds the result.
+                let per =
+                    per_reader_read_buf_len_for(record_bytes, 256 * 1024 * 1024, readers, &host);
+                assert_eq!(per % record_bytes, 0, "buffer must be record-aligned");
+                assert!(per >= record_bytes, "buffer must hold at least one record");
+                assert!(
+                    per * readers <= budget,
+                    "{cpus}c/{ram_gib} GiB: {readers} readers x {per} B exceeds the \
+                     {budget} B aggregate read budget"
+                );
+            }
+        }
+    }
+
+    /// Issue #549: the **shipped resident buffer per reader** on every fleet
+    /// tier, in bytes, as `(label, logical cpus, RAM GiB, per-reader buffer)`.
+    ///
+    /// These are the values the pre-#549 two-stage sizing produced (record-size
+    /// tier chosen blind, then divided across the readers by
+    /// `per_reader_read_buf_len`). Making the default reader-aware moved the
+    /// arithmetic, not the answer — this table is the proof, and a retune of any
+    /// tier must land here with before/after benchmark evidence (see the
+    /// [Performance Task Workflow](../../CONTRIBUTING.md#performance-task-workflow)).
+    const SHIPPED_PER_READER_BUFFER: [(&str, usize, u64, usize); 8] = [
+        ("M1 8 GB", 8, 8, 8_380_648),
+        ("M4 16 GB", 10, 16, 6_706_488),
+        ("x86 Linux 16 GB", 8, 16, 8_380_648),
+        ("M4 24 GB", 10, 24, 6_706_488),
+        ("M4 Pro 24 GB", 12, 24, 5_583_816),
+        ("M1 Max 32 GB", 10, 32, 6_706_488),
+        ("M2 Ultra 64 GB", 24, 64, 11_177_480),
+        ("M2 Ultra 192 GB", 24, 192, 11_177_480),
+    ];
+
+    #[test]
+    fn shipped_per_reader_buffer_is_unchanged_by_the_reader_aware_default() {
+        // Production record width and shard count (Issue #529): 26 files, so the
+        // reader count is the host's worker default capped at 26.
+        let record_bytes = 9848_usize;
+        for (label, cpus, ram_gib, expected) in SHIPPED_PER_READER_BUFFER {
+            let host = HostResources::synthetic(cpus, Some(ram_gib * GIB));
+            let readers = host_resources::default_worker_count(&host).min(26);
+            let target =
+                read_tuning::default_training_read_bytes_for_readers(record_bytes, &host, readers);
+            // `effective_fused_read_buf_len` reads the *running* host for the
+            // activation-worker bump and the flat override clamp, both of which
+            // leave a production-width buffer alone.
+            let buf = super::effective_fused_read_buf_len(record_bytes, target);
+            let per = per_reader_read_buf_len_for(record_bytes, buf, readers, &host);
+            assert_eq!(
+                per, expected,
+                "{label}: {readers} readers must still hold {expected} B each, got {per} B"
+            );
+            assert_eq!(per % record_bytes, 0, "{label}: whole records only");
         }
     }
 

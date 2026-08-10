@@ -55,6 +55,9 @@ use crate::gpu::forward_mse_batched::{
     effective_directory_gpu_inflight,
 };
 use crate::gpu::{GpuBackendLabel, GpuContext};
+// Directory scoring drives one continuous `for_each_read_chunk` sweep (a single
+// read buffer), so it takes the single-reader read default — Issue #549's
+// aggregate `readers × chunk` bound applies to the multi-reader fused path.
 use crate::read_tuning::{training_read_backend_label, training_read_target_bytes_from_env};
 use crate::sampling::SampleSpec;
 use crate::scoring::{ScoreResult, calculate_score, complexity_penalty, compute_score_components};

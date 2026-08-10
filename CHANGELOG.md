@@ -15,6 +15,47 @@ section to the released version with its date.
 
 ## [Unreleased]
 
+### Added
+
+- **`docs/self-tuning.md` — the self-tuning policy, tier tables and #544
+  roll-up (Issue #550).** One document now carries the full detection → tier →
+  knob mapping (worker ceiling, record-size tier, read-chunk RAM ceiling,
+  aggregate read budget, GPU scratch budget), the fallback behaviour when a
+  probe is unavailable, the fleet tier table with the knob values each machine
+  family resolves, and the per-knob outcome of every #544 sub-issue including
+  the two `negative-result` retunes. The `NEAT_SCORER_*` variables are
+  documented — in `README.md` and `docs/performance-baseline.md` as well — as
+  **emergency escape hatches, not per-host configuration**.
+  `scripts/check-self-tuning-docs.sh` (in `quality.sh`, and therefore CI) fails
+  the gate on a tier row that disagrees with the shipped constants, on a
+  `NEAT_SCORER_*` environment read with no entry in the escape-hatch table, and
+  on either document losing the emergency-only wording; the fleet tier table
+  itself is pinned by
+  `host_resources::tests::every_fleet_tier_resolves_the_documented_knobs`.
+
+### Changed
+
+- **Read-chunk defaults are reader-count aware, and the dead 256 MiB read
+  ceiling is gone (Issue #549).** `read_tuning` now picks the chunk from three
+  bounds — the record-size tier, the host-RAM tier, and each reader's share of a
+  named `aggregate_read_budget_bytes` (64 MiB, 256 MiB on a ≥ 64 GiB host, never
+  more than RAM / 16). The aggregate total was already bounded since Issue #529,
+  but by dividing `max_read_bytes` — the *override clamp* — inside
+  `stream_score`, so the chunk `read_tuning` chose was silently overridden and
+  `--host-report` printed a figure up to 6× wider than any reader actually held.
+  **Every fleet tier keeps a byte-identical resident buffer** (pinned per tier in
+  `stream_score::tests::shipped_per_reader_buffer_is_unchanged_by_the_reader_aware_default`):
+  this moves the arithmetic, not the answer. `host_resources::max_read_bytes` is
+  now a flat 64 MiB on every host — its `≥ 64 GiB → 256 MiB` tier was selectable
+  by no built-in default, and the 256 MiB figure it actually supplied is now the
+  large-RAM aggregate budget. `--host-report` gains `file_read_workers` and
+  `aggregate_read_budget_bytes` (schema `neat-scorer-host-report/3`). The
+  small-record 2 MiB path, the `NEAT_SCORER_READ_BYTES` override, its clamp and
+  whole-record alignment are unchanged. No tier's chunk was retuned: this host
+  could not produce usable sweep numbers (five *identical* configurations varied
+  2× in median under production load), recorded in
+  `docs/performance-baseline.md`.
+
 ### Fixed
 
 - **`RMSE` docs no longer read as a redundant alias of `MSE` (Issue #556).**
@@ -37,6 +78,60 @@ section to the released version with its date.
   baseline and commits the matching lock sync.
 
 ### Added
+
+- **GPU capability sensing and scratch-budget clamps (Issue #548).**
+  `HostResources` now carries `gpu: Option<GpuCapability>` — backend label,
+  whether adapter memory is unified with system RAM or discrete VRAM,
+  `max_storage_buffer_binding_size` and `max_compute_workgroups_per_dimension`.
+  It is cached once per process by `gpu::select_adapter` from the adapter that
+  call already creates, so sensing **never** initialises a `wgpu` device of its
+  own: `--gpu off` and the GPU-less x86 Linux hosts sense nothing and keep the
+  pre-#548 RAM-only tiering exactly. With an adapter sensed the
+  `forward_mse_scratch` budget is **tightened** against what that adapter
+  reports — **hard-capped at its `max_storage_buffer_binding_size`**,
+  additionally capped at one sixteenth of RAM on unified-memory hosts and at a
+  quarter of the binding limit on discrete cards, then floored to a power of two
+  so the runner's allocation cannot round back above the limit. The scratch grid
+  is also clamped to the device's `max_compute_workgroups_per_dimension`.
+  Sensing never *raises* a budget: the retune half of #548 is a
+  **negative result** — doubling the budget measured 7.9 % slower on an M4 Pro
+  (4 of 4 interleaved pairs), recorded in
+  [`docs/performance-baseline.md`](./docs/performance-baseline.md) — so every
+  fleet tier keeps its shipped value. `HostResources::with_gpu` pins a synthetic
+  adapter for deterministic policy tests; `NEAT_SCORER_GPU_SCRATCH_BYTES` still
+  overrides. The RAM-only mid-host special case in
+  `gpu/forward_mse_batched.rs` is retired — it re-stated the tier the host
+  policy already returned.
+- **Performance-core probe (Issue #546).** `HostResources` now carries
+  `performance_cpus` beside `cpus`: `hw.perflevel0.physicalcpu` (falling back to
+  `hw.physicalcpu`) on macOS, the highest-`cpu_capacity` tier on heterogeneous
+  ARM Linux, and the logical CPU count everywhere else — x86, Intel Macs, any
+  probe failure. The probe never reports **fewer** cores than it can prove, so
+  a host it cannot classify keeps every historical default.
+  `HostResources::synthetic_with_performance_cpus` lets policy tests pin a fleet
+  tier's P/E split, and `--host-report` reports the count under the new
+  `neat-scorer-host-report/2` schema. `default_worker_count` is **unchanged** —
+  it still keys off the logical count, because the worker retune needs
+  before/after evidence the contended fleet host could not produce; the
+  inconclusive A/B is recorded in
+  [`docs/performance-baseline.md`](./docs/performance-baseline.md) and the
+  retune is tracked in Issue #553.
+- **Host knob report and knob sweep harness (Issue #545).** `rust_scorer
+  --host-report` prints the detected host (logical CPUs, physical RAM) and every
+  resolved knob — `default_worker_count`, `max_worker_count`, `max_read_bytes`,
+  `default_training_read_bytes`, `gpu_scratch_bytes` — as one JSON object, each
+  tagged `default` or `env` so a fleet operator can see which values an override
+  actually moved. It scores nothing, creates no `wgpu` adapter, and so returns
+  the same JSON on a GPU-less host and under `--gpu off`.
+  `--record-bytes <BYTES>` picks the record width the record-size-adaptive read
+  knob is resolved for (default: the 9848 B production width).
+  [`scripts/bench-knob-sweep.sh`](./scripts/bench-knob-sweep.sh) sweeps one
+  `NEAT_SCORER_*` knob across a caller-supplied value list on the production
+  scoring path and reports the median wall-clock per value, prefixed by that
+  host's report; it skips cleanly without local inputs (Issue #448) and is
+  fail-loud once they are supplied. Measurement only — **no shipped default
+  changed**. Fleet baseline for the Apple mid tier recorded in
+  [`docs/performance-baseline.md`](./docs/performance-baseline.md).
 
 - **Parallel training-data file reads (Issue #529).** The forward-only fused
   path now streams a multi-file corpus through several concurrent `.bin`
