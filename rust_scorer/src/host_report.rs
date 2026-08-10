@@ -93,8 +93,11 @@ pub struct HostReport {
     /// `logical_cpus` on a homogeneous host, or wherever the platform exposes
     /// no P/E split — the probe never reports fewer than it can prove.
     pub performance_cpus: usize,
-    /// Physical RAM in bytes, or `null` where the platform probe is
-    /// unavailable (the knobs then take their unknown-RAM defaults).
+    /// Physical RAM in bytes — the probe snapped to the host's nameplate
+    /// capacity ([`host_resources::snap_to_nameplate_bytes`], Issue #547), so
+    /// it is the figure the knobs below were tiered against. `null` where the
+    /// platform probe is unavailable (the knobs then take their unknown-RAM
+    /// defaults).
     pub physical_ram_bytes: Option<u64>,
     /// Record width `default_training_read_bytes` was resolved for.
     pub record_bytes: usize,

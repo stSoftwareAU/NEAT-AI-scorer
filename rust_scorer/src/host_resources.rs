@@ -8,6 +8,12 @@
 //! Override knobs (`NEAT_SCORER_READ_BYTES`, `NEAT_SCORER_ACTIVATION_THREADS`,
 //! …) still win when set; this module only supplies the **defaults** and the
 //! clamp ceilings those defaults / overrides share.
+//!
+//! Every RAM tier compares against [`HostResources::physical_ram_bytes`], which
+//! is the probe **snapped to the host's nameplate capacity**
+//! ([`snap_to_nameplate_bytes`], Issue #547) — the raw POSIX probe reports
+//! usable memory, so an x86 Linux box sold as 16 GB reads ≈ 15.5 GiB and would
+//! otherwise drop a whole tier.
 
 use std::sync::OnceLock;
 
@@ -29,7 +35,10 @@ pub struct HostResources {
     /// Intel Macs, any probe failure) — **never fewer**, so a failed probe
     /// cannot starve parallelism.
     pub performance_cpus: usize,
-    /// Physical RAM in bytes when the platform probe succeeds.
+    /// Physical RAM in bytes when the platform probe succeeds, snapped to the
+    /// host's **nameplate** capacity by [`snap_to_nameplate_bytes`] (Issue
+    /// #547) so every tier below compares against the memory the box was sold
+    /// with, not the slightly smaller figure the kernel leaves usable.
     pub physical_ram_bytes: Option<u64>,
 }
 
@@ -45,7 +54,10 @@ impl HostResources {
     /// (Issue #546), so policy tests can reproduce a fleet tier exactly —
     /// e.g. `synthetic_with_performance_cpus(12, 8, …)` for an M4 Pro (8P+4E).
     ///
-    /// `performance_cpus` is clamped into `[1, cpus]`.
+    /// `performance_cpus` is clamped into `[1, cpus]`, and
+    /// `physical_ram_bytes` goes through [`snap_to_nameplate_bytes`] exactly as
+    /// a real probe does, so a synthetic host tiers identically to the machine
+    /// whose reading it reproduces.
     #[must_use]
     pub const fn synthetic_with_performance_cpus(
         cpus: usize,
@@ -63,7 +75,12 @@ impl HostResources {
         Self {
             cpus,
             performance_cpus,
-            physical_ram_bytes,
+            // Single construction point, so the nameplate snap (Issue #547)
+            // cannot be bypassed.
+            physical_ram_bytes: match physical_ram_bytes {
+                Some(raw) => Some(snap_to_nameplate_bytes(raw)),
+                None => None,
+            },
         }
     }
 
@@ -74,11 +91,11 @@ impl HostResources {
             .map(|n| n.get())
             .unwrap_or(1)
             .max(1);
-        Self {
+        Self::synthetic_with_performance_cpus(
             cpus,
-            performance_cpus: resolve_performance_cpus(cpus, performance_core_count()),
-            physical_ram_bytes: physical_memory_bytes(),
-        }
+            resolve_performance_cpus(cpus, performance_core_count()),
+            physical_memory_bytes(),
+        )
     }
 }
 
@@ -87,6 +104,63 @@ impl HostResources {
 fn resolve_performance_cpus(cpus: usize, probed: Option<usize>) -> usize {
     let cpus = cpus.max(1);
     probed.filter(|&n| n > 0).unwrap_or(cpus).clamp(1, cpus)
+}
+
+/// Nameplate RAM capacities, in GiB, a probed reading may be snapped up to.
+///
+/// Powers of two plus the common 1.5× and Apple-specific configurations, in
+/// ascending order — [`snap_to_nameplate_bytes`] relies on the ordering.
+const NAMEPLATE_CAPACITY_GIB: [u64; 23] = [
+    1, 2, 3, 4, 6, 8, 12, 16, 18, 24, 32, 36, 48, 64, 96, 128, 192, 256, 384, 512, 768, 1024, 1536,
+];
+
+/// How far below a nameplate capacity a reading may sit and still count as
+/// that capacity: one sixteenth, i.e. 6.25 %.
+///
+/// Observed x86-Linux shortfalls are 3.75 % (15.4 of 16 GiB) to 5.0 % (7.6 of
+/// 8 GiB); 6.25 % covers them with headroom while leaving a genuinely smaller
+/// machine — 7 GiB against an 8 GiB capacity, 12.5 % short — in its own tier.
+const NAMEPLATE_TOLERANCE_DIVISOR: u64 = 16;
+
+/// Round a probed RAM reading up to the host's nameplate capacity.
+///
+/// `sysconf(_SC_PHYS_PAGES) * sysconf(_SC_PAGESIZE)` reports **usable** memory,
+/// so firmware and kernel reservations put a nominally 16 GB x86 Linux box a
+/// few hundred MiB below `16 * GIB` and every strict `<` tier below silently
+/// drops it a whole tier (Issue #547). A reading within **6.25 %** of the next
+/// nameplate capacity (powers of two plus the common 1.5× and Apple-specific
+/// sizes) is treated as that capacity; anything further below is left exactly
+/// as probed, and the result is never lower than the input.
+///
+/// # Examples
+///
+/// ```
+/// use rust_scorer::host_resources::snap_to_nameplate_bytes;
+///
+/// const GIB: u64 = 1024 * 1024 * 1024;
+/// // A 16 GB x86 Linux box reporting 15.5 GiB tiers as 16 GiB …
+/// assert_eq!(snap_to_nameplate_bytes(16_642_998_272), 16 * GIB);
+/// // … while an exact Apple Silicon reading is untouched …
+/// assert_eq!(snap_to_nameplate_bytes(24 * GIB), 24 * GIB);
+/// // … and a genuinely smaller machine keeps its own reading.
+/// assert_eq!(snap_to_nameplate_bytes(7 * GIB), 7 * GIB);
+/// ```
+#[must_use]
+pub const fn snap_to_nameplate_bytes(probed_bytes: u64) -> u64 {
+    let mut i = 0;
+    while i < NAMEPLATE_CAPACITY_GIB.len() {
+        let capacity = NAMEPLATE_CAPACITY_GIB[i] * GIB;
+        if probed_bytes >= capacity {
+            i += 1;
+            continue;
+        }
+        // First capacity above the reading — the only candidate to snap to.
+        if capacity - probed_bytes <= capacity / NAMEPLATE_TOLERANCE_DIVISOR {
+            return capacity;
+        }
+        return probed_bytes;
+    }
+    probed_bytes
 }
 
 /// Process-wide host probe (lazy, read-only after init).
@@ -419,5 +493,96 @@ mod tests {
         let zero_cpus = HostResources::synthetic_with_performance_cpus(0, 4, None);
         assert_eq!(zero_cpus.cpus, 1);
         assert_eq!(zero_cpus.performance_cpus, 1);
+    }
+
+    // --- Nameplate snapping (Issue #547) ---------------------------------
+    //
+    // Real x86-Linux readings from the fleet health dashboard: `sysconf` reports
+    // *usable* memory, so firmware/kernel reservations put a nominally 8 or
+    // 16 GB box a few hundred MiB below the exact power-of-two tier boundary.
+    // Page-aligned (4 KiB) so they are values a real probe could return.
+
+    /// 8 GB nameplate x86 Linux host: probe reports ≈ 7.6 GiB.
+    const PROBED_8GB_X86_BYTES: u64 = 8_160_436_224;
+    /// 16 GB nameplate x86 Linux host: probe reports ≈ 15.4 GiB.
+    const PROBED_16GB_X86_BYTES_LOW: u64 = 16_535_621_632;
+    /// 16 GB nameplate x86 Linux host: probe reports 15.5 GiB.
+    const PROBED_16GB_X86_BYTES_HIGH: u64 = 16_642_998_272;
+
+    #[test]
+    fn snaps_7_6_gib_to_8_gib_tier() {
+        let host = HostResources::synthetic(8, Some(PROBED_8GB_X86_BYTES));
+        assert_eq!(host.physical_ram_bytes, Some(8 * GIB));
+        // Was the low-RAM 16-worker cap and a 128 MiB scratch budget.
+        assert_eq!(max_worker_count(&host), 256);
+        assert_eq!(default_worker_count(&host), 8);
+        assert_eq!(default_gpu_scratch_bytes(&host), 256 * 1024 * 1024);
+        assert_eq!(max_read_bytes(&host), 64 * 1024 * 1024);
+    }
+
+    #[test]
+    fn snaps_15_4_and_15_5_gib_to_16_gib_tier() {
+        for probed in [PROBED_16GB_X86_BYTES_LOW, PROBED_16GB_X86_BYTES_HIGH] {
+            let host = HostResources::synthetic(8, Some(probed));
+            assert_eq!(host.physical_ram_bytes, Some(16 * GIB));
+            assert_eq!(max_worker_count(&host), 256);
+            // Was the < 16 GiB 256 MiB scratch tier.
+            assert_eq!(default_gpu_scratch_bytes(&host), 512 * 1024 * 1024);
+            assert_eq!(max_read_bytes(&host), 64 * 1024 * 1024);
+        }
+    }
+
+    #[test]
+    fn exact_24_gib_and_64_gib_unchanged() {
+        let m4_pro = HostResources::synthetic(10, Some(24 * GIB));
+        assert_eq!(m4_pro.physical_ram_bytes, Some(24 * GIB));
+        assert_eq!(max_worker_count(&m4_pro), 256);
+        assert_eq!(default_gpu_scratch_bytes(&m4_pro), 512 * 1024 * 1024);
+        assert_eq!(max_read_bytes(&m4_pro), 64 * 1024 * 1024);
+
+        let big = HostResources::synthetic(32, Some(64 * GIB));
+        assert_eq!(big.physical_ram_bytes, Some(64 * GIB));
+        assert_eq!(max_read_bytes(&big), 256 * 1024 * 1024);
+        assert_eq!(default_gpu_scratch_bytes(&big), 1024 * 1024 * 1024);
+    }
+
+    #[test]
+    fn apple_silicon_reported_values_are_unchanged() {
+        // `hw.memsize` is already the nameplate figure on every shipped
+        // configuration, so snapping must be a no-op there.
+        for gib in [8_u64, 16, 18, 24, 32, 36, 48, 64, 96, 128, 192, 512] {
+            assert_eq!(snap_to_nameplate_bytes(gib * GIB), gib * GIB);
+        }
+    }
+
+    #[test]
+    fn none_probe_unchanged() {
+        let unknown = HostResources::synthetic(12, None);
+        assert_eq!(unknown.physical_ram_bytes, None);
+        assert_eq!(max_worker_count(&unknown), 64);
+        assert_eq!(default_worker_count(&unknown), 12);
+        assert_eq!(max_read_bytes(&unknown), 64 * 1024 * 1024);
+        assert_eq!(default_gpu_scratch_bytes(&unknown), 512 * 1024 * 1024);
+    }
+
+    #[test]
+    fn genuinely_small_host_is_not_snapped_up_a_tier() {
+        // 7.0 GiB is 12.5 % below the 8 GiB nameplate — far more than
+        // firmware reservations explain, so it stays in the low-RAM tier.
+        let small = HostResources::synthetic(8, Some(7 * GIB));
+        assert_eq!(small.physical_ram_bytes, Some(7 * GIB));
+        assert_eq!(max_worker_count(&small), 16);
+        assert_eq!(default_gpu_scratch_bytes(&small), 128 * 1024 * 1024);
+
+        let tiny = HostResources::synthetic(4, Some(3 * GIB));
+        assert_eq!(tiny.physical_ram_bytes, Some(3 * GIB));
+        assert_eq!(max_worker_count(&tiny), 4);
+    }
+
+    #[test]
+    fn snapping_never_lowers_a_reading() {
+        for bytes in [0, 1, GIB / 2, 5 * GIB, 7 * GIB, 100 * GIB, 4096 * GIB] {
+            assert!(snap_to_nameplate_bytes(bytes) >= bytes);
+        }
     }
 }
