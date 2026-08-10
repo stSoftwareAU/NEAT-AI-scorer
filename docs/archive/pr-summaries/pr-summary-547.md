@@ -13,8 +13,9 @@ the nameplate figure exactly.
 
 `host_resources::snap_to_nameplate_bytes` rounds a reading up to the nearest
 nameplate capacity when it sits within **6.25 %** of it. It is applied **once**,
-at the single point `HostResources` is constructed (`probe()` now delegates to
-`synthetic()`), so `max_worker_count`, `max_read_bytes`,
+at the single point `HostResources` is constructed
+(`synthetic_with_performance_cpus`, which `probe()` and `synthetic()` both
+funnel through), so `max_worker_count`, `max_read_bytes`,
 `default_gpu_scratch_bytes` and `read_tuning`'s `ram_cap` all inherit the
 correction and no call site can bypass it. A reading further below a capacity
 than the tolerance band is left exactly as probed, and `None` (probe
@@ -47,29 +48,30 @@ Backend/CLI change — no web interface to screenshot.
 
 ### The tests fail without the fix
 
-Reverting only the snap call inside `HostResources::synthetic` (implementation
-removed, tests untouched) turns exactly the three new tier tests red and leaves
-every pre-existing test green:
+Reverting only the snap call inside
+`HostResources::synthetic_with_performance_cpus` (implementation removed, tests
+untouched) turns exactly the three new tier tests red and leaves every
+pre-existing test — including Issue #546's — green:
 
 ```text
-test host_resources::tests::snaps_15_4_and_15_5_gib_to_16_gib_tier ... FAILED
-test host_resources::tests::snaps_7_6_gib_to_8_gib_tier ... FAILED
 test read_tuning::tests::ram_cap_uses_snapped_ram ... FAILED
-test result: FAILED. 14 passed; 3 failed
+test host_resources::tests::snaps_7_6_gib_to_8_gib_tier ... FAILED
+test host_resources::tests::snaps_15_4_and_15_5_gib_to_16_gib_tier ... FAILED
+test result: FAILED. 22 passed; 3 failed
 ```
 
 With the fix in place, `./quality.sh` passes cleanly (`✅ All quality checks
-passed!`): 227 lib tests, integration tests, 29 doctests, clippy, rustdoc and
-release build.
+passed!`) on the branch rebased onto the milestone head: 235 lib tests,
+integration tests, doctests, clippy, rustdoc and release build.
 
 ### Apple Silicon is unchanged
 
-`./target/release/rust_scorer --host-report` on this M4 Pro (10 cores, 24 GB) is
-byte-identical to the report recorded in
-[`docs/performance-baseline.md`](../../performance-baseline.md) before the
-change — `physical_ram_bytes: 25769803776` (24.0 GiB exactly), `max_worker_count
-256`, `max_read_bytes 67108864`, `default_training_read_bytes 33552136`,
-`gpu_scratch_bytes 536870912`.
+`./target/release/rust_scorer --host-report` on this M4 Pro (10 logical / 4 P
+cores, 24 GB) reports `physical_ram_bytes: 25769803776` — 24.0 GiB exactly, the
+same figure as the baseline in
+[`docs/performance-baseline.md`](../../performance-baseline.md), with every knob
+unmoved (`max_worker_count 256`, `max_read_bytes 67108864`,
+`default_training_read_bytes 33552136`, `gpu_scratch_bytes 536870912`).
 
 ### Timings for the tier correction
 
