@@ -143,6 +143,40 @@ mod tests {
     }
 
     #[test]
+    fn ram_cap_uses_snapped_ram() {
+        // 16 GB nameplate x86 Linux host: the probe reports 15.5 GiB.
+        // Both the read cap here and the worker ceiling in `host_resources`
+        // must tier as a 16 GiB host, or one call site has bypassed the
+        // central snap (Issue #547).
+        let probed = HostResources::synthetic(8, Some(16_642_998_272));
+        let nameplate = HostResources::synthetic(8, Some(16 * GIB));
+
+        assert_eq!(
+            default_training_read_bytes_for(9848, &probed),
+            LARGE_RECORD_DEFAULT_READ_BYTES
+        );
+        assert_eq!(
+            default_training_read_bytes_for(9848, &probed),
+            default_training_read_bytes_for(9848, &nameplate)
+        );
+        assert_eq!(
+            host_resources::max_worker_count(&probed),
+            host_resources::max_worker_count(&nameplate)
+        );
+    }
+
+    #[test]
+    fn low_ram_read_cap_still_applies_below_the_nameplate_band() {
+        // 7 GiB is too far below 8 GiB to be a reservation artefact, so the
+        // 8 MiB low-RAM cap must survive the snap.
+        let small = HostResources::synthetic(8, Some(7 * GIB));
+        assert_eq!(
+            default_training_read_bytes_for(9848, &small),
+            8 * 1024 * 1024
+        );
+    }
+
+    #[test]
     fn large_mac_takes_full_mid_host_cap_for_production_records() {
         let big = HostResources::synthetic(32, Some(128 * GIB));
         assert_eq!(default_training_read_bytes_for(9848, &big), MAX_READ_BYTES);

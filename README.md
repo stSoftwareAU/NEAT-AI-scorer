@@ -471,6 +471,10 @@ rust_scorer --host-report --record-bytes 40    # small-record corpora
 
 - `value` is what the scorer will actually use, **after** every clamp and the
   round-down to a whole record multiple — not the raw env string.
+- `physical_ram_bytes` is the probe **snapped to the host's nameplate capacity**
+  (see [Nameplate RAM snapping](#nameplate-ram-snapping-issue-547)), so it is
+  the figure the knobs were tiered against — on a 16 GB x86 Linux host it reads
+  `17179869184`, not the ≈ 15.5 GiB the kernel leaves usable.
 - `source` is `env` only when an override was parsed and **honoured**. A
   malformed value (`NEAT_SCORER_READ_BYTES=2MB`) is rejected by the shipped
   resolver, so it keeps reporting `default` and still warns on stderr.
@@ -496,6 +500,43 @@ adapter, and therefore returns the same JSON on a GPU-less host, under
 read-chunk knob is resolved for (the default is record-size adaptive); zero is
 rejected rather than clamped. Pair it with the knob sweep harness in
 [How to bench](#how-to-bench) when retuning a knob.
+
+### Nameplate RAM snapping (Issue #547)
+
+Every RAM tier above (`max_worker_count`, `max_read_bytes`, the GPU scratch
+budget, the `read_tuning` read cap) is a strict comparison against an exact
+power-of-two byte count, but the POSIX probe
+(`sysconf(_SC_PHYS_PAGES) * sysconf(_SC_PAGESIZE)`) reports **usable** memory.
+On x86 Linux, firmware and kernel reservations put a nominally 16 GB box a few
+hundred MiB below `16 * GIB`, so it silently dropped a whole tier — and a
+nominally 8 GB box was treated as a low-RAM host, capped at 16 workers with an
+8 MiB read buffer.
+
+[`host_resources::snap_to_nameplate_bytes`](rust_scorer/src/host_resources.rs)
+rounds the reading up to the nearest nameplate capacity when it sits within
+**6.25 %** of it, once, at the single point `HostResources` is constructed — so
+every knob inherits the correction and none can bypass it:
+
+| Nameplate | Probe reports | Tier before | Tier after |
+|---|---|---|---|
+| 8 GB | ≈ 7.6 GiB | `< 8 GiB` — 16-worker cap, 8 MiB reads | 8 GiB — 256-worker cap, 16 MiB reads |
+| 16 GB | ≈ 15.4 / 15.5 GiB | `< 16 GiB` — 16 MiB reads, 256 MiB scratch | 16 GiB — 32 MiB reads, 512 MiB scratch |
+| 24 GB (Apple Silicon) | 24.0 GiB exactly | 24 GiB | unchanged |
+
+Readings further below a capacity than the tolerance band are left exactly as
+probed, so a genuinely small machine (7 GiB against an 8 GiB capacity, 12.5 %
+short) keeps its low-RAM defaults. An unavailable probe stays `None` and keeps
+the unknown-RAM defaults.
+
+```mermaid
+flowchart LR
+    P[sysconf probe<br/>usable bytes] --> S{within 6.25 % of a<br/>nameplate capacity?}
+    S -- yes --> N[snap up to that capacity]
+    S -- no --> R[keep the probed value]
+    N --> H[HostResources.physical_ram_bytes]
+    R --> H
+    H --> K[max_worker_count · max_read_bytes<br/>gpu scratch · read_tuning ram_cap]
+```
 
 ### Stdin input mode
 
@@ -690,7 +731,9 @@ Self-tuning then **shrinks** that default on old / low-RAM machines (e.g. 2 MiB
 on &lt; 4 GiB RAM, 8 MiB on &lt; 8 GiB) and may take the full **64 MiB**
 `MAX_READ_BYTES` default on very large Macs (≥ 64 GiB RAM) for production-width
 records. Thread counts and the GPU scratch budget scale the same way — see
-`host_resources`.
+`host_resources`. Those RAM comparisons are made against the **nameplate**
+capacity, not the raw probe — see
+[Nameplate RAM snapping](#nameplate-ram-snapping-issue-547).
 
 **Production records are 9848 bytes** (2461 inputs + 1 output, `f32`), so a
 typical production host already reads 32 MiB chunks with **no environment
