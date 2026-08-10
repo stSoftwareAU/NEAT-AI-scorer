@@ -15,6 +15,24 @@ section to the released version with its date.
 
 ## [Unreleased]
 
+### Added
+
+- **`docs/self-tuning.md` — the self-tuning policy, tier tables and #544
+  roll-up (Issue #550).** One document now carries the full detection → tier →
+  knob mapping (worker ceiling, record-size tier, read-chunk RAM ceiling,
+  aggregate read budget, GPU scratch budget), the fallback behaviour when a
+  probe is unavailable, the fleet tier table with the knob values each machine
+  family resolves, and the per-knob outcome of every #544 sub-issue including
+  the two `negative-result` retunes. The `NEAT_SCORER_*` variables are
+  documented — in `README.md` and `docs/performance-baseline.md` as well — as
+  **emergency escape hatches, not per-host configuration**.
+  `scripts/check-self-tuning-docs.sh` (in `quality.sh`, and therefore CI) fails
+  the gate on a tier row that disagrees with the shipped constants, on a
+  `NEAT_SCORER_*` environment read with no entry in the escape-hatch table, and
+  on either document losing the emergency-only wording; the fleet tier table
+  itself is pinned by
+  `host_resources::tests::every_fleet_tier_resolves_the_documented_knobs`.
+
 ### Changed
 
 - **Read-chunk defaults are reader-count aware, and the dead 256 MiB read

@@ -441,6 +441,21 @@ score stays stable:
 > to a released scorer through the normal dependency-bump flow once a human cuts
 > the release.
 
+### Self-tuning, and why the `NEAT_SCORER_*` knobs are not configuration (Issue #544)
+
+The scorer picks every performance knob from the machine it is running on —
+worker counts, read-chunk sizes, the GPU scratch budget — so a low-RAM box stays
+within memory and a large Mac is not stuck at historical ceilings. The
+`NEAT_SCORER_*` variables below are an **emergency escape hatch** for incidents
+and diagnostics, **not per-host configuration**: exporting one per host is not a
+supported way to run the scorer, and a host that needs it is a tuning bug in
+`host_resources.rs` / `read_tuning.rs`, not a host that needs a wrapper script.
+
+The full detection → tier → knob mapping, the fleet tier table and the
+Issue #544 roll-up (including the retunes that measured no gain) live in
+[`docs/self-tuning.md`](docs/self-tuning.md). The sections below describe the
+individual knobs; read them as *what the scorer decided*, not as a menu.
+
 ### Host knob report — `--host-report` (Issue #545)
 
 Every host-tuned default is chosen from a probed snapshot of the machine
@@ -573,7 +588,8 @@ flowchart LR
   kernel's grid-stride width `G_x` is now clamped to it as well as to the memory
   budget.
 - **`NEAT_SCORER_GPU_SCRATCH_BYTES` still wins**, and is still capped to the
-  device binding limit.
+  device binding limit — as an emergency escape hatch for a diagnostic run, not
+  per-host configuration ([`docs/self-tuning.md`](docs/self-tuning.md)).
 
 ### Nameplate RAM snapping (Issue #547)
 
@@ -712,7 +728,9 @@ flowchart TD
 For forward-only single-creature fused scoring, activation parallelism also
 defaults to a **host-aware** worker count (every logical CPU on mid/large hosts;
 clamped on low-RAM machines so compiled-network clones stay within memory).
-Set `NEAT_SCORER_ACTIVATION_THREADS` only when you want to override manually.
+`NEAT_SCORER_ACTIVATION_THREADS` overrides that choice, but it is an emergency
+escape hatch, not per-host configuration — see
+[`docs/self-tuning.md`](docs/self-tuning.md).
 
 ### Parallel training-data file reads (Issue #529)
 
@@ -738,7 +756,7 @@ flowchart LR
 
 | Knob | Default | Purpose |
 |---|---|---|
-| `NEAT_SCORER_FILE_THREADS` | host-aware: one reader per CPU on mid/large hosts (fewer on low-RAM), never more than there are files | `.bin` files read and scored concurrently. `1` restores the single sequential reader. |
+| `NEAT_SCORER_FILE_THREADS` | host-aware: one reader per CPU on mid/large hosts (fewer on low-RAM), never more than there are files | `.bin` files read and scored concurrently. `1` restores the single sequential reader. Emergency escape hatch, not per-host configuration ([`docs/self-tuning.md`](docs/self-tuning.md)). |
 
 The two parallel axes share one CPU budget: with `W` readers, each reader gets
 `NEAT_SCORER_ACTIVATION_THREADS / W` activation workers (at least one), and the
@@ -855,8 +873,10 @@ flowchart TD
     G --> I[Round down to a whole number of records]
 ```
 
-`NEAT_SCORER_READ_BYTES` still **overrides** the adaptive default when you want
-a different size. Any value — env or default — is clamped to the **64 MiB**
+`NEAT_SCORER_READ_BYTES` still **overrides** the adaptive default, as an
+emergency escape hatch — a diagnostic or incident lever, **not per-host
+configuration** ([`docs/self-tuning.md`](docs/self-tuning.md)). Any value — env
+or default — is clamped to the **64 MiB**
 `MAX_READ_BYTES` cap (flat on every host since Issue #549) and to at least one
 record, then rounded down to a whole number of records, so a chunk never splits
 a record. An override is still divided across concurrent readers, so setting it
@@ -885,13 +905,13 @@ sensitive, so the table reports the relative improvement each cell held across
 repeated interleaved runs.)
 
 Those numbers are why the ≥ 8000 B/record default is **32 MiB**; no export is
-needed to get them. To pick a different size — for example `16777216` (16 MiB),
-which captures most of the gain at half the transient read buffer — set the env
-explicitly:
+needed to get them, and none is expected. Setting the variable by hand is a
+diagnostic step — reproducing a report, or bisecting a suspected tuning fault —
+after which it comes back out again:
 
 ```bash
-# Override the adaptive default; 32 MiB (33554432) is already the default here.
-export NEAT_SCORER_READ_BYTES=16777216   # 16 MiB
+# Diagnostic only: the adaptive default already resolves 32 MiB (33554432) here.
+NEAT_SCORER_READ_BYTES=16777216 rust_scorer creature.json data_dir   # 16 MiB
 ```
 
 The read buffer is **per-scan, not per-activation-worker** — directory mode runs
