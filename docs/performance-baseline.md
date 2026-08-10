@@ -602,6 +602,86 @@ target/release/rust_scorer            /tmp/neat-prod-creatures /tmp/neat-bench-d
 production `learn.sh` path: full-corpus evidence on M4 shows CPU wins at
 N=63, so the heuristic is topology-based rather than N-threshold.
 
+## GPU capability sensing — 10 August 2026 (Issue #548)
+
+Sub-issue of [#544](https://github.com/stSoftwareAU/NEAT-AI-scorer/issues/544).
+`HostResources` now senses the selected adapter
+(`GpuCapability`: backend, unified-vs-discrete memory,
+`max_storage_buffer_binding_size`, `max_compute_workgroups_per_dimension`) and
+the scratch budget is bounded by those limits instead of by system RAM alone.
+The **retune** half of the issue — spending the sensed capability on a *bigger*
+budget — is a **negative result**: a wider budget is slower on this tier, so the
+shipped budget is unchanged and sensing only ever tightens it.
+
+**Host:** Apple M4 Pro (12 logical / 8 P-cores, 16 GPU cores), 24 GB, Metal;
+release build, `rustc 1.95.0`. The host was **contended** during the capture
+(two production `rust_scorer` runs, load average ≈ 30), so absolute medians
+drift by up to 20 % between sessions — every comparison below is therefore an
+**interleaved A/B**, alternating the two budgets so drift hits both equally.
+
+**What the adapter reports** (`wgpu` 29, `adapter.limits()`):
+
+| Field | Value |
+|---|---|
+| `device_type` | `IntegratedGpu` → unified memory |
+| `max_storage_buffer_binding_size` | 4 294 967 292 B (4 GiB − 4; the saturated `u32`) |
+| `max_buffer_size` | 14 302 248 960 B |
+| `max_compute_workgroups_per_dimension` | 65 535 |
+
+Apple silicon reports the same 4 GiB binding limit on every tier, so it does
+**not** separate an M1 Max (24 GPU cores) from an M4 (10) — `wgpu` exposes no
+GPU core count at all. The limit is still worth sensing: it is the hard ceiling
+the scratch binding must respect.
+
+**A/B — shipped 512 MiB budget vs a doubled 1 GiB budget**, Criterion
+`shallow_gpu_vs_cpu/gpu/50` (synthetic Enceladus-shaped pool, 50 creatures,
+2461 in / 1 out, 32 MiB corpus), median of 10 samples per run, runs alternated:
+
+| Pair | 512 MiB (shipped) | 1024 MiB | Change |
+|---|---|---|---|
+| 1 | **428.3 ms** | 453.0 ms | +5.8 % slower |
+| 2 | **427.1 ms** | 449.5 ms | +5.2 % slower |
+| 3 | **420.0 ms** | 461.7 ms | +9.9 % slower |
+| 4 | **420.0 ms** | 461.1 ms | +9.8 % slower |
+| **Median** | **423.6 ms** | **457.0 ms** | **+7.9 % slower** |
+
+A single-session extension of the sweep points the same way — 512 MiB 460.6 ms,
+1 GiB 508.6 ms (+10.4 %), 2 GiB 529.7 ms (+15.0 %), 512 MiB again 450.0 ms.
+
+**Why a wider budget loses.** The budget bounds the scratch kernel's grid-stride
+width `G_x`; a wider grid means proportionally more activation scratch live at
+once (1–2 GB at these budgets) in the *same* unified DRAM the corpus is streaming
+through, and `BatchedRunner::ensure_scratch_buf` rounds the allocation up to a
+power of two on top. The extra parallelism does not pay for that traffic.
+
+**Decision (retune: negative result — sensing: shipped).**
+
+* The scratch budget policy is **unchanged for every fleet tier** — 256 MiB at
+  8 GiB RAM, 512 MiB at 16–64 GiB, 1 GiB at 64 GiB+ — because raising it is
+  slower and lowering it was not measurably better either (256 MiB landed inside
+  the drift band of 512 MiB across sessions).
+* Sensing **ships** regardless: it is the prerequisite for the clamp that stops
+  a budget exceeding `max_storage_buffer_binding_size` (a wgpu validation error
+  or the Metal SIGSEGV class `gpu_pipelined_scratch_multi_bin.rs` guards), and
+  for clamping `G_x` to `max_compute_workgroups_per_dimension`. Every sensed
+  bound is a `min`, pinned by
+  `host_resources::tests::a_sensed_adapter_never_raises_the_budget`.
+* Only the M4 Pro tier could be measured: the M2 Ultra, M4 and M1 hosts are not
+  reachable from this worker. Since the shipped defaults are unchanged, those
+  tiers cannot regress — a retune that *did* move them would need its own
+  capture on each.
+* **Do not re-benchmark the scratch budget** on this shape unless the scratch
+  kernel architecture or the creature topology changes materially.
+
+Reproduce (each invocation is one Criterion run; alternate the budgets):
+
+```bash
+NEAT_SCORER_GPU_SCRATCH_BYTES=536870912 \
+  cargo bench -p rust_scorer --bench scoring -- shallow_gpu_vs_cpu/gpu
+NEAT_SCORER_GPU_SCRATCH_BYTES=1073741824 \
+  cargo bench -p rust_scorer --bench scoring -- shallow_gpu_vs_cpu/gpu
+```
+
 ## Shallow-creature GPU vs CPU — 26 July 2026 (Issue #467, negative result)
 
 Cross-links [#333](https://github.com/stSoftwareAU/NEAT-AI-scorer/issues/333)

@@ -232,10 +232,12 @@ creatures routinely exceed that (production runs have hit 4139 neurons), so
 Issue #182 added `forward_mse_scratch`, which moves each thread's activation
 scratch into a `storage` buffer (no compile-time size limit). To keep that
 buffer bounded, the host caps the live thread count against a memory budget
-(`NEAT_SCORER_GPU_SCRATCH_BYTES`, default 512 MiB, further capped to the
-device's max storage-buffer binding size) and the kernel walks the records
-with a grid-stride loop. Per-creature MSE partials reduce exactly as in the
-batched kernel, so results match the CPU path within the #81/#82 tolerance.
+(`NEAT_SCORER_GPU_SCRATCH_BYTES`, default [sensed from the
+adapter](#gpu-capability-sensing-issue-548), further capped to the device's max
+storage-buffer binding size and to `max_compute_workgroups_per_dimension`) and
+the kernel walks the records with a grid-stride loop. Per-creature MSE partials
+reduce exactly as in the batched kernel, so results match the CPU path within
+the #81/#82 tolerance.
 
 The pre-flight (`multi_score::gpu_directory_compatible`) therefore now reports
 large creatures as **GPU-hostable** — only an unsupported squash, a shape
@@ -490,6 +492,11 @@ rust_scorer --host-report --record-bytes 40    # small-record corpora
   is an M4 (4P + 6E of 10 logical); the shipped `default_worker_count` still
   keys off `logical_cpus` (see the Issue #546 section of
   [`docs/performance-baseline.md`](docs/performance-baseline.md) for why).
+- `gpu_scratch_bytes` is the **no-adapter** budget: resolving the report never
+  creates a `wgpu` device, so it prints the RAM-derived value. A scoring run
+  that actually selects an adapter tunes the budget against that adapter's
+  limits instead — see
+  [GPU capability sensing](#gpu-capability-sensing-issue-548).
 - Keys are snake_case and named after the functions that produced them, so a
   pasted report maps 1:1 onto the code a retune has to change. This is a
   diagnostic, **not** the camelCase scoring payload.
@@ -500,6 +507,62 @@ adapter, and therefore returns the same JSON on a GPU-less host, under
 read-chunk knob is resolved for (the default is record-size adaptive); zero is
 rejected rather than clamped. Pair it with the knob sweep harness in
 [How to bench](#how-to-bench) when retuning a knob.
+
+### GPU capability sensing (Issue #548)
+
+The GPU scratch budget used to be inferred from **system RAM alone**, which is a
+poor proxy: an M1 Max and an M4 with the same RAM got the same budget, and a
+headless x86 Linux box computed a budget for a GPU it does not have. The scorer
+now senses what the selected adapter actually reports and tunes against that.
+
+`HostResources::gpu` carries the sensed
+[`GpuCapability`](rust_scorer/src/host_resources.rs) — backend label, whether
+adapter memory is **unified** with system RAM (Apple silicon, integrated GPUs)
+or **discrete** VRAM, `max_storage_buffer_binding_size`, and
+`max_compute_workgroups_per_dimension`. It is `None` until an adapter is
+selected, so nothing about sensing can start a `wgpu` device on its own:
+
+```mermaid
+flowchart LR
+    A["--gpu off / no adapter"] --> C["RAM tier<br/>(pre-#548 value)"]
+    D["--gpu auto|on selects an adapter"] --> E["select_adapter caches<br/>GpuCapability"]
+    E --> C
+    C --> F{"adapter sensed?"}
+    F -- no --> J["scratch budget"]
+    F -- "yes, unified" --> G["min(RAM / 16)"]
+    F -- "yes, discrete" --> H["min(binding limit / 4)"]
+    G --> I["min(binding limit)<br/>floor to a power of two"]
+    H --> I
+    I --> J
+    J --> K["NEAT_SCORER_GPU_SCRATCH_BYTES<br/>still overrides"]
+```
+
+- **Sensing only ever tightens the budget.** Every bound is a `min` on the RAM
+  tier, because raising the budget measured **slower**: doubling it on an M4 Pro
+  cost 7.9 % on the shallow scratch path (4 of 4 interleaved pairs), so the
+  *retune* half of #548 is a recorded negative result and only the clamp ships.
+  See
+  [`docs/performance-baseline.md`](docs/performance-baseline.md#gpu-capability-sensing--10-august-2026-issue-548).
+- **No adapter sensed ⇒ nothing changes.** `--gpu off`, a GPU-less host, and any
+  knob resolved before an adapter exists all keep the pre-#548 RAM tiering
+  (64 MiB / 128 MiB / 256 MiB / 512 MiB / 1 GiB by RAM). That is also what
+  `--host-report` prints, because the report never creates an adapter.
+- **The adapter's limit is a hard ceiling.** The activation scratch is a single
+  binding, so a budget above `max_storage_buffer_binding_size` is a validation
+  error rather than a slow run. The budget is floored to a power of two because
+  the runner rounds its scratch allocation up to one.
+- **Unified memory stays RAM-bounded.** The scratch SSBO and the streamed corpus
+  share one pool on Apple silicon, so the budget is additionally capped at one
+  sixteenth of physical RAM. Every shipped tier already sits below that share,
+  so no fleet Mac moves.
+- **Discrete cards are bounded by the card.** Host RAM describes nothing about
+  VRAM, so the budget is additionally capped at a quarter of the adapter's
+  binding limit.
+- **`max_compute_workgroups_per_dimension` bounds the grid.** The scratch
+  kernel's grid-stride width `G_x` is now clamped to it as well as to the memory
+  budget.
+- **`NEAT_SCORER_GPU_SCRATCH_BYTES` still wins**, and is still capped to the
+  device binding limit.
 
 ### Nameplate RAM snapping (Issue #547)
 

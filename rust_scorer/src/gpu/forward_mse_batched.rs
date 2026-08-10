@@ -73,31 +73,16 @@ pub(crate) const MAX_SHALLOW_NON_INPUT_NEURONS: u32 = 256;
 /// creature (observed maxima are in the low thousands).
 pub(crate) const MAX_NEURONS_ABSOLUTE: u32 = 1 << 20;
 
-/// Historical mid-host default for the `forward_mse_scratch` activation
-/// scratch budget (512 MiB). Prefer [`default_scratch_budget_bytes`], which
-/// scales with physical RAM so old machines stay within memory and large Macs
-/// can host a wider grid. Override with `NEAT_SCORER_GPU_SCRATCH_BYTES`.
-pub(crate) const DEFAULT_SCRATCH_BUDGET_BYTES: u64 = 512 * 1024 * 1024;
-
 /// Host-aware default scratch budget.
 ///
-/// Mid-range and unknown-RAM hosts resolve to
-/// [`DEFAULT_SCRATCH_BUDGET_BYTES`]; low-RAM and large-Mac hosts scale via
-/// [`crate::host_resources::default_gpu_scratch_bytes`].
+/// One call into [`crate::host_resources::default_gpu_scratch_bytes`], which
+/// derives the budget from the **sensed adapter** when one exists (bounded by
+/// its binding-size limit, and by physical RAM on a unified-memory host) and
+/// from RAM alone when none does. The Issue #182 RAM-only mid-host special case
+/// that used to live here was retired by Issue #548 — it re-stated the tier the
+/// host policy already returns.
 fn default_scratch_budget_bytes() -> u64 {
-    let host = crate::host_resources::host();
-    match host.physical_ram_bytes {
-        // Preserve the historical constant as the mid-host / unknown answer so
-        // a rename of `DEFAULT_SCRATCH_BUDGET_BYTES` fails to compile here.
-        None => DEFAULT_SCRATCH_BUDGET_BYTES,
-        Some(ram)
-            if (16 * crate::host_resources::GIB..64 * crate::host_resources::GIB)
-                .contains(&ram) =>
-        {
-            DEFAULT_SCRATCH_BUDGET_BYTES
-        }
-        Some(_) => crate::host_resources::default_gpu_scratch_bytes(&host),
-    }
+    crate::host_resources::default_gpu_scratch_bytes(&crate::host_resources::host())
 }
 
 /// Highest point-wise squash discriminant the kernels inline (Issue #305).
@@ -403,6 +388,9 @@ pub struct BatchedRunner {
     max_neurons: u32,
     /// Scratch-kernel activation memory budget in bytes (Issue #182).
     scratch_budget_bytes: u64,
+    /// Device `max_compute_workgroups_per_dimension` (Issue #548) — the grid
+    /// bound the memory budget cannot talk the dispatch past.
+    max_workgroups_per_dimension: u32,
     /// Records SSBO + readback buffer grow with chunk size; sized for the
     /// largest chunk seen so far.
     records_buf: Option<(wgpu::Buffer, u64)>,
@@ -478,11 +466,15 @@ impl BatchedRunner {
         };
         // The scratch buffer is bound in a single binding, so its budget can
         // never exceed the device's max storage-buffer binding size (Issue
-        // #182). Cap it so an over-large `NEAT_SCORER_GPU_SCRATCH_BYTES` (or the
-        // 512 MiB default on a device with a smaller limit) cannot create an
+        // #182). Cap it so an over-large `NEAT_SCORER_GPU_SCRATCH_BYTES` (or a
+        // host default resolved before the adapter was sensed) cannot create an
         // unbindable buffer that silently yields NaN partials.
-        let binding_limit = device.limits().max_storage_buffer_binding_size;
+        let device_limits = device.limits();
+        let binding_limit = device_limits.max_storage_buffer_binding_size;
         let scratch_budget_bytes = scratch_budget_bytes_from_env().min(binding_limit.max(64));
+        // Issue #548 — the grid-stride width is bounded by the device too, not
+        // only by the memory budget.
+        let max_workgroups_per_dimension = device_limits.max_compute_workgroups_per_dimension;
 
         let (shader_src, shader_label, entry_point): (&str, &str, &str) = match kernel {
             KernelKind::Private => (
@@ -647,6 +639,7 @@ impl BatchedRunner {
             kernel,
             max_neurons,
             scratch_budget_bytes,
+            max_workgroups_per_dimension,
             records_buf: None,
             partials_buf: None,
             readback_buf: None,
@@ -953,13 +946,15 @@ impl BatchedRunner {
     /// Bounded grid-stride width `G_x` for the scratch kernel: enough
     /// workgroups to cover the records once, capped so the activation scratch
     /// (`num_creatures * G_x * WG_SIZE * max_neurons` floats) fits the memory
-    /// budget. Always at least one workgroup.
+    /// budget **and** the device's `max_compute_workgroups_per_dimension`
+    /// (Issue #548). Always at least one workgroup.
     fn scratch_workgroups_x(&self, n_records: usize) -> u32 {
         scratch_workgroups_x_for(
             n_records,
             self.num_creatures,
             self.max_neurons,
             self.scratch_budget_bytes,
+            self.max_workgroups_per_dimension,
         )
     }
 }
@@ -1144,7 +1139,11 @@ pub(crate) fn scratch_workgroups_x_for(
     num_creatures: u32,
     max_neurons: u32,
     budget_bytes: u64,
+    max_workgroups_per_dimension: u32,
 ) -> u32 {
+    // Issue #548 — the device bounds the grid however much memory the budget
+    // allows; a zero/absent limit must still dispatch one workgroup.
+    let device_gx = u64::from(max_workgroups_per_dimension).max(1);
     if n_records == 0 || num_creatures == 0 || max_neurons == 0 {
         return 1;
     }
@@ -1156,7 +1155,7 @@ pub(crate) fn scratch_workgroups_x_for(
         * max_neurons as u64
         * std::mem::size_of::<f32>() as u64;
     let budget_gx = (budget_bytes / per_gx_bytes.max(1)).max(1);
-    let gx = needed.min(budget_gx).max(1);
+    let gx = needed.min(budget_gx).min(device_gx).max(1);
     u32::try_from(gx).unwrap_or(u32::MAX)
 }
 
@@ -1424,7 +1423,7 @@ mod tests {
         // A 4139-neuron creature, 50 creatures, 256 MiB budget: G_x must be
         // bounded well below the records-covering grid so scratch stays small.
         let budget = 256 * 1024 * 1024;
-        let gx = scratch_workgroups_x_for(1_000_000, 50, 4139, budget);
+        let gx = scratch_workgroups_x_for(1_000_000, 50, 4139, budget, DEVICE_MAX_WORKGROUPS);
         assert!(gx >= 1, "G_x is always at least one workgroup");
         let scratch_bytes = 50u64 * gx as u64 * WG_SIZE_X as u64 * 4139 * 4;
         assert!(
@@ -1532,8 +1531,29 @@ mod tests {
     #[test]
     fn scratch_workgroups_x_covers_small_record_counts() {
         // With few records the grid never exceeds what is needed to cover them.
-        let gx = scratch_workgroups_x_for(100, 4, 300, 512 * 1024 * 1024);
+        let gx = scratch_workgroups_x_for(100, 4, 300, 512 * 1024 * 1024, DEVICE_MAX_WORKGROUPS);
         assert_eq!(gx, 100u32.div_ceil(WG_SIZE_X));
+    }
+
+    /// `max_compute_workgroups_per_dimension` as every shipped Metal / Vulkan
+    /// adapter reports it — the value the fleet actually dispatches against.
+    const DEVICE_MAX_WORKGROUPS: u32 = 65_535;
+
+    // --- Issue #548: the device grid limit bounds the dispatch --------------
+
+    #[test]
+    fn scratch_workgroups_x_is_bounded_by_the_device_grid_limit() {
+        // A budget wide enough for a far larger grid must not dispatch past
+        // what the device accepts per dimension.
+        let gx = scratch_workgroups_x_for(100_000_000, 1, 8, u64::MAX, 64);
+        assert_eq!(gx, 64, "the device limit caps the grid the budget allows");
+    }
+
+    #[test]
+    fn scratch_workgroups_x_still_dispatches_when_the_grid_limit_is_absent() {
+        // A device reporting no limit (or a nonsense zero) must still run.
+        let gx = scratch_workgroups_x_for(100_000, 1, 8, u64::MAX, 0);
+        assert_eq!(gx, 1, "a zero grid limit falls back to one workgroup");
     }
 
     #[test]
