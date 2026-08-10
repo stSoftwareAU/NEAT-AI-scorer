@@ -39,7 +39,9 @@ pub enum CostKind {
     /// Root Mean Squared Error (Issue #339). Reuses the MSE squared-error
     /// sum unchanged and differs only in a host-side `sqrt` at finalisation
     /// (see [`CostKind::finalise_mean`]), so it runs on the GPU MSE kernel at
-    /// full MSE speed with no new kernel.
+    /// full MSE speed with no new kernel. `sqrt` is monotonic, so the creature
+    /// ordering matches [`CostKind::Mse`]; the reported score differs — it is
+    /// in the target's own units.
     #[value(name = "RMSE")]
     Rmse,
     /// Mean Absolute Error.

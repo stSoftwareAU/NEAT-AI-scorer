@@ -143,6 +143,9 @@ echo "📚 Validating read-chunk docs match read_tuning.rs constants (Issue #504
 echo "🖥️  Validating gpuBackend docs match GpuBackendLabel (Issue #507)..."
 ./scripts/check-gpu-backend-docs.sh
 
+echo "📐 Validating RMSE docs keep ordering and reported score distinct (Issue #556)..."
+./scripts/check-rmse-docs.sh
+
 echo "🗄️  Validating the PR-summary archive is single and documented (Issue #508)..."
 ./scripts/check-pr-summary-archive.sh
 

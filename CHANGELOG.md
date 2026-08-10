@@ -44,6 +44,16 @@ section to the released version with its date.
 
 ### Changed
 
+- **RMSE docs separate ordering from the reported score (Issue #556).** The
+  README cost table and its prose said `RMSE` "ranks identically to MSE", which
+  reads as though `RMSE` is redundant. Both now state the narrower truth —
+  `sqrt` is monotonic, so the creature *ordering* matches `MSE`, while the
+  *reported score* differs, being in the target's own units — and the
+  `CostKind::Rmse` rustdoc says the same. New `scripts/check-rmse-docs.sh`
+  (in `quality.sh`, covered by `tests/scripts/rmse_docs.bats`) keeps the
+  distinction from collapsing again. Documentation only: `--cost RMSE` and its
+  computation are unchanged.
+
 - **One emitter for the creature JSON wire format (Issue #513).** The envelope
   (`input`/`output`/`forwardOnly`/`semanticVersion`) plus the per-neuron and
   per-synapse literal shapes were hand-encoded with `format!` across benches,
