@@ -295,7 +295,7 @@ so callers can pass `NeatOptions.costName` through unchanged.
 | Value               | Meaning                              | Dispatch helper (`neat_core::loss`) | GPU?           |
 |---------------------|--------------------------------------|--------------------------------------|----------------|
 | `MSE` (**default**) | Mean Squared Error                   | `mse_sum_batch_packed`               | **Yes**        |
-| `RMSE`              | Root Mean Squared Error (`sqrt(mean(squared error))`) — ranks identically to MSE, reports same-unit magnitudes | `mse_sum_batch_packed` + host `sqrt` | **Yes** (MSE kernel) |
+| `RMSE`              | Root Mean Squared Error (`sqrt(mean(squared error))`) — same creature ordering as MSE, but a different reported score, in the target's own units | `mse_sum_batch_packed` + host `sqrt` | **Yes** (MSE kernel) |
 | `MAE`               | Mean Absolute Error                  | `mae_sum_batch_packed`               | No (CPU)       |
 | `MAPE`              | Mean Absolute Percentage Error       | `mape_sum_batch_packed`              | No (CPU)       |
 | `MSLE`              | Mean Squared Logarithmic Error       | `msle_sum_batch_packed`              | No (CPU)       |
@@ -311,10 +311,17 @@ every `ScoreResult`.
 
 `RMSE` (Issue #337) reuses the MSE squared-error accumulation unchanged on
 **both** the CPU and GPU paths and differs only by a single host-side `sqrt`
-applied at finalisation (via the shared `CostKind::finalise_mean` helper). It
-therefore ranks creatures identically to `MSE` while reporting interpretable,
-same-unit magnitudes, and — because it adds no new kernel and no per-record work
-— carries **no performance difference versus `MSE`** on either backend.
+applied at finalisation (via the shared `CostKind::finalise_mean` helper).
+Because `sqrt` is monotonic, it preserves the **creature ordering** `MSE`
+produces — a creature that beats another under `MSE` still beats it under
+`RMSE` — but the **reported score differs**: `RMSE` reports the error in the
+target's own units (an `MSE` of `0.04` is an `RMSE` of `0.2`), which is why it
+is worth selecting. It adds no new kernel and no per-record work, so it carries
+**no performance difference versus `MSE`** on either backend.
+`scripts/check-rmse-docs.sh` (invoked from `quality.sh`, covered by
+`tests/scripts/rmse_docs.bats`) fails the gate if this section or the
+`CostKind::Rmse` rustdoc collapses that distinction back into an
+identical-ranking claim (Issue #556).
 
 #### Per-cost examples
 
