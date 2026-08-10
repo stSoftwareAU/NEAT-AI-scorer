@@ -15,6 +15,29 @@ section to the released version with its date.
 
 ## [Unreleased]
 
+### Changed
+
+- **Read-chunk defaults are reader-count aware, and the dead 256 MiB read
+  ceiling is gone (Issue #549).** `read_tuning` now picks the chunk from three
+  bounds — the record-size tier, the host-RAM tier, and each reader's share of a
+  named `aggregate_read_budget_bytes` (64 MiB, 256 MiB on a ≥ 64 GiB host, never
+  more than RAM / 16). The aggregate total was already bounded since Issue #529,
+  but by dividing `max_read_bytes` — the *override clamp* — inside
+  `stream_score`, so the chunk `read_tuning` chose was silently overridden and
+  `--host-report` printed a figure up to 6× wider than any reader actually held.
+  **Every fleet tier keeps a byte-identical resident buffer** (pinned per tier in
+  `stream_score::tests::shipped_per_reader_buffer_is_unchanged_by_the_reader_aware_default`):
+  this moves the arithmetic, not the answer. `host_resources::max_read_bytes` is
+  now a flat 64 MiB on every host — its `≥ 64 GiB → 256 MiB` tier was selectable
+  by no built-in default, and the 256 MiB figure it actually supplied is now the
+  large-RAM aggregate budget. `--host-report` gains `file_read_workers` and
+  `aggregate_read_budget_bytes` (schema `neat-scorer-host-report/3`). The
+  small-record 2 MiB path, the `NEAT_SCORER_READ_BYTES` override, its clamp and
+  whole-record alignment are unchanged. No tier's chunk was retuned: this host
+  could not produce usable sweep numbers (five *identical* configurations varied
+  2× in median under production load), recorded in
+  `docs/performance-baseline.md`.
+
 ### Fixed
 
 - **PR auto-format syncs `Cargo.lock` to latest neat-core (Issue #542).** The

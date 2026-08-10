@@ -441,7 +441,13 @@ pub struct ScoreResult {
     /// once GPU kernels start consuming the device in #81.
     #[serde(rename = "gpuBackend")]
     pub gpu_backend: GpuBackendLabel,
-    /// Effective `read` buffer size (bytes) after record alignment; set when fused path ran.
+    /// Effective `read` buffer size (bytes) after record alignment; set when the
+    /// fused path ran.
+    ///
+    /// Issue #549: **per file reader**. With `fileReadWorkers > 1` each reader
+    /// holds one buffer of this size, and the aggregate stays inside the host's
+    /// read budget — before #549 this reported the unsplit record-size tier,
+    /// which overstated what the readers actually held.
     #[serde(rename = "readBufLen", skip_serializing_if = "Option::is_none")]
     pub read_buf_len: Option<usize>,
     /// Fused path only: parallel activation workers **per file reader** when

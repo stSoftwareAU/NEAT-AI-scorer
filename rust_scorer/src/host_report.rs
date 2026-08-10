@@ -23,8 +23,10 @@ use serde::Serialize;
 use crate::env_tuning::parse_tuning_var;
 use crate::gpu::forward_mse_batched::scratch_budget_bytes_from_env;
 use crate::host_resources;
-use crate::read_tuning::training_read_target_bytes_from_env;
-use crate::stream_score::activation_worker_count_for_scorer;
+use crate::read_tuning::{
+    aggregate_read_budget_bytes, training_read_target_bytes_from_env_for_readers,
+};
+use crate::stream_score::{activation_worker_count_for_scorer, file_read_worker_count};
 
 /// Record width the read-chunk knob is resolved for when `--record-bytes` is
 /// omitted: the production corpus shape (2461 inputs + 1 output, `f32`).
@@ -34,10 +36,20 @@ use crate::stream_score::activation_worker_count_for_scorer;
 /// no width would describe a knob nobody runs.
 pub const DEFAULT_REPORT_RECORD_BYTES: usize = 9848;
 
+/// `.bin` shard count the read-chunk knob is resolved for: production splits its
+/// corpus across 26 files (Issue #529).
+///
+/// The read default is **reader-count aware** since Issue #549 — the aggregate
+/// `readers × chunk` footprint is what has to fit in RAM — so a report resolved
+/// for a single reader would overstate the chunk every production run takes.
+pub const REPORT_SHARD_COUNT: usize = 26;
+
 /// Report schema tag, so a consumer can tell an old paste from a new one.
 ///
-/// `/2` adds `performance_cpus` (Issue #546) alongside `logical_cpus`.
-const SCHEMA: &str = "neat-scorer-host-report/2";
+/// `/2` adds `performance_cpus` (Issue #546) alongside `logical_cpus`; `/3` adds
+/// the `file_read_workers` knob the read chunk is now resolved against (Issue
+/// #549).
+const SCHEMA: &str = "neat-scorer-host-report/3";
 
 /// Where a resolved knob value came from.
 #[derive(Serialize, Clone, Copy, Debug, PartialEq, Eq)]
@@ -74,9 +86,21 @@ pub struct Knobs {
     pub max_worker_count: Knob,
     /// Host ceiling `NEAT_SCORER_READ_BYTES` clamps to.
     pub max_read_bytes: Knob,
-    /// Read-chunk target for `record_bytes`-wide records, after
-    /// `NEAT_SCORER_READ_BYTES` and the round-down to a whole record multiple.
+    /// Read-chunk target for `record_bytes`-wide records, **per concurrent
+    /// reader**, after `NEAT_SCORER_READ_BYTES` and the round-down to a whole
+    /// record multiple.
+    ///
+    /// Resolved at `file_read_workers` readers (Issue #549): the aggregate
+    /// footprint is `file_read_workers × default_training_read_bytes`, so a
+    /// single-reader corpus may take a wider chunk than this.
     pub default_training_read_bytes: Knob,
+    /// Concurrent `.bin` readers the read chunk above was resolved for — the
+    /// shipped default for a production-shaped 26-shard corpus (Issue #529).
+    pub file_read_workers: Knob,
+    /// Total resident read buffer **all** those readers may hold together
+    /// (Issue #549): `file_read_workers × default_training_read_bytes` never
+    /// exceeds it. A host-derived ceiling, so it takes no override.
+    pub aggregate_read_budget_bytes: Knob,
     /// `forward_mse_scratch` SSBO budget, after `NEAT_SCORER_GPU_SCRATCH_BYTES`.
     ///
     /// The **no-adapter** figure: the report never creates a `wgpu` device, so
@@ -116,6 +140,9 @@ impl HostReport {
     #[must_use]
     pub fn resolve(record_bytes: usize) -> Self {
         let host = host_resources::host();
+        // Issue #549: the read chunk is per reader, so it is resolved at the
+        // reader count a production-shaped corpus spawns.
+        let readers = file_read_worker_count(REPORT_SHARD_COUNT);
         Self {
             schema: SCHEMA,
             logical_cpus: host.cpus,
@@ -131,10 +158,17 @@ impl HostReport {
                 max_worker_count: host_ceiling(host_resources::max_worker_count(&host) as u64),
                 max_read_bytes: host_ceiling(host_resources::max_read_bytes(&host) as u64),
                 default_training_read_bytes: Knob {
-                    value: training_read_target_bytes_from_env(record_bytes) as u64,
+                    value: training_read_target_bytes_from_env_for_readers(record_bytes, readers)
+                        as u64,
                     source: env_source_usize("NEAT_SCORER_READ_BYTES"),
                     env_var: Some("NEAT_SCORER_READ_BYTES"),
                 },
+                file_read_workers: Knob {
+                    value: readers as u64,
+                    source: env_source_usize("NEAT_SCORER_FILE_THREADS"),
+                    env_var: Some("NEAT_SCORER_FILE_THREADS"),
+                },
+                aggregate_read_budget_bytes: host_ceiling(aggregate_read_budget_bytes(&host) as u64),
                 gpu_scratch_bytes: Knob {
                     value: scratch_budget_bytes_from_env(),
                     source: env_source_positive_u64("NEAT_SCORER_GPU_SCRATCH_BYTES"),
@@ -309,6 +343,8 @@ mod tests {
             "max_worker_count",
             "max_read_bytes",
             "default_training_read_bytes",
+            "file_read_workers",
+            "aggregate_read_budget_bytes",
             "gpu_scratch_bytes",
         ] {
             let knob = &value["knobs"][key];
@@ -342,5 +378,34 @@ mod tests {
             large.knobs.default_training_read_bytes.value
                 >= small.knobs.default_training_read_bytes.value
         );
+    }
+
+    #[test]
+    fn reported_read_chunk_footprint_fits_this_host() {
+        // Issue #549: the report's read chunk is per reader, so `readers ×
+        // chunk` is the resident read buffer a production-shaped run holds. On
+        // the real host this process is running on, that product must fit the
+        // aggregate budget — unless `NEAT_SCORER_READ_BYTES` overrode it, which
+        // still wins by design.
+        let report = HostReport::resolve(DEFAULT_REPORT_RECORD_BYTES);
+        let readers = report.knobs.file_read_workers.value;
+        assert!(readers >= 1, "at least one reader");
+        if report.knobs.default_training_read_bytes.source == KnobSource::Env {
+            return;
+        }
+        let budget = report.knobs.aggregate_read_budget_bytes.value;
+        let footprint = report.knobs.default_training_read_bytes.value * readers;
+        assert!(
+            footprint <= budget,
+            "{readers} readers × {} B = {footprint} B exceeds the {budget} B aggregate read budget",
+            report.knobs.default_training_read_bytes.value
+        );
+        // The budget itself stays inside a sane fraction of physical RAM.
+        if let Some(ram) = report.physical_ram_bytes {
+            assert!(
+                budget <= ram / 16,
+                "{budget} B is more than 1/16 of {ram} B"
+            );
+        }
     }
 }

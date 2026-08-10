@@ -49,11 +49,15 @@ fn parse_report(stdout: &str) -> Value {
 }
 
 /// Every knob entry the #544 retune sub-issues read.
-const KNOB_KEYS: [&str; 5] = [
+const KNOB_KEYS: [&str; 7] = [
     "default_worker_count",
     "max_worker_count",
     "max_read_bytes",
     "default_training_read_bytes",
+    // Issue #549: the reader count the read chunk above was resolved against,
+    // and the aggregate budget their buffers share.
+    "file_read_workers",
+    "aggregate_read_budget_bytes",
     "gpu_scratch_bytes",
 ];
 
@@ -260,6 +264,36 @@ fn record_bytes_flag_drives_the_read_default() {
         "production-width records must take a larger read chunk than 40-byte records \
          ({large_read} vs {small_read})"
     );
+}
+
+/// Issue #549: the reported read chunk is **per reader**, so the aggregate
+/// `file_read_workers × default_training_read_bytes` footprint the shipped
+/// defaults ask for must fit this host's read budget (RAM / 64).
+#[test]
+fn reported_read_chunk_aggregate_footprint_is_bounded() {
+    let (code, stdout, stderr) = run_scorer(&["--host-report"], &[]);
+    assert_eq!(code, 0, "stderr: {stderr}");
+    let report = parse_report(&stdout);
+    let readers = report["knobs"]["file_read_workers"]["value"]
+        .as_u64()
+        .expect("file_read_workers");
+    let chunk = report["knobs"]["default_training_read_bytes"]["value"]
+        .as_u64()
+        .expect("default_training_read_bytes");
+    let budget = report["knobs"]["aggregate_read_budget_bytes"]["value"]
+        .as_u64()
+        .expect("aggregate_read_budget_bytes");
+    assert!(readers >= 1, "at least one reader: {report}");
+    assert!(
+        readers * chunk <= budget,
+        "{readers} readers × {chunk} B of read buffer exceeds the {budget} B budget: {report}"
+    );
+    if let Some(ram) = report["physical_ram_bytes"].as_u64() {
+        assert!(
+            budget <= ram / 16,
+            "the {budget} B read budget is more than 1/16 of {ram} B of RAM: {report}"
+        );
+    }
 }
 
 /// Input validation: a zero record width is rejected loudly rather than
