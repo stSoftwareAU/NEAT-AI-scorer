@@ -34,7 +34,9 @@ use crate::cost::CostKind;
 use crate::gpu::{GpuBackendLabel, GpuMode, ScoringPath};
 use crate::host_report::{DEFAULT_REPORT_RECORD_BYTES, HostReport};
 use crate::multi_score::{score_from_creature_dir_gpu_sampled, score_from_creature_dir_sampled};
-use crate::read_tuning::{training_read_backend_label, training_read_target_bytes_from_env};
+use crate::read_tuning::{
+    training_read_backend_label, training_read_target_bytes_from_env_for_readers,
+};
 use crate::sampling::{SampleSpec, parse_sample_rate};
 use crate::scoring::{ScoreResult, calculate_score, compute_score_components};
 use crate::stream_score::AUTO_FILE_READ_WORKERS;
@@ -143,8 +145,9 @@ struct Cli {
     ///
     /// The report names the logical CPU count, physical RAM, and the resolved
     /// `default_worker_count`, `max_worker_count`, `max_read_bytes`,
-    /// `default_training_read_bytes` and GPU scratch budget, each tagged
-    /// `default` or `env` so a fleet operator can see which knobs an
+    /// `default_training_read_bytes`, `file_read_workers` (the reader count the
+    /// read chunk was resolved for, Issue #549) and GPU scratch budget, each
+    /// tagged `default` or `env` so a fleet operator can see which knobs an
     /// environment override moved. Measurement only: no default changes and no
     /// `wgpu` adapter is created, so it runs on a GPU-less host and under
     /// `--gpu off` alike. Takes no positional arguments.
@@ -229,7 +232,10 @@ enum RunOutput {
     Single(Box<ScoreResult>),
     Multi(BTreeMap<String, ScoreResult>),
     // Issue #545: `--host-report` scores nothing and prints the knob diagnostic.
-    Host(HostReport),
+    // Boxed for the same reason as `Single`: Issue #549 added the
+    // `file_read_workers` knob, which pushed the inline payload over clippy's
+    // `large_enum_variant` threshold.
+    Host(Box<HostReport>),
 }
 
 fn run(cli: &Cli) -> Result<RunOutput, String> {
@@ -237,7 +243,9 @@ fn run(cli: &Cli) -> Result<RunOutput, String> {
     // resolved *before* GPU mode resolution or adapter selection so it works
     // identically on a GPU-less host, under `--gpu off`, and under `--gpu on`.
     if cli.host_report {
-        return Ok(RunOutput::Host(HostReport::resolve(cli.record_bytes)));
+        return Ok(RunOutput::Host(Box::new(HostReport::resolve(
+            cli.record_bytes,
+        ))));
     }
 
     // Resolve the GPU backend label up-front. For `--gpu off` this is a
@@ -506,9 +514,6 @@ fn score_from_json(
     // otherwise splice a record across the file boundary and shift every
     // record after it.
     assert_records_aligned(&bin_files, record_bytes)?;
-    let fused_read_target_bytes = training_read_target_bytes_from_env(record_bytes);
-    let fused_read_buf_len =
-        stream_score::effective_fused_read_buf_len(record_bytes, fused_read_target_bytes);
 
     let use_fused_stream = creature.forward_only;
     // Issue #529: the fused reader splits the corpus across `file_read_workers`
@@ -520,6 +525,16 @@ fn score_from_json(
     });
     let activation_threads =
         file_read_workers.map(stream_score::activation_workers_per_file_worker);
+    // Issue #549: the read-chunk default is sized for the aggregate
+    // `readers × chunk` footprint, so it needs that reader count. The
+    // non-fused record-iterator path reads through one stream.
+    let fused_read_target_bytes = training_read_target_bytes_from_env_for_readers(
+        record_bytes,
+        file_read_workers.unwrap_or(1),
+    );
+    let fused_read_buf_len =
+        stream_score::effective_fused_read_buf_len(record_bytes, fused_read_target_bytes);
+
     let training_read_backend = if use_fused_stream {
         training_read_backend_label().to_string()
     } else {

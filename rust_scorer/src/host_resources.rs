@@ -319,19 +319,25 @@ pub fn default_worker_count(host: &HostResources) -> usize {
     host.cpus.max(1).min(max_worker_count(host))
 }
 
-/// Upper clamp for `NEAT_SCORER_READ_BYTES` on this host.
+/// Upper clamp for `NEAT_SCORER_READ_BYTES` on this host: the historical 64 MiB
+/// ceiling, on **every** host.
 ///
-/// Mid-range hosts keep the historical 64 MiB ceiling; Macs with ≥ 64 GiB RAM
-/// may raise an override as high as 256 MiB. Read-chunk *defaults* are chosen
-/// in [`crate::read_tuning`] (record-size + RAM adaptive).
+/// **Issue #549 removed the `≥ 64 GiB → 256 MiB` tier.** No built-in default
+/// could select it — `read_tuning::default_training_read_bytes_for_readers`
+/// tops out at `MAX_READ_BYTES` (64 MiB) — so a 256 MiB read was reachable only
+/// by hand-setting the env var, which Issue #544 rules out as a configuration
+/// mechanism. With the Issue #529 reader count now bounding the *aggregate*
+/// `readers × chunk` footprint, a 256 MiB chunk needs 16 GiB of RAM per reader
+/// (384 GiB on a 24-core M2 Ultra) — no fleet host qualifies, so the ceiling is
+/// dropped to what the defaults can actually select rather than raised.
+///
+/// The parameter is retained so every knob resolver keeps taking its host
+/// snapshot from one place; the answer no longer varies by host. Read-chunk
+/// *defaults* are chosen in [`crate::read_tuning`] (record-size, RAM and
+/// reader-count adaptive).
 #[must_use]
-pub fn max_read_bytes(host: &HostResources) -> usize {
-    const LEGACY_MAX: usize = 64 * 1024 * 1024;
-    const LARGE_MAC_MAX: usize = 256 * 1024 * 1024;
-    match host.physical_ram_bytes {
-        Some(ram) if ram >= 64 * GIB => LARGE_MAC_MAX,
-        _ => LEGACY_MAX,
-    }
+pub fn max_read_bytes(_host: &HostResources) -> usize {
+    crate::read_tuning::MAX_READ_BYTES
 }
 
 /// Share of unified system RAM a scratch grid may claim: one sixteenth
@@ -546,12 +552,38 @@ mod tests {
     }
 
     #[test]
-    fn large_mac_raises_read_and_scratch_ceilings() {
+    fn large_mac_raises_the_scratch_ceiling_and_keeps_the_flat_read_ceiling() {
         let big = HostResources::synthetic(32, Some(128 * GIB));
         assert_eq!(default_worker_count(&big), 32);
         assert_eq!(max_worker_count(&big), 256);
-        assert_eq!(max_read_bytes(&big), 256 * 1024 * 1024);
+        // Issue #549: was 256 MiB, a ceiling no built-in default could select.
+        assert_eq!(max_read_bytes(&big), 64 * 1024 * 1024);
         assert_eq!(default_gpu_scratch_bytes(&big), 1024 * 1024 * 1024);
+    }
+
+    #[test]
+    fn read_ceiling_no_longer_tiers_on_ram() {
+        // Issue #549: the read ceiling is flat, so it has no tier that a
+        // built-in default cannot reach. Reintroducing a RAM tier here fails
+        // both this test and `read_tuning::tests::no_unreachable_ceiling`.
+        for ram in [
+            Some(GIB),
+            Some(3 * GIB),
+            Some(8 * GIB),
+            Some(16 * GIB),
+            Some(24 * GIB),
+            Some(64 * GIB),
+            Some(192 * GIB),
+            Some(1536 * GIB),
+            None,
+        ] {
+            let host = HostResources::synthetic(12, ram);
+            assert_eq!(
+                max_read_bytes(&host),
+                64 * 1024 * 1024,
+                "read ceiling must not tier on RAM ({ram:?})"
+            );
+        }
     }
 
     #[test]
@@ -725,7 +757,8 @@ mod tests {
 
         let big = HostResources::synthetic(32, Some(64 * GIB));
         assert_eq!(big.physical_ram_bytes, Some(64 * GIB));
-        assert_eq!(max_read_bytes(&big), 256 * 1024 * 1024);
+        // Issue #549: flat 64 MiB ceiling — the 256 MiB tier was unreachable.
+        assert_eq!(max_read_bytes(&big), 64 * 1024 * 1024);
         assert_eq!(default_gpu_scratch_bytes(&big), 1024 * 1024 * 1024);
     }
 

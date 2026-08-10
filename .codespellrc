@@ -6,6 +6,9 @@
 # Curated ignore list (see README "Spell check" section for workflow):
 #   - renderD  : DRM device node name (renderD128 etc).
 #   - mape/MAPE: Mean Absolute Percentage Error — a neat-core loss function.
+#   - retuned  : past tense of "retune", the #544 knob-retune vocabulary this
+#     repo already uses as "retune"/"retuning" (codespell reads it as
+#     "returned"). Issue #549.
 #
 # Skipped paths:
 #   - target, .git, Cargo.lock              : build artefacts / VCS metadata.
@@ -24,4 +27,4 @@
 skip = ./target,./.git,./Cargo.lock,./tests/scripts/spell_check.bats,./docs/archive/pr-summaries/*.md,./docs/evidence/*.svg
 check-filenames =
 check-hidden =
-ignore-words-list = renderD,mape,MAPE
+ignore-words-list = renderD,mape,MAPE,retuned

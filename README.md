@@ -456,7 +456,7 @@ rust_scorer --host-report --record-bytes 40    # small-record corpora
 
 ```json
 {
-  "schema": "neat-scorer-host-report/2",
+  "schema": "neat-scorer-host-report/3",
   "logical_cpus": 10,
   "performance_cpus": 4,
   "physical_ram_bytes": 25769803776,
@@ -465,7 +465,9 @@ rust_scorer --host-report --record-bytes 40    # small-record corpora
     "default_worker_count": { "value": 10, "source": "default", "env_var": "NEAT_SCORER_ACTIVATION_THREADS" },
     "max_worker_count": { "value": 256, "source": "default", "env_var": null },
     "max_read_bytes": { "value": 67108864, "source": "default", "env_var": null },
-    "default_training_read_bytes": { "value": 33552136, "source": "default", "env_var": "NEAT_SCORER_READ_BYTES" },
+    "default_training_read_bytes": { "value": 6706488, "source": "default", "env_var": "NEAT_SCORER_READ_BYTES" },
+    "file_read_workers": { "value": 10, "source": "default", "env_var": "NEAT_SCORER_FILE_THREADS" },
+    "aggregate_read_budget_bytes": { "value": 67108864, "source": "default", "env_var": null },
     "gpu_scratch_bytes": { "value": 536870912, "source": "default", "env_var": "NEAT_SCORER_GPU_SCRATCH_BYTES" }
   }
 }
@@ -483,6 +485,15 @@ rust_scorer --host-report --record-bytes 40    # small-record corpora
 - `env_var` is `null` for a host-derived ceiling, which takes no override.
 - `NEAT_SCORER_FILE_THREADS` shares the `default_worker_count` default,
   additionally capped at the corpus file count.
+- `default_training_read_bytes` is the chunk **one reader** takes, and
+  `file_read_workers` (schema `/3`, Issue #549) is how many readers a
+  production-shaped 26-shard corpus spawns. Their product never exceeds
+  `aggregate_read_budget_bytes`, the total resident read buffer this host allows
+  — see
+  [Adaptive `NEAT_SCORER_READ_BYTES` default](#large-record-hosts-adaptive-neat_scorer_read_bytes-default-issues-307-504-549).
+  Before schema `/3` the report printed the *unsplit* record-size tier
+  (`33552136` on this host), which overstated the buffer a 10-reader run
+  actually holds by 5×.
 - `performance_cpus` (schema `/2`, Issue #546) is the **performance-core**
   count: `hw.perflevel0.physicalcpu` on Apple silicon (falling back to
   `hw.physicalcpu`), the highest-`cpu_capacity` tier on heterogeneous ARM
@@ -776,9 +787,10 @@ Unset or blank values stay silent, and a valid value is honoured without any
 warning. The default quoted in the message is the **record-size adaptive**
 default described below, so it reads `33554432` on production-sized records.
 
-### Large-record hosts: adaptive `NEAT_SCORER_READ_BYTES` default (Issues #307, #504)
+### Large-record hosts: adaptive `NEAT_SCORER_READ_BYTES` default (Issues #307, #504, #549)
 
-The read-chunk default is **record-size adaptive** and **host-RAM adaptive** —
+The read-chunk default is **record-size adaptive**, **host-RAM adaptive** and
+**reader-count aware** —
 the record-size constants live in
 [`rust_scorer/src/read_tuning.rs`](rust_scorer/src/read_tuning.rs) and the host
 probe in [`rust_scorer/src/host_resources.rs`](rust_scorer/src/host_resources.rs).
@@ -798,6 +810,31 @@ records. Thread counts and the GPU scratch budget scale the same way — see
 capacity, not the raw probe — see
 [Nameplate RAM snapping](#nameplate-ram-snapping-issue-547).
 
+#### Aggregate read budget across concurrent readers (Issue #549)
+
+A multi-file corpus is read by **one reader per CPU** (Issue #529), so the
+resident read buffer is `readers × chunk`, not one chunk. The table above is the
+**single-reader** figure; with concurrent readers each reader gets its share of
+one host-wide budget:
+
+| Host RAM | `aggregate_read_budget_bytes` (all readers together) |
+|---|---|
+| < 64 GiB | **64 MiB** |
+| ≥ 64 GiB (Mac Studio / Mac Pro class) | **256 MiB** |
+| any | never more than **RAM / 16** |
+
+A 12-core 24 GiB M4 Pro reading a 26-shard production corpus therefore takes
+**12 readers × ~5.3 MiB**, not 12 × 32 MiB — which is what it has read since
+Issue #529 split the budget across the readers. What #549 changed is *where* the
+split happens: `read_tuning` now chooses the per-reader chunk itself, so the
+value `--host-report` prints and the value each reader holds are the same number.
+The dead `≥ 64 GiB → 256 MiB` **override clamp** was removed at the same time
+(no built-in default could ever select it); the 256 MiB figure it really
+described is the aggregate budget row above. No tier's chunk was retuned — the
+before/after A/B, the noise probes that blocked the retune, and the reproduction
+recipe are in
+[`docs/performance-baseline.md`](docs/performance-baseline.md#read-chunk-defaults-vs-the-reader-count--10-august-2026-issue-549).
+
 **Production records are 9848 bytes** (2461 inputs + 1 output, `f32`), so a
 typical production host already reads 32 MiB chunks with **no environment
 variable set** — exporting `NEAT_SCORER_READ_BYTES=33554432` by hand is
@@ -813,15 +850,18 @@ flowchart TD
     C --> G[Clamp to record_bytes..64 MiB cap]
     E --> H[Host RAM may shrink or raise]
     F --> H
-    H --> G
+    H --> J[Cap at aggregate read budget / readers]
+    J --> G
     G --> I[Round down to a whole number of records]
 ```
 
 `NEAT_SCORER_READ_BYTES` still **overrides** the adaptive default when you want
-a different size. Any value — env or default — is clamped to the **64 MiB** cap
-(`MAX_READ_BYTES` on mid-hosts; up to 256 MiB on ≥ 64 GiB Macs) and to at least
-one record, then rounded down to a whole number of records, so a chunk never
-splits a record.
+a different size. Any value — env or default — is clamped to the **64 MiB**
+`MAX_READ_BYTES` cap (flat on every host since Issue #549) and to at least one
+record, then rounded down to a whole number of records, so a chunk never splits
+a record. An override is still divided across concurrent readers, so setting it
+raises each reader's chunk only up to that reader's share of the aggregate
+budget.
 
 #### Why 32 MiB (the supporting sweep)
 
@@ -854,11 +894,13 @@ explicitly:
 export NEAT_SCORER_READ_BYTES=16777216   # 16 MiB
 ```
 
-The read buffer is **per-scan, not per-worker** — directory mode runs
+The read buffer is **per-scan, not per-activation-worker** — directory mode runs
 a single shared scan and partitions the unpacked records across the worker
 pool — so a 32 MiB setting adds at most ~64 MiB of transient buffer (the
-pipelined path double-buffers), not 32 MiB × worker count. That stays well
-within production host RAM headroom.
+pipelined path double-buffers), not 32 MiB × activation worker count. The
+forward-only fused path does hold one buffer per **file reader**, and that total
+is what the [aggregate read budget](#aggregate-read-budget-across-concurrent-readers-issue-549)
+bounds. Either way it stays well within production host RAM headroom.
 
 The default is raised **per record size, not globally**: the gain is specific to
 large records, so the small-record synthetic path keeps its 2 MiB buffer while

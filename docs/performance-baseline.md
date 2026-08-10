@@ -682,6 +682,134 @@ NEAT_SCORER_GPU_SCRATCH_BYTES=1073741824 \
   cargo bench -p rust_scorer --bench scoring -- shallow_gpu_vs_cpu/gpu
 ```
 
+## Read-chunk defaults vs the reader count — 10 August 2026 (Issue #549)
+
+Sub-issue of [#544](https://github.com/stSoftwareAU/NEAT-AI-scorer/issues/544).
+`read_tuning` now sizes the read chunk from the **concurrent reader count** as
+well as the record width and host RAM, and the dead `≥ 64 GiB → 256 MiB` entry in
+`max_read_bytes` is gone. **No tier's read chunk was retuned** — the resident
+buffer every fleet tier holds is byte-identical to what it shipped with — because
+this worker's host cannot resolve a chunk-size effect (evidence below). The
+structural half ships; the retune half is a recorded **blocked/negative**
+result.
+
+### What the issue premise got wrong
+
+Issue #549 states the aggregate `readers × chunk` footprint "is a budget the
+current per-knob tiering never accounts for", quoting 10 × 32 MiB = 320 MiB on a
+10-core 16 GB M4. The **product of the two knobs** is indeed 320 MiB, but the
+resident buffer never was: Issue #529 added
+`stream_score::per_reader_read_buf_len`, which divides one total budget across
+the readers *after* `read_tuning` has chosen. The bug was therefore not an
+unbounded footprint — it was that the budget being divided was
+`max_read_bytes`, the **override clamp**, so the chunk `read_tuning` chose was
+silently overridden, and the value every diagnostic printed was up to 6× wider
+than any reader actually held. Measured on the M4 Pro below, `--host-report`
+before and after:
+
+| Knob (`--record-bytes 9848`) | Before | After |
+|---|---:|---:|
+| `default_training_read_bytes` (per reader) | 33 552 136 | **5 583 816** |
+| `file_read_workers` | *absent* | **12** |
+| `aggregate_read_budget_bytes` | *absent* | **67 108 864** |
+| Buffer each reader really allocated | 5 583 816 | 5 583 816 |
+
+That is also why the 256 MiB `max_read_bytes` tier looked dead and was not: no
+default could select it, but on a ≥ 64 GiB host it was the *aggregate* budget the
+reader split consumed. It moved to `read_tuning::aggregate_read_budget_bytes`
+(64 MiB; 256 MiB at ≥ 64 GiB; never above RAM/16), where the defaults reach it,
+and the override clamp is now a flat 64 MiB on every host.
+
+### Host
+
+| | |
+|---|---|
+| Machine | Apple M4 Pro (12 logical / 8 P-cores), 24 GB, local NVMe |
+| Corpus | 199 993 184 B (20 308 records × 9848 B) across **26** `.bin` shards, page-cache warm |
+| Creature | production width: 2461 inputs / 1 output / 19 hidden, `forwardOnly` |
+| Path | forward-only fused, `--gpu off`, shipped reader count (12) |
+| Load | 5–33 (1-min average) on a 12-core host — unrelated production scoring throughout |
+
+### Before/after A/B at the shipped default
+
+15 interleaved rounds of the release binary built from the merge base and from
+this branch, alternating every round so drift hits both equally:
+
+| Build | Median `timeTaken` | Min | Mean |
+|---|---:|---:|---:|
+| before (merge base) | **28.26 ms** | 26.11 ms | 31.69 ms |
+| after (this branch) | **28.30 ms** | 25.28 ms | 30.51 ms |
+| | **+0.13 %** | | |
+
+`error`, `score` and `recordCount` are bit-identical between the two builds
+(`3.8862606350444184` / `-2.8867303150444186` / `20308`), and
+`stream_score::tests::shipped_per_reader_buffer_is_unchanged_by_the_reader_aware_default`
+pins the per-reader buffer for all eight fleet tiers, so the +0.13 % is noise
+around a change that resolves to the same bytes.
+
+### Why the retune is not shipped: this host cannot measure a chunk effect
+
+Three independent noise probes, all on the shipped path:
+
+1. **Identical configurations, 2× apart.** A Criterion sweep of
+   `NEAT_SCORER_READ_BYTES` ∈ {8, 16, 25.6, 32} MiB on
+   `fused_multi_file/file_workers/auto` at `BENCH_FUSED_FILES=26` and
+   `BENCH_SCORING_BYTES=200000000` produced medians of 54.7 / 98.9 / 107.8 /
+   64.0 ms — but **all four arms resolve to the same 5 583 816-byte buffer**
+   (12 readers share the 64 MiB budget, so every value ≥ 5.6 MiB is clamped to
+   the same figure). The whole 2× spread is host load, at load average 22–33.
+2. **Same-arm drift of 51 %.** A 30-round interleaved CLI sweep of the aggregate
+   budget (`NEAT_SCORER_READ_BYTES` ∈ {2 MiB, 4 MiB, unset} at 12 readers →
+   24 / 48 / 64 MiB aggregate) put the *default* arm's first-half median at
+   82.50 ms and its second-half median at 54.57 ms.
+3. **A signal inside that drift.** In a quieter 15-round window the same sweep
+   ranked 12–48 MiB aggregate 4–7 % ahead of the shipped 64 MiB
+   (28.1 / 28.6 / 27.8 ms vs 30.1 ms), with 6 MiB clearly worse (32.6 ms). Two
+   arms that resolve identically (`5583816` and unset) agreed to 0.4 % in that
+   window, so the harness is capable of ~1 % resolution on a quiet host — but
+   probe 2 shows this host is not quiet for long enough to trust a 4–7 % gap.
+
+A tighter aggregate budget is therefore **plausible but unproven**, and the
+corpus here is **page-cache warm** while production streams ~80 GB cold: smaller
+chunks trade syscalls for locality, and a warm-cache win can invert on cold NVMe.
+Shrinking the shipped budget on that evidence would be a performance change
+without evidence of gain, which
+[CONTRIBUTING](../CONTRIBUTING.md#performance-task-workflow) does not allow.
+
+### Decision (Issue #549)
+
+* **Reader-aware defaults, the named aggregate budget, and the removal of the
+  dead override tier ship.** They are memory-policy and diagnostic-truthfulness
+  changes with a byte-identical resident buffer on every fleet tier.
+* **No tier's chunk is retuned.** Every tier keeps its shipped value, pinned by
+  the golden table in `stream_score`; a future retune must land there with
+  before/after medians per tier.
+* **The retune needs a quiescent host and a cold corpus.** Re-run the sweep
+  below on an idle host per tier (M2 Ultra, M4 Pro, M4, M1-class, x86 Linux
+  control), with the page cache dropped between arms, before moving any value.
+  Same constraint as [Issue #553](https://github.com/stSoftwareAU/NEAT-AI-scorer/issues/553)
+  for the P-core retune: the other fleet tiers are not reachable from this
+  unattended worker at all.
+
+Reproduce (26-shard production-width corpus; alternate the arms, never batch
+them):
+
+```bash
+rust_scorer --host-report --record-bytes 9848        # readers + aggregate budget
+
+# Aggregate-budget sweep: with W readers, NEAT_SCORER_READ_BYTES=X caps each
+# reader at min(X, budget/W), so X below budget/W is the only way to shrink the
+# aggregate without a code change.
+for x in 2097152 4194304 unset; do
+  NEAT_SCORER_READ_BYTES=$x rust_scorer creature.json data_dir --gpu off
+done
+
+# Criterion, whole-tier view (remember every X >= budget/W resolves alike):
+BENCH_SCORING_BYTES=200000000 BENCH_SCORING_INPUTS=2461 \
+  BENCH_SCORING_OUTPUTS=1 BENCH_SCORING_HIDDEN=19 BENCH_FUSED_FILES=26 \
+  cargo bench -p rust_scorer --bench scoring -- fused_multi_file/file_workers/auto
+```
+
 ## Shallow-creature GPU vs CPU — 26 July 2026 (Issue #467, negative result)
 
 Cross-links [#333](https://github.com/stSoftwareAU/NEAT-AI-scorer/issues/333)
