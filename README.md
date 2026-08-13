@@ -453,11 +453,12 @@ Measured on the production creature (2 511 inputs, 22 104 synapses) and the
 | full sweep (`NEAT_SCORER_SAMPLED_READ=off`) | 10 693 | 597 | 17 260 ms | 0.79 |
 | sampled read | **3 423** | 805 | **12 282 ms** | 0.99 |
 
-Interleaved 1-creature calls under matched load (1-minute average ≈ 31): 9 316 /
-10 694 / 10 262 / 13 088 ms full-sweep against 4 434 / 4 378 / 2 732 / 4 409 ms
-sampled — **≈58 % off a screen call**, every pair. The host was **not** idle
-(a live production run held it throughout), so treat the absolute numbers as a
-floor.
+Interleaved 1-creature calls under matched load (1-minute average 33.9–35.3):
+11 522 / 10 787 / 12 397 / 10 868 ms full-sweep against 5 925 / 5 684 / 3 045 /
+3 450 ms sampled — **≈59 % off a screen call**, every pair. The host was **not**
+idle (a live production run held it throughout), so treat the absolute numbers
+as a floor. Raw logs are committed beside the client-side write-up in
+NEAT-AI-Lamarck (`docs/scorer-fixed-cost.md`, `docs/evidence/scorer-fixed-cost/`).
 
 Scores do not move: the sampled reader delivers the same records in the same
 order, so a creature's error sum accumulates identically. `sampled_read_parity`
