@@ -118,6 +118,46 @@ pub fn file_read_worker_count(num_files: usize) -> usize {
     file_read_worker_count_for(num_files, &host_resources::host())
 }
 
+/// Readers a **sampled** corpus read spreads its sparse fetches over
+/// (NEAT-AI-Lamarck#123).
+///
+/// Deliberately *not* capped by the file count the way
+/// [`file_read_worker_count`] is: a sampled read splits each file into record
+/// windows, so a single-file corpus parallelises just as well as a 520-file one.
+/// The cap matters because sparse reads only beat a sequential sweep with
+/// several requests in flight — one reader is slower than reading everything.
+///
+/// Shares the `NEAT_SCORER_FILE_THREADS` escape hatch and the host's worker
+/// ceiling with the fused reader, so there is no new per-host knob.
+///
+/// # Examples
+///
+/// ```
+/// use rust_scorer::stream_score::sampled_read_worker_count;
+///
+/// // Always at least one reader, whatever the host reports.
+/// assert!(sampled_read_worker_count() >= 1);
+/// ```
+pub fn sampled_read_worker_count() -> usize {
+    sampled_read_worker_count_for(&host_resources::host())
+}
+
+/// Testable variant of [`sampled_read_worker_count`].
+pub(crate) fn sampled_read_worker_count_for(host: &HostResources) -> usize {
+    let default = host_resources::default_worker_count(host);
+    let env = std::env::var("NEAT_SCORER_FILE_THREADS").ok();
+    let (parsed, warning) = crate::env_tuning::parse_tuning_var(
+        "NEAT_SCORER_FILE_THREADS",
+        env.as_deref(),
+        default,
+        |s| s.parse::<usize>().ok(),
+    );
+    if let Some(warning) = warning {
+        eprintln!("{warning}");
+    }
+    parsed.clamp(1, host_resources::max_worker_count(host))
+}
+
 /// Testable variant of [`file_read_worker_count`].
 pub(crate) fn file_read_worker_count_for(num_files: usize, host: &HostResources) -> usize {
     if num_files <= 1 {

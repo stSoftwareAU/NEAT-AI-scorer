@@ -44,7 +44,6 @@ use std::time::Instant;
 
 use neat_core::creature::{CreatureExport, compile_creature, parse_creature_json};
 use neat_core::network::CompiledNetwork;
-use neat_core::training_bin_stream::for_each_read_chunk;
 use neat_core::training_data::{TrainingDataConfig, find_bin_files};
 use rayon::prelude::*;
 
@@ -61,7 +60,7 @@ use crate::gpu::{GpuBackendLabel, GpuContext};
 use crate::read_tuning::{training_read_backend_label, training_read_target_bytes_from_env};
 use crate::sampling::SampleSpec;
 use crate::scoring::{ScoreResult, calculate_score, complexity_penalty, compute_score_components};
-use crate::stream_io::{FloatBufPool, run_io_loop};
+use crate::stream_io::{FloatBufPool, sweep_corpus};
 use crate::stream_score::{activation_worker_count_for_scorer, effective_fused_read_buf_len};
 
 /// Keep aligned with main scorer formula.
@@ -690,9 +689,6 @@ fn score_from_creature_dir_cpu(
     }
 
     let n_creatures = loaded.len();
-    let mut pending: Vec<u8> = Vec::new();
-    let mut head: usize = 0;
-    let mut unpack_floats: Vec<f32> = Vec::new();
     let mut total_records = 0_usize;
     let mut total_mse = vec![0.0_f64; n_creatures];
     // Issue #308 — per-creature early-exit bookkeeping. `active[ci]` gates
@@ -829,37 +825,34 @@ fn score_from_creature_dir_cpu(
     // creature in the batch. Record it so `single_pass_assertion` fails loudly
     // if a future change reintroduces per-creature re-reads.
     training_pass_probe::record_sweep();
-    // Issue #310: one stateful sampler threads the global record index across
-    // the whole sweep so the kept subset is stable regardless of chunking.
-    let mut sampler = sample.sampler();
-    let sweep = for_each_read_chunk(&bin_files, fused_read_buf_len, |chunk| {
-        run_io_loop(
-            chunk,
-            &mut pending,
-            &mut head,
-            &mut unpack_floats,
-            record_bytes,
-            &mut sampler,
-            &mut score_chunk,
-        )
-    });
+    // Issue #310 / NEAT-AI-Lamarck#123: `sweep_corpus` threads the sampler's
+    // global record index across the whole sweep so the kept subset is stable
+    // regardless of chunking — and, when the sample is sparse enough to be worth
+    // it, fetches only the kept records instead of reading and decoding the
+    // whole corpus to throw most of it away.
+    let sweep = sweep_corpus(
+        &bin_files,
+        fused_read_buf_len,
+        record_bytes,
+        *sample,
+        &mut score_chunk,
+    );
     // Issue #308: `EarlyExit::AbortAll` unwinds via a private sentinel error —
-    // a clean early stop, not a failure. `for_each_read_chunk` wraps the inner
-    // message with file/offset context, so match by substring (the NUL-prefixed
-    // marker cannot collide with a genuine I/O or cost error). Any other error
-    // is a real fault and propagates.
-    match sweep {
-        Ok(()) => {}
-        Err(e) if abort_all && e.contains(EARLY_EXIT_ABORT_ALL_SENTINEL) => {}
+    // a clean early stop, not a failure. The reader wraps the inner message with
+    // file/offset context, so match by substring (the NUL-prefixed marker cannot
+    // collide with a genuine I/O or cost error). Any other error is a real fault
+    // and propagates.
+    let trailing = match sweep {
+        Ok(trailing) => trailing,
+        Err(e) if abort_all && e.contains(EARLY_EXIT_ABORT_ALL_SENTINEL) => 0,
         Err(e) => return Err(e),
-    }
+    };
 
     // A mid-corpus abort legitimately leaves an unread trailing fragment, so
     // only enforce whole-record consumption when the sweep ran to completion.
-    if !abort_all && head != pending.len() {
+    if !abort_all && trailing != 0 {
         return Err(format!(
-            "Trailing {} bytes (incomplete record) after reading all training files",
-            pending.len() - head
+            "Trailing {trailing} bytes (incomplete record) after reading all training files"
         ));
     }
     if total_records == 0 {
@@ -1219,12 +1212,9 @@ fn score_from_creature_dir_gpu_impl(
         effective_directory_gpu_inflight(runners.topology(), inflight_chunks).clamp(1, 2);
     let mut total_records = 0_usize;
     let mut total_mse = vec![0.0_f64; loaded.len()];
-    let mut pending: Vec<u8> = Vec::new();
-    let mut head: usize = 0;
-    let mut unpack_floats: Vec<f32> = Vec::new();
-    // Issue #310: one sampler for the whole sweep, shared by whichever branch
+    // Trailing bytes the sweep could not consume, reported by whichever branch
     // (synchronous or pipelined) runs below.
-    let mut sampler = sample.sampler();
+    let trailing;
 
     if inflight_chunks <= 1 {
         // Synchronous: one chunk in flight at a time.
@@ -1244,17 +1234,13 @@ fn score_from_creature_dir_gpu_impl(
 
         // Issue #3236: single sweep over the corpus for the whole GPU batch.
         training_pass_probe::record_sweep();
-        for_each_read_chunk(&bin_files, fused_read_buf_len, |chunk| {
-            run_io_loop(
-                chunk,
-                &mut pending,
-                &mut head,
-                &mut unpack_floats,
-                record_bytes,
-                &mut sampler,
-                &mut score_chunk,
-            )
-        })?;
+        trailing = sweep_corpus(
+            &bin_files,
+            fused_read_buf_len,
+            record_bytes,
+            *sample,
+            &mut score_chunk,
+        )?;
     } else {
         // Pipelined: a worker thread runs GPU dispatches while the I/O thread
         // continues unpacking. Bounded crossbeam-style channel of capacity
@@ -1342,17 +1328,13 @@ fn score_from_creature_dir_gpu_impl(
         // Issue #3236: single sweep over the corpus for the whole pipelined
         // GPU batch.
         training_pass_probe::record_sweep();
-        for_each_read_chunk(&bin_files, fused_read_buf_len, |chunk| {
-            run_io_loop(
-                chunk,
-                &mut pending,
-                &mut head,
-                &mut unpack_floats,
-                record_bytes,
-                &mut sampler,
-                &mut submit_chunk,
-            )
-        })?;
+        trailing = sweep_corpus(
+            &bin_files,
+            fused_read_buf_len,
+            record_bytes,
+            *sample,
+            &mut submit_chunk,
+        )?;
 
         // Drain remaining results before tearing down the worker.
         while pending_results > 0 {
@@ -1366,10 +1348,9 @@ fn score_from_creature_dir_gpu_impl(
         let _ = n_creatures;
     }
 
-    if head != pending.len() {
+    if trailing != 0 {
         return Err(format!(
-            "Trailing {} bytes (incomplete record) after reading all training files",
-            pending.len() - head
+            "Trailing {trailing} bytes (incomplete record) after reading all training files"
         ));
     }
     if total_records == 0 {

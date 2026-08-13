@@ -9,7 +9,12 @@
 //! driver here so a single copy is shared, keeping the Issue #103
 //! out-of-bounds-safety invariant in `unpack_f32s_le` in one place.
 
-use crate::sampling::RecordSampler;
+use crate::sampling::{RecordSampler, SampleSpec};
+use crate::stream_score::sampled_read_worker_count;
+use neat_core::training_bin_stream::{
+    for_each_read_chunk, for_each_sampled_read_chunk, sampled_read_is_worthwhile,
+};
+use std::path::PathBuf;
 
 /// Compact `pending` when the consumed prefix is large (avoids unbounded `head`).
 pub(crate) const PENDING_COMPACT_HEAD_BYTES: usize = 512 * 1024;
@@ -201,10 +206,121 @@ pub(crate) fn run_io_loop(
     Ok(())
 }
 
+/// Emergency escape hatch back to the full sweep: `NEAT_SCORER_SAMPLED_READ=off`
+/// (`0`, `false`, `no` also accepted; default on).
+///
+/// The sampled read returns bit-identical scores, so this exists for a host
+/// where sparse reads behave badly — not as configuration.
+pub const SAMPLED_READ_ENV: &str = "NEAT_SCORER_SAMPLED_READ";
+
+/// `true` unless [`SAMPLED_READ_ENV`] switches the sampled reader off.
+fn sampled_read_enabled() -> bool {
+    let raw = std::env::var(SAMPLED_READ_ENV).ok();
+    let (enabled, warning) =
+        crate::env_tuning::parse_tuning_var(SAMPLED_READ_ENV, raw.as_deref(), true, |s| {
+            match s.to_ascii_lowercase().as_str() {
+                "on" | "1" | "true" | "yes" => Some(true),
+                "off" | "0" | "false" | "no" => Some(false),
+                _ => None,
+            }
+        });
+    if let Some(warning) = warning {
+        eprintln!("{warning}");
+    }
+    enabled
+}
+
+/// True when this sweep should fetch only the sampled records instead of
+/// streaming the whole corpus and filtering after decode.
+///
+/// A full-rate call never qualifies; a sub-sample qualifies when neat-core's
+/// cost model says skipping the unkept bytes beats reading them
+/// ([`sampled_read_is_worthwhile`] — sparse enough, and skipping far enough to
+/// be worth a seek) and the escape hatch has not switched it off.
+pub(crate) fn use_sampled_read(record_bytes: usize, sample: SampleSpec) -> bool {
+    !sample.is_full()
+        && sampled_read_is_worthwhile(record_bytes, sample.rate())
+        && sampled_read_enabled()
+}
+
+/// Drive one sweep over `bin_files`, handing whole-record chunks to
+/// `score_chunk`, and return the trailing bytes left unconsumed.
+///
+/// Two readers sit behind this, chosen by [`use_sampled_read`] and otherwise
+/// indistinguishable to the caller:
+///
+/// - **Full sweep** — every byte is read, decoded, and the sampler drops the
+///   unkept records after decode (the pre-existing path, and still the path a
+///   full-corpus call takes).
+/// - **Sampled read** — only the kept records are fetched, over a pool of
+///   readers, so a 5 % call stops paying to read and decode the 95 % it throws
+///   away (NEAT-AI-Lamarck#123). The records arrive already filtered, so the
+///   in-loop sampler is a pass-through.
+///
+/// Both deliver the same records in the same order, so a creature's error sum
+/// accumulates identically and the scores are **bit-identical** either way.
+///
+/// A non-zero return is a corpus that does not end on a record boundary; callers
+/// decide whether that is a fault (a completed sweep) or expected (an aborted
+/// one).
+pub(crate) fn sweep_corpus(
+    bin_files: &[PathBuf],
+    read_buf_len: usize,
+    record_bytes: usize,
+    sample: SampleSpec,
+    score_chunk: &mut ScoreChunkFn<'_>,
+) -> Result<usize, String> {
+    let mut pending: Vec<u8> = Vec::new();
+    let mut head: usize = 0;
+    let mut unpack_floats: Vec<f32> = Vec::new();
+
+    if use_sampled_read(record_bytes, sample) {
+        let keep = move |index: u64| sample.keeps(index);
+        let mut sampler = RecordSampler::full();
+        for_each_sampled_read_chunk(
+            bin_files,
+            read_buf_len,
+            record_bytes,
+            sampled_read_worker_count(),
+            &keep,
+            |chunk| {
+                run_io_loop(
+                    chunk,
+                    &mut pending,
+                    &mut head,
+                    &mut unpack_floats,
+                    record_bytes,
+                    &mut sampler,
+                    score_chunk,
+                )
+            },
+        )?;
+    } else {
+        let mut sampler = sample.sampler();
+        for_each_read_chunk(bin_files, read_buf_len, |chunk| {
+            run_io_loop(
+                chunk,
+                &mut pending,
+                &mut head,
+                &mut unpack_floats,
+                record_bytes,
+                &mut sampler,
+                score_chunk,
+            )
+        })?;
+    }
+
+    Ok(pending.len() - head)
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{FloatBufPool, compact_pending_if_needed, run_io_loop, unpack_f32s_le};
+    use super::{
+        FloatBufPool, SAMPLED_READ_ENV, compact_pending_if_needed, run_io_loop, sweep_corpus,
+        unpack_f32s_le, use_sampled_read,
+    };
     use crate::sampling::{RecordSampler, SampleSpec};
+    use std::path::PathBuf;
 
     #[test]
     fn float_buf_pool_reuses_recycled_buffer_allocation() {
@@ -465,5 +581,159 @@ mod tests {
         }
 
         assert_eq!(scored, vec![1.0, 3.0, 5.0, 7.0]);
+    }
+
+    /// Production record shape — 2 512 `f32` per record, the shape the
+    /// `sampled_read_is_worthwhile` policy is measured against.
+    const PROD_RECORD_VALUES: usize = 2512;
+    const PROD_RECORD_BYTES: usize = PROD_RECORD_VALUES * 4;
+
+    /// Write `files` × `records_per_file` records; record `r` is `r` repeated,
+    /// so a delivered float identifies its own record.
+    fn write_corpus(dir: &std::path::Path, files: usize, records_per_file: usize) -> Vec<PathBuf> {
+        let mut paths = Vec::new();
+        let mut global = 0_u32;
+        for f in 0..files {
+            let mut bytes: Vec<u8> = Vec::new();
+            for _ in 0..records_per_file {
+                for _ in 0..PROD_RECORD_VALUES {
+                    bytes.extend_from_slice(&(global as f32).to_le_bytes());
+                }
+                global += 1;
+            }
+            let path = dir.join(format!("{f}.bin"));
+            std::fs::write(&path, &bytes).unwrap();
+            paths.push(path);
+        }
+        paths
+    }
+
+    /// Every float `sweep_corpus` delivers, in delivery order.
+    fn swept(files: &[PathBuf], sample: SampleSpec) -> Vec<f32> {
+        let mut seen: Vec<f32> = Vec::new();
+        let mut score_chunk = |f: &mut Vec<f32>, n: usize| -> Result<(), String> {
+            assert!(n > 0, "an empty chunk must never reach score_chunk");
+            assert_eq!(f.len(), n * PROD_RECORD_VALUES);
+            seen.extend_from_slice(f);
+            Ok(())
+        };
+        let trailing = sweep_corpus(
+            files,
+            PROD_RECORD_BYTES * 4,
+            PROD_RECORD_BYTES,
+            sample,
+            &mut score_chunk,
+        )
+        .unwrap();
+        assert_eq!(
+            trailing, 0,
+            "a whole-record corpus leaves no trailing bytes"
+        );
+        seen
+    }
+
+    /// The heart of it: fetching only the sampled records delivers **exactly**
+    /// what reading everything and filtering after decode delivers — same
+    /// records, same order, bit-identical floats. Anything else would move a
+    /// creature's score.
+    #[test]
+    fn a_sampled_read_delivers_what_the_full_sweep_delivers() {
+        let dir = tempfile::tempdir().unwrap();
+        let files = write_corpus(dir.path(), 3, 40);
+
+        // Rates whose mean skip clears the 64 KiB bar for this record size, so
+        // every one of them exercises the sampled reader.
+        for (rate, phase) in [(0.05, 0), (0.05, 7), (0.1, 3), (0.125, 1)] {
+            let sample = SampleSpec::new(rate, phase).unwrap();
+            assert!(
+                use_sampled_read(PROD_RECORD_BYTES, sample),
+                "rate {rate} on production records must take the sampled reader"
+            );
+
+            let sampled = swept(&files, sample);
+
+            // Same corpus, same spec, forced down the full-sweep path.
+            unsafe { std::env::set_var(SAMPLED_READ_ENV, "off") };
+            assert!(!use_sampled_read(PROD_RECORD_BYTES, sample));
+            let full = swept(&files, sample);
+            unsafe { std::env::remove_var(SAMPLED_READ_ENV) };
+
+            assert_eq!(sampled, full, "rate {rate} phase {phase} moved the records");
+            assert!(!sampled.is_empty(), "the sample kept nothing to compare");
+        }
+    }
+
+    /// A full-corpus call is untouched by any of this: it reads every record,
+    /// in order, down the same path it always did.
+    #[test]
+    fn a_full_corpus_sweep_reads_every_record() {
+        let dir = tempfile::tempdir().unwrap();
+        let files = write_corpus(dir.path(), 2, 9);
+        assert!(!use_sampled_read(PROD_RECORD_BYTES, SampleSpec::full()));
+
+        let seen = swept(&files, SampleSpec::full());
+        let records: Vec<f32> = seen
+            .chunks_exact(PROD_RECORD_VALUES)
+            .map(|r| r[0])
+            .collect();
+        assert_eq!(records, (0..18).map(|i| i as f32).collect::<Vec<_>>());
+    }
+
+    /// The policy gate, at the boundaries that decide a real call's path.
+    #[test]
+    fn only_sparse_samples_of_large_records_take_the_sampled_read() {
+        // Production screen call: 5 % of 10 048-byte records.
+        assert!(use_sampled_read(
+            PROD_RECORD_BYTES,
+            SampleSpec::new(0.05, 0).unwrap()
+        ));
+        // Full corpus — nothing to skip.
+        assert!(!use_sampled_read(PROD_RECORD_BYTES, SampleSpec::full()));
+        // Dense sample — the skips are too short to seek over. At this record
+        // size a 20 % sample skips only 40 KiB, so it keeps the full sweep.
+        assert!(!use_sampled_read(
+            PROD_RECORD_BYTES,
+            SampleSpec::new(0.5, 0).unwrap()
+        ));
+        assert!(!use_sampled_read(
+            PROD_RECORD_BYTES,
+            SampleSpec::new(0.2, 0).unwrap()
+        ));
+        // Small records — 5 % of 64 bytes skips ~1.2 KiB.
+        assert!(!use_sampled_read(64, SampleSpec::new(0.05, 0).unwrap()));
+    }
+
+    /// A corpus that does not end on a record boundary is reported, not
+    /// silently dropped — the caller decides whether that is a fault.
+    #[test]
+    fn a_ragged_corpus_reports_its_trailing_bytes() {
+        let dir = tempfile::tempdir().unwrap();
+        let files = write_corpus(dir.path(), 1, 4);
+        let mut bytes = std::fs::read(&files[0]).unwrap();
+        bytes.extend_from_slice(&[0_u8; 12]);
+        std::fs::write(&files[0], &bytes).unwrap();
+
+        let mut score_chunk = |_: &mut Vec<f32>, _: usize| -> Result<(), String> { Ok(()) };
+        let trailing = sweep_corpus(
+            &files,
+            PROD_RECORD_BYTES * 4,
+            PROD_RECORD_BYTES,
+            SampleSpec::full(),
+            &mut score_chunk,
+        )
+        .unwrap();
+        assert_eq!(trailing, 12);
+
+        // The sampled reader cannot plan reads over a ragged file at all, so it
+        // fails loud rather than guessing at the record count.
+        let err = sweep_corpus(
+            &files,
+            PROD_RECORD_BYTES * 4,
+            PROD_RECORD_BYTES,
+            SampleSpec::new(0.05, 0).unwrap(),
+            &mut score_chunk,
+        )
+        .unwrap_err();
+        assert!(err.contains("whole number"), "unhelpful error: {err}");
     }
 }

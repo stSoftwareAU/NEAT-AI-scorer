@@ -430,6 +430,50 @@ flowchart LR
     Drop --> Loop
 ```
 
+#### Sparse sampled reads — the bytes are never read (NEAT-AI-Lamarck#123)
+
+Filtering *after* decode still reads and decodes the whole corpus, so a 5 % call
+cost very nearly what a full-corpus call cost. NEAT-AI-Lamarck#112 measured that
+from the outside on the 21 GiB production corpus: **9 898 ms** of fixed per-call
+cost for a sampled call against **1 977 ms** for a full-corpus one — 5× the fixed
+cost for a twentieth of the scoring — worth 24–29 % of a 45-minute Lamarck run.
+
+A **directory** sweep now fetches only the records it will score, via
+`neat_core::training_bin_stream::for_each_sampled_read_chunk`, when the sample is
+sparse enough for skipping to pay (`sampled_read_is_worthwhile`: ≤ 25 % of
+records kept **and** ≥ 64 KiB of mean skip — the production screen call at 5 % of
+10 048-byte records skips ~191 KiB). Anything denser, and every full-corpus call,
+keeps the sequential sweep above, untouched.
+
+Measured on the production creature (2 511 inputs, 22 104 synapses) and the
+21 GiB / 520-file corpus at `--sample-rate 0.05`, 3 sweeps of 1/2/30 creatures:
+
+| | fixed ms/call | ms/creature | mean call (11 creatures) | r² |
+|---|---|---|---|---|
+| full sweep (`NEAT_SCORER_SAMPLED_READ=off`) | 10 693 | 597 | 17 260 ms | 0.79 |
+| sampled read | **3 423** | 805 | **12 282 ms** | 0.99 |
+
+Interleaved 1-creature calls under matched load (1-minute average ≈ 31): 9 316 /
+10 694 / 10 262 / 13 088 ms full-sweep against 4 434 / 4 378 / 2 732 / 4 409 ms
+sampled — **≈58 % off a screen call**, every pair. The host was **not** idle
+(a live production run held it throughout), so treat the absolute numbers as a
+floor.
+
+Scores do not move: the sampled reader delivers the same records in the same
+order, so a creature's error sum accumulates identically. `sampled_read_parity`
+asserts **bit-identical** `score`/`error`/`recordCount` between the two readers
+over a production-shaped corpus, and the production measurement above reports the
+same baseline score (`0.348985976566`) either way.
+
+- `NEAT_SCORER_SAMPLED_READ=off` is the emergency way back to the full sweep. It
+  is an escape hatch, not configuration.
+- Readers come from `sampled_read_worker_count()` — the same
+  `NEAT_SCORER_FILE_THREADS` knob and host ceiling the #529 fused reader uses,
+  but **not** capped by the file count: a sampled read splits each file into
+  record windows, so a single-file corpus parallelises too. The pool matters —
+  one reader doing sparse reads is *slower* than reading everything (9.8–31.8 s
+  against 5.0–6.2 s on this corpus).
+
 Synthetic corpus (1.5 M records, forward-only 4→128→2 creature, CPU path,
 `--gpu off`; best of 3 runs) — wall-clock scales down with the rate while the
 score stays stable:

@@ -240,7 +240,8 @@ this document's tables.
 |---|---|---|
 | `NEAT_SCORER_READ_BYTES` | the per-reader read chunk | clamped to `[record_bytes, 64 MiB]`, record-aligned, and still divided across concurrent readers |
 | `NEAT_SCORER_ACTIVATION_THREADS` | the activation worker count | clamped to `[1, max_worker_count]` |
-| `NEAT_SCORER_FILE_THREADS` | the concurrent `.bin` reader count | clamped to `[1, min(files, max_worker_count)]`; `1` restores the single sequential reader |
+| `NEAT_SCORER_FILE_THREADS` | the concurrent `.bin` reader count | clamped to `[1, min(files, max_worker_count)]`; `1` restores the single sequential reader. A **sampled** read shares the knob but is clamped to `[1, max_worker_count]` only — it splits files into record windows, so it is not capped by the file count |
+| `NEAT_SCORER_SAMPLED_READ` | whether a sparse sample fetches only its own records | `off` restores the full sequential sweep + post-decode filter (NEAT-AI-Lamarck#123). Scores are bit-identical either way, so this is a way out of an I/O regression on an odd host, never a tuning choice |
 | `NEAT_SCORER_GPU_SCRATCH_BYTES` | the scratch SSBO budget | still capped at the adapter's binding limit |
 | `NEAT_SCORER_GPU` | the GPU mode (`auto`/`on`/`off`) | a **mode selector**, not a tuning knob — the `--gpu` CLI flag is the supported form and wins over the variable |
 

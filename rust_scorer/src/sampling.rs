@@ -83,6 +83,20 @@ impl SampleSpec {
         self.rate >= 1.0
     }
 
+    /// Stride predicate: keep record `i` iff
+    /// `floor((j+1)·rate) > floor(j·rate)` where `j = i + phase`.
+    ///
+    /// The single source of truth for the kept set. [`RecordSampler`] applies it
+    /// to a streamed buffer; the sampled reader (NEAT-AI-Lamarck#123) applies it
+    /// to a record index to decide which bytes to fetch at all. Both must agree,
+    /// so neither owns its own copy of the stride.
+    pub(crate) fn keeps(&self, i: u64) -> bool {
+        // f64 represents every integer index exactly up to 2^53; a 21 GiB corpus
+        // holds far fewer records than that, so the cast is lossless in practice.
+        let j = (i + self.phase) as f64;
+        ((j + 1.0) * self.rate).floor() > (j * self.rate).floor()
+    }
+
     /// Create a fresh stateful [`RecordSampler`] for one corpus sweep.
     pub fn sampler(&self) -> RecordSampler {
         RecordSampler::new(*self)
@@ -191,12 +205,11 @@ impl RecordSampler {
     /// Stride predicate: keep record `i` iff
     /// `floor((j+1)·rate) > floor(j·rate)` where `j = i + phase`.
     ///
-    /// Matches the TypeScript consumer's stratified stride exactly.
+    /// Matches the TypeScript consumer's stratified stride exactly. Delegates to
+    /// [`SampleSpec::keeps`] so the streamed filter and the sampled reader can
+    /// never drift apart.
     fn keeps_index(&self, i: u64) -> bool {
-        // f64 represents every integer index exactly up to 2^53; a 21 GiB corpus
-        // holds far fewer records than that, so the cast is lossless in practice.
-        let j = (i + self.spec.phase) as f64;
-        ((j + 1.0) * self.spec.rate).floor() > (j * self.spec.rate).floor()
+        self.spec.keeps(i)
     }
 
     /// Consider the record at the current global index, advance past it, and
