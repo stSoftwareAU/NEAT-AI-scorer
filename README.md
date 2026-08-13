@@ -671,6 +671,12 @@ This mode uses one shared training-data scan and parallelises scoring across cre
 
 Per-chunk activation runs through a single flat Rayon layer (Issue #41): a worker network pool sized to `activation_threads` is built up-front, and every chunk dispatches one `par_iter_mut` over that pool. When the population meets or exceeds `activation_threads` each creature owns one worker; below that, the thread budget is spread across creatures so a small population still saturates the CPU. The JSON output keeps the same shape — `parallelActivationBatches` and `maxActivationBatchRecords` are not emitted in directory mode.
 
+#### A score does not depend on the batch (`NEAT-AI-Lamarck#130`)
+
+**The same creature on the same corpus scores bit-identically whether it is alone in the directory or beside 200 others**, on any host and at any `NEAT_SCORER_WORKER_SPLIT`. Each chunk is cut into fixed **64-record blocks** (`multi_score::RECORDS_PER_PARTITION`, a multiple of the upstream 8-record SIMD group), each creature's per-block f64 sums are folded back in block order, and a creature's workers merely take a contiguous span of its blocks. Workers therefore decide *concurrency*, never *arithmetic*.
+
+Before this the partition was `max(activation_threads, n_creatures) * split / n_creatures` sub-ranges per creature, so batch size, host thread count and the split knob all re-associated a creature's partial sums and reselected the 8-record / 4-record / scalar kernel path. On the production creature that moved a full-corpus score by **`1.755e-7` relative** between a directory of one and a directory of two — enough to perturb a caller comparing candidates at `1e-6`, because the incumbent and the candidate did not move by the same amount. `tests/batch_composition_invariance.rs` pins the guarantee across batch sizes, `NEAT_SCORER_ACTIVATION_THREADS` values and split factors.
+
 #### Early-exit / partial-score API (Issue #308)
 
 The directory-mode batch path is also exposed as a library entrypoint with a

@@ -15,25 +15,43 @@
 //!   worker network and the par_iter has `loaded.len()` items.
 //! - When `loaded.len() < activation_threads`, the `activation_threads` budget
 //!   is distributed across creatures (`base + 1` workers for the first
-//!   `rem` creatures), and each chunk's records are partitioned into one
-//!   slice per worker so the par_iter still has `activation_threads` items.
+//!   `rem` creatures), so the par_iter still has `activation_threads` items.
 //!
 //! Earlier revisions ran an outer `par_iter_mut` over creatures and an inner
 //! `par_iter_mut` over per-creature worker networks, which oversubscribed the
 //! global Rayon pool with `creatures × workers` tasks.
 //!
+//! ## The record partition is fixed by the corpus (`NEAT-AI-Lamarck#130`)
+//!
+//! Workers decide *concurrency*; they no longer decide *arithmetic*. Every
+//! creature's chunk is cut into [`RECORDS_PER_PARTITION`]-record blocks — the
+//! last block takes the remainder — and the per-block f64 sums are folded back
+//! in block order. A creature's workers each take a contiguous span of its
+//! blocks, so how many workers it has (and therefore how many creatures share
+//! the call, what `activation_threads` the host defaults to, and what
+//! `NEAT_SCORER_WORKER_SPLIT` is set to) changes only *who* computes a block,
+//! never how the records are grouped.
+//!
+//! Before this, a creature's chunk was split into
+//! `max(activation_threads, n_creatures) * split / n_creatures` sub-ranges, so
+//! the same creature's partial sums were re-associated — and a different
+//! 8-record / 4-record / scalar SIMD path selected in the upstream loss kernels
+//! — purely because of how many *other* creatures were in the directory. On the
+//! production creature that moved the score by `1.755e-7` relative, 175x the
+//! bound this module used to claim, and it moved an incumbent and a candidate
+//! by different amounts, so it perturbed the Δ a caller decides an accept on.
+//! `rust_scorer/tests/batch_composition_invariance.rs` pins the scores as
+//! bit-identical across batch sizes, thread counts and split factors.
+//!
 //! ## Task granularity (Issue #537)
 //!
-//! `NEAT_SCORER_WORKER_SPLIT=k` multiplies that worker budget by `k`, so each
-//! creature's chunk is split into ~`k` times as many record sub-ranges and a
+//! `NEAT_SCORER_WORKER_SPLIT=k` multiplies the worker budget by `k`, so a
+//! creature's blocks are dealt across `k` times as many workers and a
 //! straggling task exposes ~1/`k` of the previous tail. `k = 1` is the shipped
-//! default and reproduces the partition above exactly; the total is still
-//! clamped to the host `max_worker_count` RAM ceiling (one `CompiledNetwork`
-//! clone per worker). Raising `k` changes each worker's record count, which
-//! re-associates a creature's f64 partial sums *and* selects a different
-//! 8-record / 4-record / scalar SIMD path in the upstream loss kernels. The
-//! latter dominates: it regroups the f32 activations, so scores move by
-//! f32-rounding amounts (~1e-9 relative in practice), never more.
+//! default; the total is still clamped to the host `max_worker_count` RAM
+//! ceiling (one `CompiledNetwork` clone per worker). Since the partition above
+//! is fixed by the corpus, raising `k` is now free of numeric consequence —
+//! the scores are bit-identical, not merely close.
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -155,25 +173,50 @@ struct LoadedCreature {
     creature: CreatureExport,
 }
 
-/// Partition `n_records` packed records into `workers` ranges over the
-/// flat float buffer. Each returned range is a half-open `[start, end)` over
-/// the f32 slice. `workers` must be in `[1, n_records]`.
-fn partition_packed_record_ranges(
-    values_per_record: usize,
-    n_records: usize,
-    workers: usize,
-) -> Vec<Range<usize>> {
-    debug_assert!(workers > 0 && workers <= n_records);
-    let base = n_records / workers;
-    let rem = n_records % workers;
-    let mut out = Vec::with_capacity(workers);
+/// Records in one f64 partial-sum block of a creature's chunk
+/// (`NEAT-AI-Lamarck#130`).
+///
+/// The block size is a constant of the scorer, not of the host or the batch:
+/// that is what makes a creature's score a function of the creature and the
+/// corpus alone. `64` is a multiple of the upstream 8-record SIMD group, so
+/// every full block runs the widest kernel path and only a chunk's final,
+/// ragged block can fall back to the 4-record or scalar tail.
+pub const RECORDS_PER_PARTITION: usize = 64;
+
+/// Cut `n_records` packed records into fixed-size blocks over the flat float
+/// buffer. Each returned range is a half-open `[start, end)` over the f32
+/// slice; every block holds [`RECORDS_PER_PARTITION`] records except the last,
+/// which takes the remainder. `n_records` must be ≥ 1.
+fn fixed_record_blocks(values_per_record: usize, n_records: usize) -> Vec<Range<usize>> {
+    debug_assert!(n_records > 0);
+    let blocks = n_records.div_ceil(RECORDS_PER_PARTITION);
+    let mut out = Vec::with_capacity(blocks);
     let mut record_off = 0_usize;
-    for w in 0..workers {
-        let take = base + usize::from(w < rem);
-        let start = record_off * values_per_record;
-        let end = (record_off + take) * values_per_record;
-        out.push(start..end);
+    while record_off < n_records {
+        let take = RECORDS_PER_PARTITION.min(n_records - record_off);
+        out.push((record_off * values_per_record)..((record_off + take) * values_per_record));
         record_off += take;
+    }
+    out
+}
+
+/// Deal `items` contiguously across `buckets`, returning one ascending index
+/// span per bucket (`base + 1` items for the first `items % buckets` buckets).
+///
+/// Used to hand each of a creature's workers a span of its record blocks: the
+/// spans tile `0..items` in order, so the blocks a worker owns — and therefore
+/// the slots it writes — never overlap another worker's. `buckets` must be in
+/// `[1, items]`.
+fn even_index_spans(items: usize, buckets: usize) -> Vec<Range<usize>> {
+    debug_assert!(buckets > 0 && buckets <= items);
+    let base = items / buckets;
+    let rem = items % buckets;
+    let mut out = Vec::with_capacity(buckets);
+    let mut off = 0_usize;
+    for b in 0..buckets {
+        let take = base + usize::from(b < rem);
+        out.push(off..(off + take));
+        off += take;
     }
     out
 }
@@ -630,17 +673,8 @@ fn score_from_creature_dir_cpu(
     );
     let total_workers: usize = workers_per.iter().sum();
 
-    // Prefix-sum offsets: worker i for creature c lives at
-    // `flat_networks[worker_offsets[c] + i]`.
-    let mut worker_offsets: Vec<usize> = Vec::with_capacity(loaded.len() + 1);
-    let mut acc = 0usize;
-    worker_offsets.push(0);
-    for &w in &workers_per {
-        acc += w;
-        worker_offsets.push(acc);
-    }
-
-    // Reverse map: each worker → its owning creature index.
+    // Reverse map: each worker → its owning creature index. Workers are laid
+    // out creature-major, so a creature's workers are contiguous.
     let mut worker_creature_idx: Vec<usize> = Vec::with_capacity(total_workers);
     for (ci, &w) in workers_per.iter().enumerate() {
         for _ in 0..w {
@@ -704,8 +738,12 @@ fn score_from_creature_dir_cpu(
     let mut records_scored = vec![0_usize; n_creatures];
     let mut abort_all = false;
     // Reused per-chunk buffers — populated inside `score_chunk`.
-    let mut work_ranges: Vec<Option<Range<usize>>> = vec![None; total_workers];
-    let mut worker_sums: Vec<f64> = vec![0.0; total_workers];
+    // `block_ranges` is the chunk's fixed record partition (shared by every
+    // creature), `worker_blocks[w]` is the span of it worker `w` computes, and
+    // `block_sums` holds one f64 per (creature, block) in creature-major order.
+    let mut block_ranges: Vec<Range<usize>> = Vec::new();
+    let mut worker_blocks: Vec<Range<usize>> = Vec::with_capacity(total_workers);
+    let mut block_sums: Vec<f64> = Vec::new();
 
     let mut score_chunk = |floats: &mut Vec<f32>, n_records: usize| -> Result<(), String> {
         // Read-only consumer: borrow the unpack buffer as a slice in place.
@@ -713,69 +751,90 @@ fn score_from_creature_dir_cpu(
         if floats.len() != n_records * values_per_record {
             return Err("Internal float unpack length mismatch".to_string());
         }
+        if n_records == 0 {
+            return Ok(());
+        }
         total_records += n_records;
 
-        // Reset per-chunk scratch: ranges default to "no work" so workers
-        // whose creature has fewer records than nominal worker count idle.
-        for slot in work_ranges.iter_mut() {
-            *slot = None;
+        // `NEAT-AI-Lamarck#130`: the partition is a function of this chunk and
+        // nothing else — not of how many creatures share the call, nor of the
+        // worker budget — so a creature's partial sums are grouped identically
+        // in every batch it appears in.
+        block_ranges.clear();
+        block_ranges.extend(fixed_record_blocks(values_per_record, n_records));
+        let n_blocks = block_ranges.len();
+
+        // Deal each creature's blocks across its workers. A creature with more
+        // workers than blocks idles the surplus (empty spans) rather than
+        // splitting a block finer, which would change the arithmetic.
+        worker_blocks.clear();
+        for &nominal_w in &workers_per {
+            let busy = nominal_w.min(n_blocks).max(1);
+            worker_blocks.extend(even_index_spans(n_blocks, busy));
+            worker_blocks.resize(worker_blocks.len() + (nominal_w - busy), 0..0);
+        }
+        debug_assert_eq!(worker_blocks.len(), total_workers);
+
+        // One slot per (creature, block), zeroed: a creature the caller has
+        // aborted (Issue #308) computes nothing this chunk and folds in zeros,
+        // which leaves its frozen total untouched.
+        block_sums.clear();
+        block_sums.resize(n_creatures * n_blocks, 0.0);
+
+        {
+            // Hand each worker the slots for its own blocks. The spans tile
+            // `block_sums` in worker order, so the split is disjoint by
+            // construction and no two workers can touch the same slot.
+            let mut rest: &mut [f64] = &mut block_sums;
+            let mut worker_slots: Vec<&mut [f64]> = Vec::with_capacity(total_workers);
+            for span in &worker_blocks {
+                let (head, tail) = rest.split_at_mut(span.len());
+                worker_slots.push(head);
+                rest = tail;
+            }
+            debug_assert!(rest.is_empty());
+
+            // Single flat par_iter over the worker pool — this is the only
+            // Rayon parallel layer in the per-chunk hot path (Issue #41).
+            // Issue #121: dispatch on the resolved cost; cost was validated
+            // up-front (see the empty-chunk probe before the I/O loop).
+            // Issue #200: propagate any per-chunk cost error out of the parallel
+            // closure via `try_for_each` instead of panicking with `.expect`, so
+            // a content-dependent failure mode returns a clean `Err(String)`
+            // rather than aborting the whole binary across a Rayon worker.
+            flat_networks
+                .par_iter_mut()
+                .zip(worker_slots.par_iter_mut())
+                .enumerate()
+                .try_for_each(|(worker_idx, (net, slots))| -> Result<(), String> {
+                    // Issue #308: an aborted creature is skipped entirely —
+                    // that unrun activation is the wall-clock saving.
+                    if !active[worker_creature_idx[worker_idx]] {
+                        return Ok(());
+                    }
+                    let first_block = worker_blocks[worker_idx].start;
+                    for (k, slot) in slots.iter_mut().enumerate() {
+                        *slot = accumulate_cost_sum(
+                            cost,
+                            net,
+                            &floats[block_ranges[first_block + k].clone()],
+                            num_inputs,
+                            num_outputs,
+                            true,
+                        )?;
+                    }
+                    Ok(())
+                })?;
         }
 
-        // Fill work_ranges per creature. Issue #308: skip creatures the caller
-        // has aborted — their worker slots stay `None`, so no activation runs
-        // for them this chunk. That skipped activation is the wall-clock saving.
-        for (ci, &nominal_w) in workers_per.iter().enumerate() {
-            if !active[ci] {
-                continue;
+        // Fold each creature's blocks in **block order** (sequential — a few
+        // hundred adds at most, so this is cheap). The order is the corpus's,
+        // not the worker pool's, so the total is the same however the blocks
+        // were dealt out (`NEAT-AI-Lamarck#130`).
+        for (ci, total) in total_mse.iter_mut().enumerate() {
+            for s in &block_sums[ci * n_blocks..(ci + 1) * n_blocks] {
+                *total += *s;
             }
-            let off = worker_offsets[ci];
-            let actual_w = nominal_w.min(n_records).max(1);
-            if actual_w == 1 {
-                work_ranges[off] = Some(0..floats.len());
-            } else {
-                let ranges = partition_packed_record_ranges(values_per_record, n_records, actual_w);
-                for (j, r) in ranges.into_iter().enumerate() {
-                    work_ranges[off + j] = Some(r);
-                }
-            }
-        }
-
-        // Single flat par_iter over the worker pool — this is the only
-        // Rayon parallel layer in the per-chunk hot path (Issue #41).
-        // Issue #121: dispatch on the resolved cost; cost was validated
-        // up-front (see the empty-chunk probe before the I/O loop).
-        // Issue #200: propagate any per-chunk cost error out of the parallel
-        // closure via `try_for_each` instead of panicking with `.expect`, so
-        // a content-dependent failure mode returns a clean `Err(String)`
-        // rather than aborting the whole binary across a Rayon worker.
-        flat_networks
-            .par_iter_mut()
-            .zip(worker_sums.par_iter_mut())
-            .enumerate()
-            .try_for_each(|(worker_idx, (net, sum))| -> Result<(), String> {
-                if let Some(range) = &work_ranges[worker_idx] {
-                    *sum = accumulate_cost_sum(
-                        cost,
-                        net,
-                        &floats[range.clone()],
-                        num_inputs,
-                        num_outputs,
-                        true,
-                    )?;
-                } else {
-                    *sum = 0.0;
-                }
-                Ok(())
-            })?;
-
-        // Reduce per-worker sums into per-creature totals (sequential — a few
-        // hundred adds at most, so this is cheap). Worker order is fixed, so a
-        // creature's partials always fold in the same order (Issue #537).
-        // Inactive
-        // creatures had `None` ranges → their worker sums are `0.0`, so this
-        // leaves their frozen totals untouched.
-        for (worker_idx, &s) in worker_sums.iter().enumerate() {
-            total_mse[worker_creature_idx[worker_idx]] += s;
         }
 
         // Issue #308: this chunk's records count only towards creatures that
@@ -1545,18 +1604,70 @@ mod tests {
         assert_eq!(w, vec![1; 50]);
     }
 
+    /// `NEAT-AI-Lamarck#130`: the record blocks tile the whole buffer, every
+    /// block but the last holds exactly [`RECORDS_PER_PARTITION`] records, and
+    /// the partition depends on nothing but the chunk.
     #[test]
-    fn partition_packed_record_ranges_covers_full_buffer_with_no_overlap() {
-        // 7 records / 3 workers → [3, 2, 2]; ranges should tile [0, 7*vpr).
+    fn fixed_record_blocks_tile_the_buffer_in_constant_sized_blocks() {
         let vpr = 4;
-        let ranges = partition_packed_record_ranges(vpr, 7, 3);
-        assert_eq!(ranges.len(), 3);
-        // Concatenated lengths = 7*vpr; each starts at the previous end.
-        assert_eq!(ranges[0].start, 0);
-        assert_eq!(ranges[0].end, 3 * vpr);
-        assert_eq!(ranges[1].start, 3 * vpr);
-        assert_eq!(ranges[1].end, 5 * vpr);
-        assert_eq!(ranges[2].start, 5 * vpr);
-        assert_eq!(ranges[2].end, 7 * vpr);
+        let n_records = 2 * RECORDS_PER_PARTITION + 7;
+        let blocks = fixed_record_blocks(vpr, n_records);
+        assert_eq!(blocks.len(), 3);
+        assert_eq!(blocks[0], 0..(RECORDS_PER_PARTITION * vpr));
+        assert_eq!(
+            blocks[1],
+            (RECORDS_PER_PARTITION * vpr)..(2 * RECORDS_PER_PARTITION * vpr)
+        );
+        // The last block takes the remainder.
+        assert_eq!(
+            blocks[2],
+            (2 * RECORDS_PER_PARTITION * vpr)..(n_records * vpr)
+        );
+        // No gaps, no overlap, full coverage.
+        assert_eq!(blocks[0].start, 0);
+        assert_eq!(blocks.last().expect("non-empty").end, n_records * vpr);
+        for pair in blocks.windows(2) {
+            assert_eq!(pair[0].end, pair[1].start);
+        }
+    }
+
+    /// A chunk smaller than one block is a single block, not zero.
+    #[test]
+    fn fixed_record_blocks_handle_a_short_chunk() {
+        let blocks = fixed_record_blocks(3, 5);
+        assert_eq!(blocks, vec![0..15]);
+    }
+
+    /// `NEAT-AI-Lamarck#130`: the same chunk yields the same partition whatever
+    /// the batch looks like — the function cannot even see the creature count.
+    #[test]
+    fn fixed_record_blocks_are_identical_for_every_chunk_of_the_same_size() {
+        for n_records in [1_usize, 63, 64, 65, 1000, 4096] {
+            let a = fixed_record_blocks(9, n_records);
+            let b = fixed_record_blocks(9, n_records);
+            assert_eq!(a, b);
+            assert_eq!(a.len(), n_records.div_ceil(RECORDS_PER_PARTITION));
+        }
+    }
+
+    /// Worker spans tile `0..items` in ascending order — the property that
+    /// makes the per-worker `block_sums` split disjoint.
+    #[test]
+    fn even_index_spans_tile_the_items_in_order() {
+        // 7 blocks / 3 workers → [3, 2, 2].
+        let spans = even_index_spans(7, 3);
+        assert_eq!(spans, vec![0..3, 3..5, 5..7]);
+        assert_eq!(even_index_spans(4, 4), vec![0..1, 1..2, 2..3, 3..4]);
+        assert_eq!(even_index_spans(5, 1), vec![0..5]);
+        for buckets in 1..=8_usize {
+            let spans = even_index_spans(8, buckets);
+            assert_eq!(spans.len(), buckets);
+            assert_eq!(spans[0].start, 0);
+            assert_eq!(spans.last().expect("non-empty").end, 8);
+            assert_eq!(spans.iter().map(Range::len).sum::<usize>(), 8);
+            for pair in spans.windows(2) {
+                assert_eq!(pair[0].end, pair[1].start);
+            }
+        }
     }
 }

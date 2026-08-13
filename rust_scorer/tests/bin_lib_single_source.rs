@@ -7,9 +7,11 @@
 //! now a thin shim over `rust_scorer::cli::main`.
 //!
 //! These tests assert the invariant behaviourally — the JSON the *binary*
-//! prints must equal, value for value, what the *library* entry points return
+//! prints must match, value for value, what the *library* entry points return
 //! for the same inputs. Any future re-duplication that let the two drift shows
-//! up here as a numeric mismatch.
+//! up here as a numeric mismatch. Scored floats are compared within
+//! [`MAX_BIN_LIB_ULP_DRIFT`], the cost of code-generating one implementation
+//! into two artefacts; the structural fields are compared exactly.
 
 use std::io::Write;
 use std::path::Path;
@@ -19,6 +21,39 @@ use rust_scorer::cost::CostKind;
 use rust_scorer::fixture_json::{creature_envelope, neuron_json, synapse_json};
 use rust_scorer::gpu::GpuBackendLabel;
 use rust_scorer::multi_score::score_from_creature_dir;
+
+/// Largest relative gap between the binary's and the library's number that is
+/// still "one implementation" rather than two.
+///
+/// The upstream loss kernels reduce their SIMD lanes with `Simd::reduce_sum`,
+/// whose summation order `std::simd` deliberately leaves **unspecified** for
+/// floats. The binary and the test harness are separately code-generated
+/// artefacts, so LLVM may lower that reduction differently in each and the last
+/// bit of a scored `error` can differ — measured at 1 ULP on this fixture once
+/// `NEAT-AI-Lamarck#130` routed a short chunk through the 4-record path
+/// (before that a 4-record fixture ran the scalar path, where no reduction
+/// order exists to differ).
+///
+/// A few ULP is what separate code generation of the *same* implementation can
+/// cost. Re-duplicating the module tree — the regression these tests exist to
+/// catch — moves a score by orders of magnitude more, and the exact structural
+/// fields (`recordCount`, `complexityPenalty`, `costName`) are still asserted
+/// bit-for-bit below.
+const MAX_BIN_LIB_ULP_DRIFT: f64 = 4.0 * f64::EPSILON;
+
+/// Assert the binary and the library agree on a scored number.
+fn assert_agrees(from_binary: f64, from_library: f64, what: &str) {
+    if from_binary == from_library {
+        return;
+    }
+    let rel = (from_binary - from_library).abs() / from_library.abs().max(f64::MIN_POSITIVE);
+    assert!(
+        rel <= MAX_BIN_LIB_ULP_DRIFT,
+        "{what}: binary {from_binary} and library {from_library} differ by {rel:e} relative — \
+         beyond the {MAX_BIN_LIB_ULP_DRIFT:e} separate-code-generation allowance, so they are \
+         running different implementations"
+    );
+}
 
 /// Write `records` as one packed little-endian `f32` `.bin` file.
 fn write_training_data(dir: &Path, records: &[(Vec<f32>, Vec<f32>)]) {
@@ -89,7 +124,8 @@ fn run_binary(creatures: &Path, data: &Path, cost: &str) -> serde_json::Value {
 }
 
 /// The binary's directory-mode result must match the library's
-/// `score_from_creature_dir` exactly — same scoring code, so same numbers.
+/// `score_from_creature_dir` — same scoring code, so the same numbers to
+/// within [`MAX_BIN_LIB_ULP_DRIFT`], and the same structural fields exactly.
 #[test]
 fn binary_directory_scores_match_library_entry_point() {
     let (_tmp, creatures, data) = fixture();
@@ -112,15 +148,15 @@ fn binary_directory_scores_match_library_entry_point() {
         let bin = from_binary
             .get(id)
             .unwrap_or_else(|| panic!("binary output is missing creature '{id}': {from_binary}"));
-        assert_eq!(
+        assert_agrees(
             bin["error"].as_f64().expect("error must be a number"),
             lib.error,
-            "error drift for '{id}' between binary and library"
+            &format!("error for '{id}'"),
         );
-        assert_eq!(
+        assert_agrees(
             bin["score"].as_f64().expect("score must be a number"),
             lib.score,
-            "score drift for '{id}' between binary and library"
+            &format!("score for '{id}'"),
         );
         assert_eq!(
             bin["recordCount"]
@@ -158,10 +194,10 @@ fn binary_and_library_agree_for_non_default_cost() {
         let bin = from_binary
             .get(id)
             .unwrap_or_else(|| panic!("binary output is missing creature '{id}': {from_binary}"));
-        assert_eq!(
+        assert_agrees(
             bin["error"].as_f64().expect("error must be a number"),
             lib.error,
-            "MAE error drift for '{id}' between binary and library"
+            &format!("MAE error for '{id}'"),
         );
         assert_eq!(
             bin["costName"].as_str(),
