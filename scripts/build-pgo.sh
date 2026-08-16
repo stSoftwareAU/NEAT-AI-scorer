@@ -2,7 +2,8 @@
 # scripts/build-pgo.sh — Issue #43
 #
 # Build `rust_scorer` with Profile-Guided Optimisation (PGO). The release
-# profile already enables LTO and `codegen-units = 1`; PGO is the next
+# profile already enables fat LTO and workspace-wide `codegen-units = 1`
+# (Issue #568); PGO is the next
 # compiler-level lever — a recorded profile of a real scoring run feeds back
 # into `rustc` so hot loops get better inlining, branch prediction hints, and
 # code layout.

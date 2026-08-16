@@ -35,6 +35,16 @@ section to the released version with its date.
 
 ### Changed
 
+- **Build profiles: fast dev, fully optimised release (Issue #568 /
+  VibeCoding#4159).** Workspace root `Cargo.toml` now sets
+  `[profile.dev] debug = "line-tables-only"` (keeps panic file:line, drops
+  full DWARF) and workspace-wide `[profile.release]`
+  `opt-level = 3` / `lto = "fat"` / `codegen-units = 1` (no longer scoped only
+  to the `rust_scorer` package). Same-host fleet builds pick up
+  `-C target-cpu=native` from `.cargo/config.toml` for non-`wasm32` targets;
+  an exported `RUSTFLAGS` still replaces those config rustflags, so
+  `./quality.sh` / CI stay portable. PGO remains a separate opt-in.
+
 - **Read-chunk defaults are reader-count aware, and the dead 256 MiB read
   ceiling is gone (Issue #549).** `read_tuning` now picks the chunk from three
   bounds — the record-size tier, the host-RAM tier, and each reader's share of a

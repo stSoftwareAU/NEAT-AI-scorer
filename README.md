@@ -35,6 +35,24 @@ Requires **shellcheck**, **cargo-deny** (`cargo install cargo-deny --locked`), *
 
 By default `./quality.sh` is **read-only** against `Cargo.lock` / `Cargo.toml` — it never bumps dependency versions in your working tree. To bump library dependencies during the gate, opt in with `./quality.sh --upgrade` (or `QUALITY_UPGRADE=1 ./quality.sh`); this requires **cargo-edit**. Routine, quarantine-gated dependency bumps go through [`./bump-deps.sh`](./bump-deps.sh) (Issue #105) instead.
 
+### Build profiles (Issue #568)
+
+Workspace root [`Cargo.toml`](./Cargo.toml) carries the Cargo profiles (member
+crates do not — Cargo reads `[profile.*]` from the workspace root only):
+
+| Profile | Intent | Settings |
+|---------|--------|----------|
+| `dev` | Fast rebuilds | `debug = "line-tables-only"` (panic file:line stays; full DWARF dropped). Default `opt-level = 0` and incremental compilation stay. |
+| `release` | Fastest artefact | `opt-level = 3`, `lto = "fat"`, `codegen-units = 1` — **workspace-wide**, not scoped to one package. Compile time is irrelevant. |
+| `profiling` / `pgo` | Inherit `release` | Flamegraph helper and [`scripts/build-pgo.sh`](./scripts/build-pgo.sh); see below. |
+
+Same-host fleet builds (`cargo build --release` on the machine that runs the
+binary) also pick up `-C target-cpu=native` from
+[`.cargo/config.toml`](./.cargo/config.toml) for every non-`wasm32` target.
+An exported `RUSTFLAGS` **replaces** those config rustflags rather than
+appending — so `./quality.sh` / CI (`RUSTFLAGS=-D warnings`) stay portable on
+purpose, while a plain host `cargo build --release` gets the native CPU.
+
 ### Pinned Rust toolchain (Issue #209)
 
 The project SHA-pins every GitHub Action and container digest for reproducibility, but the Rust compiler version would otherwise float — `dtolnay/rust-toolchain` resolves `stable` at run time. Because the gate is `-D warnings` plus specific clippy lints, a fresh stable release can introduce a lint that breaks CI with **no code change**, and contributors cannot reproduce it locally.
@@ -1661,13 +1679,13 @@ the hot-spot ordering stays honest.
 
 ## Optimised release build (PGO) — Issue #43
 
-The default release profile already enables LTO and `codegen-units = 1`.
-**Profile-Guided Optimisation (PGO)** is the next compiler-level lever — a
-recorded profile of a real scoring run feeds back into `rustc` so hot loops
-get better inlining, branch prediction hints, and code layout. PGO often
-yields 5–15 % on numeric inner loops similar to `mse_sum_batch_packed`, and
-since `rust_scorer` is invoked many times per NEAT training run, even a few
-percent per call compounds.
+The default release profile already enables fat LTO and workspace-wide
+`codegen-units = 1` (Issue #568). **Profile-Guided Optimisation (PGO)** is the
+next compiler-level lever — a recorded profile of a real scoring run feeds
+back into `rustc` so hot loops get better inlining, branch prediction hints,
+and code layout. PGO often yields 5–15 % on numeric inner loops similar to
+`mse_sum_batch_packed`, and since `rust_scorer` is invoked many times per
+NEAT training run, even a few percent per call compounds.
 
 ### One-shot build
 
@@ -1680,8 +1698,9 @@ required:
 
 1. Generates a deterministic synthetic training fixture (Python).
 2. Builds an instrumented binary with `RUSTFLAGS="-Cprofile-generate=…"`
-   under the dedicated `pgo` Cargo profile (inherits `release`, keeps
-   `codegen-units = 1`).
+   under the dedicated `pgo` Cargo profile (inherits `release`, so fat LTO
+   and `codegen-units = 1` apply). Note that this `RUSTFLAGS` replaces the
+   `.cargo/config.toml` `target-cpu=native` flag for that invocation.
 3. Runs the instrumented binary against the fixture in **single-creature**
    mode and **directory** mode to gather `*.profraw` files.
 4. Merges them via `llvm-profdata merge`.

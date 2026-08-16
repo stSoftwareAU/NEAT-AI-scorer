@@ -3,15 +3,21 @@
 members = ["rust_scorer"]
 resolver = "2"
 
+# Fast rebuilds: keep panic file:line, drop full DWARF (Issue #568 / VibeCoding#4159).
+# Default opt-level = 0 and incremental compilation stay.
+[profile.dev]
+debug = "line-tables-only"
+
+# Fully optimised artefact — compile time is irrelevant (Issue #568).
+# Workspace-wide (not `[profile.release.package.<name>]`); `lto = "fat"` is the
+# explicit spelling of fat LTO (`lto = true` is equivalent).
 [profile.release]
 opt-level = 3
-lto = true
+lto = "fat"
+codegen-units = 1
 
 [profile.release.package."*"]
 opt-level = 3
-
-[profile.release.package.rust_scorer]
-codegen-units = 1
 
 # `profiling`: release optimisations plus debug symbols so `sample`/`dtrace`/
 # `perf` can produce a useful flamegraph. See `scripts/profile-flamegraph.sh`
@@ -24,7 +30,7 @@ strip = false
 # `pgo`: release optimisations used by the Profile-Guided Optimisation flow.
 # `scripts/build-pgo.sh` builds twice with this profile — first instrumented
 # (`-Cprofile-generate`), then with the merged profile (`-Cprofile-use`) — so
-# the LTO + codegen-units = 1 settings stay identical across both compiler
+# the fat-LTO + codegen-units = 1 settings stay identical across both compiler
 # passes. See Issue #43 and the "Optimised release build (PGO)" section in
 # `README.md`.
 [profile.pgo]
@@ -32,9 +38,6 @@ inherits = "release"
 
 [profile.pgo.package."*"]
 opt-level = 3
-
-[profile.pgo.package.rust_scorer]
-codegen-units = 1
 
 [workspace.lints.rust]
 # Crate-level rustc lint hardening (Issue #274). Denies the rustc lint groups
@@ -63,4 +66,3 @@ same_item_push = "allow"
 too_many_arguments = "allow"
 uninlined_format_args = "allow"
 unnecessary_cast = "allow"
-
