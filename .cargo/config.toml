@@ -1,9 +1,9 @@
 # Same-host release binaries (fleet pattern: build on the machine that runs
-# the artefact). Never apply to wasm32 — Issue #568 / VibeCoding#4159.
+# the artefact). Never apply to wasm32 — Issue #568.
 #
 # Note: an exported `RUSTFLAGS` *replaces* these rustflags entirely (Cargo
 # does not merge). `./quality.sh` and CI set `RUSTFLAGS=-D warnings`, so those
 # builds intentionally stay portable; a plain `cargo build --release` on a
-# GRQ host picks up `target-cpu=native` from here.
+# fleet host picks up `target-cpu=native` from here.
 [target.'cfg(not(target_arch = "wasm32"))']
 rustflags = ["-C", "target-cpu=native"]

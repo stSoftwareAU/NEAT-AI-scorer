@@ -35,8 +35,8 @@ section to the released version with its date.
 
 ### Changed
 
-- **Build profiles: fast dev, fully optimised release (Issue #568 /
-  VibeCoding#4159).** Workspace root `Cargo.toml` now sets
+- **Build profiles: fast dev, fully optimised release (Issue #568).**
+  Workspace root `Cargo.toml` now sets
   `[profile.dev] debug = "line-tables-only"` (keeps panic file:line, drops
   full DWARF) and workspace-wide `[profile.release]`
   `opt-level = 3` / `lto = "fat"` / `codegen-units = 1` (no longer scoped only

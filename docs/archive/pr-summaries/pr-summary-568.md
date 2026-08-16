@@ -2,11 +2,11 @@
 
 ## Problem
 
-Fleet guidance (VibeCoding#4159): **dev builds compile as fast as possible;
-release builds produce the most optimised artefact possible.** This repo had
-no `[profile.dev]`, used `lto = true` with `codegen-units = 1` only under
-`[profile.release.package.rust_scorer]`, and had no `.cargo/config.toml` for
-same-host `-C target-cpu=native`.
+Fleet-wide Rust build-profile guidance: **dev builds compile as fast as
+possible; release builds produce the most optimised artefact possible.** This
+repo had no `[profile.dev]`, used `lto = true` with `codegen-units = 1` only
+under `[profile.release.package.rust_scorer]`, and had no `.cargo/config.toml`
+for same-host `-C target-cpu=native`.
 
 ## Fix
 
@@ -28,7 +28,3 @@ Touch-rebuild of `rust_scorer` after a warm `cargo build -p rust_scorer`
 **after** (`line-tables-only`) Finished in **2.51 s** (~42 % faster).
 
 PGO (`scripts/build-pgo.sh`) stays a separate opt-in — out of scope.
-
-## Cross-reference
-
-stSoftwareAU/VibeCoding#4159

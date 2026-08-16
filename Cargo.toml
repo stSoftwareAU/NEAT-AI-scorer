@@ -3,7 +3,7 @@
 members = ["rust_scorer"]
 resolver = "2"
 
-# Fast rebuilds: keep panic file:line, drop full DWARF (Issue #568 / VibeCoding#4159).
+# Fast rebuilds: keep panic file:line, drop full DWARF (Issue #568).
 # Default opt-level = 0 and incremental compilation stay.
 [profile.dev]
 debug = "line-tables-only"
