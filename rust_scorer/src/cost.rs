@@ -230,6 +230,11 @@ pub fn accumulate_cost_sum(
     forward_only: bool,
 ) -> Result<f64, String> {
     use neat_core::loss;
+    // Issue #571: an observation width below one is never accepted — the
+    // stride would be meaningless and the loss helpers would silently score
+    // nothing (or everything as targets).
+    crate::creature_width::validate_observation_width(input_size, num_outputs)
+        .map_err(|e| e.to_string())?;
     // Issue #200: reject malformed chunks whose float length is not a whole
     // number of packed records. The upstream `*_sum_batch_packed` helpers
     // silently truncate a trailing partial record, so a content-dependent

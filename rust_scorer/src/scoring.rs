@@ -6,6 +6,7 @@
 use neat_core::creature::CreatureExport;
 use neat_core::squash::SquashType;
 
+use crate::creature_width::{CreatureWidthError, validate_creature_width};
 use crate::gpu::GpuBackendLabel;
 
 /// The current semantic major version matching the TypeScript constant.
@@ -63,6 +64,10 @@ pub enum ScoringError {
         /// The offending average error.
         error: f64,
     },
+    /// The creature declared an `input` / `output` count below one (Issue
+    /// #571). Wraps the shared [`CreatureWidthError`] so the message is the
+    /// same one every scoring path reports.
+    InvalidObservationWidth(CreatureWidthError),
 }
 
 impl std::fmt::Display for ScoringError {
@@ -90,6 +95,7 @@ impl std::fmt::Display for ScoringError {
             Self::NegativeAverageError { error } => {
                 write!(f, "Average error {error} is negative")
             }
+            Self::InvalidObservationWidth(err) => write!(f, "{err}"),
         }
     }
 }
@@ -231,6 +237,10 @@ pub struct ScoreComponents {
 pub fn compute_score_components(
     creature: &CreatureExport,
 ) -> Result<ScoreComponents, ScoringError> {
+    // Issue #571: a widthless creature is rejected on every path, including
+    // this data-free complexity pass.
+    validate_creature_width(creature).map_err(ScoringError::InvalidObservationWidth)?;
+
     let mut max_weight_bias: f64 = 0.0;
     let mut total_weight_bias: f64 = 0.0;
     let mut count_weight_bias: usize = 0;

@@ -17,6 +17,22 @@ section to the released version with its date.
 
 ### Added
 
+- **Single `input`/`output` ≥ 1 guard on every scoring path, with regression
+  tests (Issue #571).** `rust_scorer/src/creature_width.rs` is now the one
+  place the observation-width rule is worded
+  (`Must have at least one input neurons was: N` /
+  `Must have at least one output neurons was: N`, mirroring the TypeScript
+  reference and the `neat-core` errors NEAT-AI-core#550 adds). The single-
+  creature, `--creature-stdin`, directory (CPU and GPU pre-flight), fused
+  streaming (`stream_score`), cost-dispatch (`accumulate_cost_sum`),
+  complexity-scoring (`compute_score_components`), production-fixture and
+  `cost_scan_bench` paths all reject `input < 1` / `output < 1` through it,
+  before any training file is opened — no fallback, no re-derivation from
+  `neurons`. `tests/input_output_width_guard.rs` pins both zeroed counts on
+  every entry path and confirms a valid creature still scores with a
+  `input + output` record width. The local guard stays after core#550 ships
+  (it is the scorer's boundary regardless of the core version).
+
 - **README branding banner, hot-linked from the hub (Issue #565).** One image
   line under the H1 points at the hub's canonical per-repo preview
   (`stSoftwareAU/NEAT-AI` `docs/brand/social-previews/neat-ai-scorer.png`,

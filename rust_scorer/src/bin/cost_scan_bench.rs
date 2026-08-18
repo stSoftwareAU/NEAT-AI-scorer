@@ -43,6 +43,7 @@ use neat_core::creature::{compile_creature, parse_creature_json};
 use neat_core::training_data::{TrainingDataConfig, find_bin_files};
 
 use rust_scorer::cost::CostKind;
+use rust_scorer::creature_width::validate_creature_width;
 use rust_scorer::stream_score::accumulate_cost_sum_forward_only_fused;
 
 #[derive(Parser, Debug)]
@@ -110,6 +111,7 @@ fn run_one_cost(
     runs: usize,
 ) -> Result<CostRow, String> {
     let creature = parse_creature_json(creature_json).map_err(|e| e.to_string())?;
+    validate_creature_width(&creature).map_err(|e| e.to_string())?;
     // Warm-up run: validates the cost is dispatchable and primes caches.
     let mut net = compile_creature(&creature).map_err(|e| e.to_string())?;
     let (warm_sum, warm_records, _, _, _) =
@@ -168,6 +170,11 @@ fn main() {
             std::process::exit(2);
         }
     };
+    // Issue #571: reject a widthless creature before any `.bin` is listed.
+    if let Err(e) = validate_creature_width(&creature) {
+        eprintln!("Invalid creature {}: {e}", cli.creature.display());
+        std::process::exit(2);
+    }
 
     if !cli.data_dir.is_dir() {
         eprintln!("data_dir does not exist: {}", cli.data_dir.display());
