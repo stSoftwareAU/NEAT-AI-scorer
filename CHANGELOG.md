@@ -17,6 +17,19 @@ section to the released version with its date.
 
 ### Added
 
+- **`rust_scorer` version downgrades are refused (Issue #567).**
+  `scripts/version-increment.sh` now compares the branch version with the base
+  ref numerically instead of treating any `current != base` as "already
+  bumped": a version strictly below the base exits **3** with a
+  `version downgrade refused` message from both `--already-bumped` and
+  `--run`, so a merge conflict that restores Develop's older version fails CI
+  instead of shipping a downgrade to a downstream `rust_scorer` pin. Equal
+  versions still auto-patch-bump; ahead versions are accepted without a bump;
+  `0.10.0` is correctly ahead of `0.9.9` and a pre-release suffix sorts below
+  the bare release of the same triple. Covered by
+  `tests/scripts/version_increment.bats` (behind → fail, equal/ahead → pass)
+  and documented in the CONTRIBUTING PR-workflow section.
+
 - **Single `input`/`output` ≥ 1 guard on every scoring path, with regression
   tests (Issue #571).** `rust_scorer/src/creature_width.rs` is now the one
   place the observation-width rule is worded
