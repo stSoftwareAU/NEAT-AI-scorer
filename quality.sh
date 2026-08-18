@@ -158,6 +158,9 @@ echo "📦 Validating the binary list is single-homed in the README (Issue #509)
 echo "🔗 Validating cross-document citations resolve (Issue #505)..."
 ./scripts/check-docs-cross-references.sh
 
+echo "🖼️  Validating the README branding banner hot-links the hub preview (Issue #565)..."
+./scripts/check-readme-banner.sh
+
 echo "🕵️  Validating README names no private repository (Issue #450)..."
 ./scripts/check-readme-private-repo-refs.sh
 

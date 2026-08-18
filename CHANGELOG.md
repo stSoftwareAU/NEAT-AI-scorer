@@ -17,6 +17,14 @@ section to the released version with its date.
 
 ### Added
 
+- **README branding banner, hot-linked from the hub (Issue #565).** One image
+  line under the H1 points at the hub's canonical per-repo preview
+  (`stSoftwareAU/NEAT-AI` `docs/brand/social-previews/neat-ai-scorer.png`,
+  1280×640), so a hub re-render propagates automatically and no image file is
+  committed here. `scripts/check-readme-banner.sh` (in `quality.sh`, and in CI
+  via `tests/scripts/readme_banner.bats`) fails the gate when the banner goes
+  missing, drifts away from the H1, points at a repo-local or wrong-repo
+  image, or loses alt text naming the project.
 - **`docs/self-tuning.md` — the self-tuning policy, tier tables and #544
   roll-up (Issue #550).** One document now carries the full detection → tier →
   knob mapping (worker ceiling, record-size tier, read-chunk RAM ceiling,
