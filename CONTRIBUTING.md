@@ -170,6 +170,20 @@ automatically bumps the patch component of `rust_scorer`'s version in
 branch. Because the version is bumped automatically, the `CHANGELOG.md` is
 the human-readable record of *what* changed — please keep it current.
 
+**Version downgrades are refused (Issue #567).** Downstream consumers pin and
+rebuild `rust_scorer` by version, so a branch version *below* the base ref must
+never ship. [`scripts/version-increment.sh`](./scripts/version-increment.sh)
+compares the branch version with the base numerically (`0.10.0` is ahead of
+`0.9.9`; a pre-release suffix sorts below the bare release of the same
+triple) and both `--already-bumped` and `--run` exit **3** with a
+`version downgrade refused` message when the branch is behind — a downgrade
+is never mistaken for "already bumped", and CI goes red rather than pushing
+it. Equal versions still auto-patch-bump, and an ahead version is accepted
+without forcing a second bump. If a merge conflict restores Develop's older
+version, set `[package].version` in
+[`rust_scorer/Cargo.toml`](./rust_scorer/Cargo.toml) to at least the base
+version and push again.
+
 ## Performance Task Workflow
 
 This section is the **single home** for the project's performance-change rules.

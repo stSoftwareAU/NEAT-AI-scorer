@@ -109,6 +109,103 @@ teardown() {
   [ "$output" = "0.6.0" ]
 }
 
+# --- downgrade refusal (Issue #567) ----------------------------------------
+#
+# A branch version strictly BELOW the base ref is a downgrade — the failure
+# mode a bad merge conflict resolution produces. It must fail loud, never be
+# mistaken for "already bumped".
+
+# Set the branch manifest to a specific version and commit it.
+set_branch_version() {
+  (
+    cd "$TMP_REPO"
+    sed -i.bak "s/^version = .*/version = \"$1\"/" rust_scorer/Cargo.toml
+    rm -f rust_scorer/Cargo.toml.bak
+    git add rust_scorer/Cargo.toml
+    git commit -q -m "set version $1"
+  )
+}
+
+@test "already-bumped? refuses a patch downgrade against the base ref" {
+  set_branch_version "0.5.3"
+  run "$SCRIPT_UNDER_TEST" --already-bumped --manifest "$TMP_REPO/rust_scorer/Cargo.toml" --base-ref main --repo "$TMP_REPO"
+  [ "$status" -eq 3 ]
+  [[ "$output" == *"downgrade"* ]]
+  [[ "$output" == *"0.5.3"* ]]
+  [[ "$output" == *"0.5.4"* ]]
+}
+
+@test "already-bumped? refuses a minor downgrade against the base ref" {
+  set_branch_version "0.4.9"
+  run "$SCRIPT_UNDER_TEST" --already-bumped --manifest "$TMP_REPO/rust_scorer/Cargo.toml" --base-ref main --repo "$TMP_REPO"
+  [ "$status" -eq 3 ]
+  [[ "$output" == *"downgrade"* ]]
+}
+
+@test "already-bumped? accepts an ahead version (no re-bump forced)" {
+  set_branch_version "0.6.0"
+  run "$SCRIPT_UNDER_TEST" --already-bumped --manifest "$TMP_REPO/rust_scorer/Cargo.toml" --base-ref main --repo "$TMP_REPO"
+  [ "$status" -eq 0 ]
+}
+
+@test "already-bumped? compares components numerically, not as strings" {
+  # 0.10.0 is AHEAD of 0.5.4 even though it sorts before it lexically.
+  set_branch_version "0.10.0"
+  run "$SCRIPT_UNDER_TEST" --already-bumped --manifest "$TMP_REPO/rust_scorer/Cargo.toml" --base-ref main --repo "$TMP_REPO"
+  [ "$status" -eq 0 ]
+}
+
+@test "already-bumped? treats a pre-release of the base version as behind it" {
+  set_branch_version "0.5.4-rc1"
+  run "$SCRIPT_UNDER_TEST" --already-bumped --manifest "$TMP_REPO/rust_scorer/Cargo.toml" --base-ref main --repo "$TMP_REPO"
+  [ "$status" -eq 3 ]
+  [[ "$output" == *"downgrade"* ]]
+}
+
+@test "run refuses a downgrade and leaves the manifest untouched" {
+  set_branch_version "0.5.3"
+  run "$SCRIPT_UNDER_TEST" --run --manifest "$TMP_REPO/rust_scorer/Cargo.toml" --base-ref main --repo "$TMP_REPO"
+  [ "$status" -eq 3 ]
+  [[ "$output" == *"downgrade"* ]]
+  run "$SCRIPT_UNDER_TEST" --get-version --manifest "$TMP_REPO/rust_scorer/Cargo.toml"
+  [ "$output" = "0.5.3" ]
+}
+
+@test "run accepts an ahead version without forcing another bump" {
+  set_branch_version "0.10.0"
+  run "$SCRIPT_UNDER_TEST" --run --manifest "$TMP_REPO/rust_scorer/Cargo.toml" --base-ref main --repo "$TMP_REPO"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"skip"* ]]
+  run "$SCRIPT_UNDER_TEST" --get-version --manifest "$TMP_REPO/rust_scorer/Cargo.toml"
+  [ "$output" = "0.10.0" ]
+}
+
+@test "run still bumps when the branch version equals the base" {
+  run "$SCRIPT_UNDER_TEST" --run --manifest "$TMP_REPO/rust_scorer/Cargo.toml" --base-ref main --repo "$TMP_REPO"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"bumped"* ]]
+  run "$SCRIPT_UNDER_TEST" --get-version --manifest "$TMP_REPO/rust_scorer/Cargo.toml"
+  [ "$output" = "0.5.5" ]
+}
+
+@test "a non-semver branch version fails loud rather than being called a bump" {
+  set_branch_version "not-a-version"
+  run "$SCRIPT_UNDER_TEST" --already-bumped --manifest "$TMP_REPO/rust_scorer/Cargo.toml" --base-ref main --repo "$TMP_REPO"
+  [ "$status" -eq 2 ]
+  [[ "$output" == *"semver"* ]]
+}
+
+@test "the workflow guard/bump sequence fails CI on a downgrade" {
+  # Mirrors .github/workflows/version-increment.yml: the guard runs
+  # --already-bumped, and when that is non-zero the bump job runs --run.
+  set_branch_version "0.5.3"
+  guard_status=0
+  "$SCRIPT_UNDER_TEST" --already-bumped --manifest "$TMP_REPO/rust_scorer/Cargo.toml" --base-ref main --repo "$TMP_REPO" >/dev/null 2>&1 || guard_status=$?
+  [ "$guard_status" -ne 0 ]
+  run "$SCRIPT_UNDER_TEST" --run --manifest "$TMP_REPO/rust_scorer/Cargo.toml" --base-ref main --repo "$TMP_REPO"
+  [ "$status" -ne 0 ]
+}
+
 @test "missing manifest yields a clear error" {
   run "$SCRIPT_UNDER_TEST" --get-version --manifest "$TMP_REPO/does-not-exist.toml"
   [ "$status" -ne 0 ]
