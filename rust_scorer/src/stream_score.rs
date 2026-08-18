@@ -18,6 +18,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Instant;
 
 use crate::cost::{CostKind, accumulate_cost_sum};
+use crate::creature_width::validate_observation_width;
 use crate::host_resources::{self, HostResources};
 use crate::read_tuning::{self, max_read_bytes, training_read_target_bytes_from_env_for_readers};
 use crate::sampling::SampleSpec;
@@ -468,6 +469,11 @@ pub fn accumulate_cost_sum_forward_only_fused_sampled_with_workers(
     sample: SampleSpec,
     file_workers: usize,
 ) -> Result<(f64, usize, usize, usize, f64), String> {
+    // Issue #571: the record width is `num_inputs + num_outputs` from the
+    // creature export; either count below one is rejected here, before any
+    // `.bin` file is opened, so a library caller that skipped the CLI guard
+    // still fails loudly with the same message.
+    validate_observation_width(config.num_inputs, config.num_outputs).map_err(|e| e.to_string())?;
     let record_bytes = config.bytes_per_record();
     if record_bytes == 0 {
         return Err("Invalid record byte length (zero)".to_string());

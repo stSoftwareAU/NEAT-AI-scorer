@@ -58,6 +58,7 @@ use crate::gpu::{GpuBackendLabel, GpuContext};
 // Directory scoring drives one continuous `for_each_read_chunk` sweep (a single
 // read buffer), so it takes the single-reader read default — Issue #549's
 // aggregate `readers × chunk` bound applies to the multi-reader fused path.
+use crate::creature_width::validate_creature_width;
 use crate::read_tuning::{training_read_backend_label, training_read_target_bytes_from_env};
 use crate::sampling::SampleSpec;
 use crate::scoring::{ScoreResult, calculate_score, complexity_penalty, compute_score_components};
@@ -225,12 +226,11 @@ fn load_creatures_from_dir(creatures_dir: &Path) -> Result<Vec<LoadedCreature>, 
 
         let creature = parse_creature_json(&creature_json)
             .map_err(|e| format!("Failed parsing creature '{}': {e}", path.display()))?;
-        if creature.input == 0 || creature.output == 0 {
-            return Err(format!(
-                "Creature '{}' must set positive input and output counts",
-                path.display()
-            ));
-        }
+        // Issue #571: the top-level counts are the observation width; a
+        // `< 1` count fails the whole directory load before any training
+        // file is opened (no fallback, no re-derivation from `neurons`).
+        validate_creature_width(&creature)
+            .map_err(|e| format!("Creature '{}': {e}", path.display()))?;
         if !creature.forward_only {
             return Err(format!(
                 "Creature '{}' has forwardOnly=false; multi-creature directory mode requires forwardOnly=true for every creature",
@@ -1443,6 +1443,53 @@ fn score_from_creature_dir_gpu_impl(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Issue #571: a directory holding a creature with `input: 0` or
+    /// `output: 0` fails the load with the shared wording, naming the file,
+    /// before the training-data path is touched (it does not exist here).
+    #[test]
+    fn directory_load_rejects_zero_input_and_output_before_reading_data() {
+        use crate::fixture_json::{creature_envelope, neuron_json, synapse_json};
+        let neurons = vec![neuron_json("output", "output-0", 0.0, "IDENTITY")];
+        let synapses = vec![synapse_json("input-0", "output-0", 1.0)];
+        for (inputs, outputs, expected) in [
+            (0, 1, "Must have at least one input neurons was: 0"),
+            (1, 0, "Must have at least one output neurons was: 0"),
+        ] {
+            let tmp = tempfile::tempdir().unwrap();
+            let creatures = tmp.path().join("creatures");
+            fs::create_dir(&creatures).unwrap();
+            fs::write(
+                creatures.join("ok.json"),
+                creature_envelope(1, 1, &neurons, &synapses),
+            )
+            .unwrap();
+            fs::write(
+                creatures.join("widthless.json"),
+                creature_envelope(inputs, outputs, &neurons, &synapses),
+            )
+            .unwrap();
+            let missing_data = tmp.path().join("no-such-data-dir");
+
+            let err = score_from_creature_dir_sampled(
+                &creatures,
+                &missing_data,
+                GpuBackendLabel::CpuFallback,
+                CostKind::Mse,
+                &SampleSpec::full(),
+            )
+            .expect_err("widthless creature must fail the directory load");
+            assert!(err.contains(expected), "expected `{expected}`, got `{err}`");
+            assert!(
+                err.contains("widthless.json"),
+                "error must name the offending file, got `{err}`"
+            );
+            assert!(
+                !err.contains("is not a directory"),
+                "guard must fire before the data path is read, got `{err}`"
+            );
+        }
+    }
 
     #[test]
     fn workers_per_creature_one_per_when_population_meets_threads() {

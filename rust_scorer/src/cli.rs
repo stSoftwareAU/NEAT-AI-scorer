@@ -31,6 +31,7 @@ use std::sync::Arc;
 
 use crate::corpus_guard::assert_records_aligned;
 use crate::cost::CostKind;
+use crate::creature_width::validate_creature_width;
 use crate::gpu::{GpuBackendLabel, GpuMode, ScoringPath};
 use crate::host_report::{DEFAULT_REPORT_RECORD_BYTES, HostReport};
 use crate::multi_score::{score_from_creature_dir_gpu_sampled, score_from_creature_dir_sampled};
@@ -478,9 +479,10 @@ fn score_from_json(
     let started = Instant::now();
     let creature = parse_creature_json(creature_json).map_err(|e| e.to_string())?;
 
-    if creature.input == 0 || creature.output == 0 {
-        return Err("Creature JSON must set positive input and output counts".to_string());
-    }
+    // Issue #571: `input` / `output` are the authoritative observation width
+    // (never derivable from `neurons`); reject `< 1` before compiling and
+    // before any training file is opened.
+    validate_creature_width(&creature).map_err(|e| e.to_string())?;
 
     let compile_started = Instant::now();
     let mut network = compile_creature(&creature).map_err(|e| e.to_string())?;
@@ -1232,6 +1234,47 @@ mod tests {
         )
         .expect_err("invalid JSON should fail");
         assert!(!err.is_empty());
+    }
+
+    /// Issue #571: `input: 0` / `output: 0` are rejected on the single-creature
+    /// path with the shared wording, before the data directory is touched —
+    /// the data path here does not exist, so any read attempt would surface a
+    /// different error.
+    #[test]
+    fn test_score_from_json_rejects_zero_input_and_output_before_reading_data() {
+        let tmp = TempDir::new().unwrap();
+        let missing_data = tmp.path().join("no-such-data-dir");
+        for (inputs, outputs, expected) in [
+            (0, 1, "Must have at least one input neurons was: 0"),
+            (1, 0, "Must have at least one output neurons was: 0"),
+        ] {
+            for forward_only in [true, false] {
+                let json = make_creature_json_with_forward_only(
+                    inputs,
+                    outputs,
+                    &[],
+                    &[("input-0", "output-0", 1.0)],
+                    Some("4.0.0"),
+                    forward_only,
+                );
+                let err = score_from_json(
+                    &json,
+                    &missing_data,
+                    GpuBackendLabel::CpuFallback,
+                    CostKind::default(),
+                    &SampleSpec::full(),
+                )
+                .expect_err("widthless creature must be rejected");
+                assert!(
+                    err.contains(expected),
+                    "forward_only={forward_only}: expected `{expected}`, got `{err}`"
+                );
+                assert!(
+                    !err.contains("is not a directory"),
+                    "guard must fire before the data path is read, got `{err}`"
+                );
+            }
+        }
     }
 
     /// Clap must accept `--creature-stdin` with a single positional arg and

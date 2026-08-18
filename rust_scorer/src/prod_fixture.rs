@@ -29,6 +29,8 @@ use std::path::PathBuf;
 
 use neat_core::creature::{CreatureExport, parse_creature_json};
 
+use crate::creature_width::validate_creature_width;
+
 /// Environment variable pointing at a **local** production `network.json`.
 ///
 /// The public repo ships no production creature and fetches nothing at bench
@@ -100,7 +102,12 @@ pub(crate) fn parse_production_creature(json: &str) -> Result<CreatureExport, Pr
     if json.trim().is_empty() {
         return Err(ProdFixtureError::Empty);
     }
-    parse_creature_json(json).map_err(|e| ProdFixtureError::Parse(e.to_string()))
+    let creature = parse_creature_json(json).map_err(|e| ProdFixtureError::Parse(e.to_string()))?;
+    // Issue #571: a fixture with `input < 1` / `output < 1` is a parse-level
+    // failure — the observation width is part of the wire contract, and the
+    // topology ranges below assume it is present.
+    validate_creature_width(&creature).map_err(|e| ProdFixtureError::Parse(e.to_string()))?;
+    Ok(creature)
 }
 
 /// Assert the creature's topology sits within the expected production ranges.
@@ -214,6 +221,25 @@ mod tests {
             Err(ProdFixtureError::Empty)
         );
         assert_eq!(parse_production_creature(""), Err(ProdFixtureError::Empty));
+    }
+
+    /// Issue #571: the fixture loader rejects a widthless creature at parse
+    /// time with the shared wording, before the topology ranges are consulted.
+    #[test]
+    fn parse_rejects_zero_input_and_output() {
+        for (input, output, expected) in [
+            (0, 1, "Must have at least one input neurons was: 0"),
+            (2461, 0, "Must have at least one output neurons was: 0"),
+        ] {
+            let json = creature_json(input, output, 1665, 21_510);
+            match parse_production_creature(&json) {
+                Err(ProdFixtureError::Parse(msg)) => {
+                    assert!(msg.contains(expected), "expected `{expected}`, got `{msg}`");
+                }
+                other => panic!("expected Parse error for widthless creature, got {other:?}"),
+            }
+            assert!(load_production_creature(&json).is_err());
+        }
     }
 
     #[test]
