@@ -41,6 +41,13 @@ path = "src/bin/cost_scan_bench.rs"
 name = "gpu_pipeline_alloc_bench"
 path = "src/bin/gpu_pipeline_alloc_bench.rs"
 
+# Tree-heavy candidate-batching bench (Issue #574). Scores a batch of IF
+# decision-tree candidates against one generated corpus and reports
+# candidates/second and records/second — the Forests evaluation shape.
+[[bin]]
+name = "if_tree_batch_bench"
+path = "src/bin/if_tree_batch_bench.rs"
+
 # Criterion bench harness — see `benches/scoring.rs` and
 # `docs/performance-baseline.md`. Not wired into `quality.sh` (Criterion runs
 # are slow and non-deterministic enough to be unsuitable as a merge gate);

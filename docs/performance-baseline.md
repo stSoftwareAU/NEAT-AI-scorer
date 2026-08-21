@@ -1657,6 +1657,37 @@ follow-up.
 
    Append a new dated Host row to the "Per-cost CPU baseline" table.
 
+## Tree-heavy candidate batching — 21 August 2026 (Issue #574)
+
+First baseline for the `NEAT-AI-Forests` evaluation shape: N `IF` decision-tree
+candidates scored against one corpus in a single sweep, measured by
+[`if_tree_batch_bench`](../rust_scorer/src/bin/if_tree_batch_bench.rs). This is
+a **new** bench, not an optimisation A/B — the numbers below are the reference
+point later Forests-driven work compares against.
+
+Host: aarch64 Linux container, 7 logical CPUs, 7 GiB RAM, **no GPU adapter**
+(`gpuBackend: cpu-fallback`). Release build.
+
+```bash
+./target/release/if_tree_batch_bench --candidates 64 --records 200000 --depth 3 --runs 3 --gpu off
+```
+
+| Metric | Value |
+|---|---|
+| candidates | 64 (8 of them large grafted creatures, 288 hidden) |
+| records | 200 000 (8 inputs, 1 output) |
+| median wall-clock | 622.8 ms (runs: 626.1 / 622.8 / 616.5 ms) |
+| **candidates/second** | **102.8** |
+| **records/second** | **321 146** |
+| candidate-record evaluations/second | 20.55 M |
+
+Reading the numbers: `recordsPerSec` is corpus throughput for the whole batch
+(one sweep, every candidate scored inside it), so it falls as the batch grows;
+`candidateRecordEvaluationsPerSec` is the batch-size-independent figure to
+compare across runs. A GPU host should record its own row — the routing decision
+for `IF` trees is the ordinary topology decision (private kernel below the
+256-neuron cap, scratch above it), unchanged by Issue #574.
+
 ## Learnings recovered from the early PR summaries (Issue #508)
 
 Measurements from PRs 1–105 whose outcomes were only ever recorded in the

@@ -25,6 +25,7 @@ pub mod fixture_json;
 pub mod gpu;
 pub mod host_report;
 pub mod host_resources;
+pub mod if_tree_fixture;
 pub mod multi_score;
 pub mod prod_fixture;
 pub mod read_tuning;

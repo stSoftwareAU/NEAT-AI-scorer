@@ -121,7 +121,7 @@ Configuration (ignore list, skip paths, check-filenames / check-hidden flags) is
 
 This section is the single documented home for the workspace's binary list; `rust_scorer/Cargo.toml` owns it and `CONTRIBUTING.md` / `AGENTS.md` cite it rather than keeping their own copies (Issue #509). `scripts/check-binary-list-docs.sh` (invoked from `quality.sh`, covered by `tests/scripts/binary_list_docs.bats`) fails the gate when a manifest binary is missing here, or when either of those documents restates the list.
 
-Binaries: `rust_scorer`, `float_scan_bench`, `cost_scan_bench`, `gpu_pipeline_alloc_bench` (see `rust_scorer/Cargo.toml`). `cost_scan_bench` (Issue #124) sweeps every supported [`CostKind`](rust_scorer/src/cost.rs) through the forward-only fused path against a single creature and a `.bin` corpus, emitting a JSON summary for per-cost CPU baseline comparison. `gpu_pipeline_alloc_bench` (Issue #202) counts heap allocations during a multi-chunk pipelined (`inflight_chunks == 2`) GPU directory run; it skips cleanly on CPU-only hosts.
+Binaries: `rust_scorer`, `float_scan_bench`, `cost_scan_bench`, `gpu_pipeline_alloc_bench`, `if_tree_batch_bench` (see `rust_scorer/Cargo.toml`). `cost_scan_bench` (Issue #124) sweeps every supported [`CostKind`](rust_scorer/src/cost.rs) through the forward-only fused path against a single creature and a `.bin` corpus, emitting a JSON summary for per-cost CPU baseline comparison. `gpu_pipeline_alloc_bench` (Issue #202) counts heap allocations during a multi-chunk pipelined (`inflight_chunks == 2`) GPU directory run; it skips cleanly on CPU-only hosts. `if_tree_batch_bench` (Issue #574) scores a batch of `IF` decision-tree candidates against one generated corpus and reports candidates/second and records/second — see [Tree-heavy candidate batching bench](#tree-heavy-candidate-batching-bench-issue-574).
 
 ## CLI
 
@@ -305,6 +305,63 @@ is a separate, benchmark-gated decision (see the "production GPU" section in
 landing here does not by itself flip that default — the pre-existing
 `auto_should_use_gpu` per-path decision (#82/#83) is unchanged, and the CPU
 path is untouched.
+
+### IF decision-tree parity contract (Issue #574)
+
+`NEAT-AI-Forests` generates tree-shaped creatures built from `SquashType::If`
+plus the `Condition` / `Negative` / `Positive` synapse roles, and trusts this
+scorer as the final judge of a candidate batch. The branch semantics are
+therefore a **locked contract**, not an implementation detail:
+
+- **Branch rule.** An `IF` neuron sums each synapse's weighted input into the
+  bucket its role selects, then emits `positive + bias` when the condition sum
+  is **strictly** greater than zero and `negative + bias` otherwise. A
+  `condition == 0` record takes the **negative** branch, on the CPU pipeline and
+  on both GPU kernels alike.
+- **Never reinterpreted.** An `IF` neuron is never collapsed into an ordinary
+  point-wise squash. Both kernels reduce it inline (Issue #312), and an
+  aggregate they do not host (`HYPOT` / `HYPOTv2` / `MEAN`) fails pre-flight
+  (`GpuPrepareError::UnsupportedSquash`) so the run falls **closed** to the CPU
+  pipeline instead of scoring the neuron as a weighted sum.
+- **Documented tolerance.** CPU activations are asserted **bit-exactly** against
+  an independent reference evaluator; cross-backend per-creature losses are
+  asserted within `1e-3` relative error (the repository-wide CPU↔GPU tolerance
+  from Issues #82/#312), and candidate **ordering** must match exactly.
+- **Both kernels.** Small trees stay under the 256-neuron cap and run on
+  `forward_mse_batched` (private); a large creature carrying an appended `IF`
+  correction graft exceeds it and runs on `forward_mse_scratch`. Both are
+  covered.
+
+```mermaid
+flowchart TD
+    C["IF candidate batch"] --> P{"GPU pre-flight<br/>squash_supported"}
+    P -- "IF 34 hosted" --> K{"neurons > 256?"}
+    P -- "HYPOT / HYPOTv2 / MEAN" --> CPU["CPU pipeline<br/>(fail closed)"]
+    K -- "no" --> PRIV["forward_mse_batched<br/>(private array)"]
+    K -- "yes" --> SCR["forward_mse_scratch"]
+    PRIV --> R["per-candidate loss"]
+    SCR --> R
+    CPU --> R
+    R --> O["ranking — identical across backends"]
+```
+
+The fixtures live in
+[`rust_scorer/src/if_tree_fixture.rs`](rust_scorer/src/if_tree_fixture.rs) —
+depth-1 stump, nested tree, mixed point-wise + `IF` creature, large creature with
+an appended `IF` graft, and a branch-boundary corpus that pins every split on,
+one ULP below and one ULP above its threshold. They are consumed by
+[`tests/if_tree_parity.rs`](rust_scorer/tests/if_tree_parity.rs); synapse-role
+upload/decoding (`Condition` / `Negative` / `Positive` surviving creature JSON →
+`compile_creature` → the `SynapseGpu` buffer) is asserted by
+`build_batched_network_data_preserves_if_tree_synapse_roles` in
+[`rust_scorer/src/gpu/forward_mse_batched.rs`](rust_scorer/src/gpu/forward_mse_batched.rs).
+The CPU half of the suite runs everywhere; the cross-backend half skips cleanly
+on hosts without an adapter, exactly as the other GPU parity suites do.
+
+Once `NEAT-AI-core#555` lands its canonical decision-tree fixture and graft
+helper, these builders become its scorer-side consumers — the parity assertions
+are written against the semantics, not the builder, so the swap is a fixture
+change rather than a test rewrite.
 
 ### Cost function selector (Issues #120, #121)
 
@@ -1590,6 +1647,45 @@ Per the
 `CONTRIBUTING.md`, performance PRs without before/after Criterion evidence are
 rejected, and a change that misses its acceptance bar is recorded as a
 `negative-result` on the issue instead of raised as a PR.
+
+### Tree-heavy candidate batching bench (Issue #574)
+
+`NEAT-AI-Forests` evaluates **many candidate grafts against the same corpus** —
+one sweep of the training data, N `IF`-heavy decision trees scored inside it,
+ranked by loss. `if_tree_batch_bench` measures that shape and reports the two
+rates Forests plans against, plus their product:
+
+```bash
+cargo build --release -p rust_scorer --bin if_tree_batch_bench
+./target/release/if_tree_batch_bench --candidates 64 --records 200000 --depth 3
+```
+
+The fixture (candidate creatures + `.bin` corpus) is generated into a temporary
+directory from [`if_tree_fixture`](rust_scorer/src/if_tree_fixture.rs), so the
+bench needs no committed creature or corpus and is reproducible on any host.
+Every `--graft-every`th candidate is a large creature carrying an appended `IF`
+correction graft, so a run mixes the private and scratch GPU kernels the way a
+real Forests batch does.
+
+| Flag | Default | Purpose |
+|---|---|---|
+| `--candidates` | `64` | candidate trees scored against the shared corpus |
+| `--records` | `100000` | records in the generated corpus |
+| `--depth` | `3` | depth of each candidate tree (`1` = stump) |
+| `--inputs` | `8` | input columns per record |
+| `--runs` | `3` | timed repetitions (median reported) |
+| `--graft-every` | `8` | every Nth candidate is a large grafted creature (`0` disables) |
+| `--graft-hidden` | `288` | hidden width of the grafted candidates |
+| `--gpu` | `auto` | `auto` uses a GPU when present, `on` requires one, `off` forces CPU |
+| `--keep-fixture` | off | keep the generated fixture directory for inspection |
+
+Output is one JSON object carrying `candidatesPerSec`, `recordsPerSec`,
+`candidateRecordEvaluationsPerSec`, the median and per-run times, the resolved
+`gpuBackend`, and the winning candidate. The bench is **fail-loud**: an
+unwritable fixture, a failed scoring run, or `--gpu on` on a host with no
+adapter exits non-zero rather than reporting an empty result as success
+(`rust_scorer/tests/if_tree_batch_bench_smoke.rs`). Recorded numbers live in
+[`docs/performance-baseline.md`](docs/performance-baseline.md).
 
 ### Knob sweep harness (Issue #545)
 
