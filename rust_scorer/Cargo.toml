@@ -1,6 +1,6 @@
 [package]
 name = "rust_scorer"
-version = "1.1.63"
+version = "1.1.64"
 edition = "2024"
 license = "Apache-2.0"
 description = "Native CLI binary for scoring NEAT-AI creatures against training data."
@@ -40,6 +40,13 @@ path = "src/bin/cost_scan_bench.rs"
 [[bin]]
 name = "gpu_pipeline_alloc_bench"
 path = "src/bin/gpu_pipeline_alloc_bench.rs"
+
+# Tree-heavy candidate-batching bench (Issue #574). Scores a batch of IF
+# decision-tree candidates against one generated corpus and reports
+# candidates/second and records/second — the Forests evaluation shape.
+[[bin]]
+name = "if_tree_batch_bench"
+path = "src/bin/if_tree_batch_bench.rs"
 
 # Criterion bench harness — see `benches/scoring.rs` and
 # `docs/performance-baseline.md`. Not wired into `quality.sh` (Criterion runs

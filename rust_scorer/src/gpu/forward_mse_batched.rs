@@ -1391,6 +1391,73 @@ mod tests {
         );
     }
 
+    /// Issue #574: a decision-tree creature's `Condition` / `Negative` /
+    /// `Positive` roles must survive the whole upload path — creature JSON →
+    /// `compile_creature` → the `SynapseGpu` buffer the kernels read — on the
+    /// **right edges**. The widening test above proves the discriminant is not
+    /// truncated; this proves the role stays attached to the synapse that
+    /// carries it, which is what decides the branch inside the shader.
+    #[test]
+    fn build_batched_network_data_preserves_if_tree_synapse_roles() {
+        use crate::if_tree_fixture::{TreeSpec, tree_creature_json};
+        use neat_core::creature::{compile_creature, parse_creature_json};
+        use neat_core::squash::SquashType;
+        use neat_core::synapse_type::SynapseType;
+
+        let spec = TreeSpec::new(4, 2, 7);
+        let creature = parse_creature_json(&tree_creature_json(&spec)).expect("parse fixture");
+        let net = compile_creature(&creature).expect("compile fixture");
+        let num_inputs = net.num_inputs;
+        // The constant neuron is the first non-input neuron the fixture emits.
+        let constant_index = num_inputs as u32;
+        // Fixture node ids are emitted deepest-first, so the compiled IF neurons
+        // appear in descending node order after the constant.
+        let node_ids: Vec<usize> = (0..spec.num_internal_nodes()).rev().collect();
+
+        let data = build_batched_network_data(std::slice::from_ref(&net), num_inputs, 1)
+            .expect("IF trees are GPU-hostable");
+
+        let mut seen_if = 0usize;
+        for (i, neuron) in net.neurons.iter().enumerate() {
+            if neuron.is_constant || SquashType::from(neuron.squash_type) != SquashType::If {
+                continue;
+            }
+            let start = data.neurons[i].start_synapse as usize;
+            let end = start + data.neurons[i].num_synapses as usize;
+            let uploaded = &data.synapses[start..end];
+
+            let roles: Vec<u32> = uploaded.iter().map(|s| s.synapse_type).collect();
+            assert_eq!(
+                roles,
+                vec![
+                    SynapseType::Condition as u32,
+                    SynapseType::Condition as u32,
+                    SynapseType::Positive as u32,
+                    SynapseType::Negative as u32,
+                ],
+                "IF neuron {i}: uploaded synapse roles are wrong"
+            );
+            // The two condition edges must read the split feature and the
+            // constant that carries `-threshold`.
+            let node = node_ids[seen_if];
+            assert_eq!(
+                uploaded[0].from_index,
+                spec.feature(node) as u32,
+                "IF neuron {i}: condition edge reads the wrong input column"
+            );
+            assert_eq!(
+                uploaded[1].from_index, constant_index,
+                "IF neuron {i}: threshold edge must read the constant neuron"
+            );
+            seen_if += 1;
+        }
+        assert_eq!(
+            seen_if,
+            spec.num_internal_nodes(),
+            "every IF node must be uploaded"
+        );
+    }
+
     /// Issue #182 changed this behaviour: creatures above the 256 private-array
     /// cap are no longer rejected — they route to the `forward_mse_scratch`
     /// kernel. `build_batched_network_data` now accepts a creature just above

@@ -17,6 +17,24 @@ section to the released version with its date.
 
 ### Added
 
+- **CPU/GPU parity contract for `IF` decision-tree creatures (Issue #574).**
+  `rust_scorer/src/if_tree_fixture.rs` builds the canonical tree fixtures
+  `NEAT-AI-Forests` will generate — depth-1 stump, nested tree, mixed
+  point-wise + `IF` creature, large creature with an appended `IF` correction
+  graft, and a branch-boundary corpus pinning every split on, one ULP below and
+  one ULP above its threshold — each paired with an independent reference
+  evaluator. `rust_scorer/tests/if_tree_parity.rs` asserts CPU activations
+  **bit-exactly** against that reference (including `condition == 0` taking the
+  negative branch), that a prediction is always a leaf constant so `IF` is never
+  reinterpreted as a point-wise squash, that an unhosted aggregate still fails
+  closed to CPU, and — when an adapter is present — that both GPU kernels agree
+  with CPU within `1e-3` relative error and rank a candidate batch identically.
+  Synapse-role upload/decoding (`Condition` / `Negative` / `Positive`) is
+  covered by `build_batched_network_data_preserves_if_tree_synapse_roles`. New
+  `if_tree_batch_bench` binary reports candidates/second and records/second for
+  an `IF`-heavy batch; the first baseline is in `docs/performance-baseline.md`.
+  No behaviour or CLI contract changed.
+
 - **`rust_scorer` version downgrades are refused (Issue #567).**
   `scripts/version-increment.sh` now compares the branch version with the base
   ref numerically instead of treating any `current != base` as "already
