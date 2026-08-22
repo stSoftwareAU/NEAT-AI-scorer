@@ -30,6 +30,15 @@
 //! neurons are hosted by both GPU kernels (Issue #312), so the fixture needs no
 //! reserved bias column in the corpus and works against any record layout.
 //!
+//! A creature may not carry two synapses between the same ordered pair of
+//! neurons — NEAT-AI's TypeScript loader keys synapses by `(from, to)` and
+//! collapses duplicates, and `neat_core::compile_creature` rejects them
+//! outright (NEAT-AI-core#556). One `IF` node reads up to **three** bias-1
+//! sources — condition, positive branch, negative branch — so it needs three
+//! distinct constants ([`BIAS_ONE_UUID`], [`BIAS_ONE_POSITIVE_UUID`],
+//! [`BIAS_ONE_NEGATIVE_UUID`]), not one reused three times. All three hold the
+//! same `1.0`, so the arithmetic is unchanged; only the wiring is legal.
+//!
 //! Once `NEAT-AI-core#555` lands its canonical fixture and graft helper, these
 //! builders become the scorer-side consumers of it; the parity assertions in
 //! `tests/if_tree_parity.rs` are written against the semantics, not the builder,
@@ -38,8 +47,30 @@
 use crate::fixture_json::{creature_envelope, neuron_json, synapse_json, typed_synapse_json};
 
 /// UUID of the constant neuron every tree fixture uses to inject `1.0` into the
-/// condition and branch buckets.
+/// **condition** bucket.
 pub const BIAS_ONE_UUID: &str = "const-one";
+
+/// UUID of the constant neuron feeding the **positive** branch of an `IF` node
+/// whose high child is a leaf. Distinct from [`BIAS_ONE_UUID`] so the node does
+/// not carry two synapses from the same source (NEAT-AI-core#556).
+pub const BIAS_ONE_POSITIVE_UUID: &str = "const-one-positive";
+
+/// UUID of the constant neuron feeding the **negative** branch of an `IF` node
+/// whose low child is a leaf. Distinct from [`BIAS_ONE_UUID`] for the same
+/// reason as [`BIAS_ONE_POSITIVE_UUID`].
+pub const BIAS_ONE_NEGATIVE_UUID: &str = "const-one-negative";
+
+/// The three bias-1 constants an `IF` node hangs off, in emission order.
+///
+/// Listed ahead of every hidden neuron that reads them, and all holding the
+/// same `1.0` — one per synapse role, so no `(from, to)` pair repeats.
+fn bias_one_neurons() -> Vec<String> {
+    vec![
+        neuron_json("constant", BIAS_ONE_UUID, 1.0, "IDENTITY"),
+        neuron_json("constant", BIAS_ONE_POSITIVE_UUID, 1.0, "IDENTITY"),
+        neuron_json("constant", BIAS_ONE_NEGATIVE_UUID, 1.0, "IDENTITY"),
+    ]
+}
 
 /// UUID of the single output neuron every fixture in this module emits.
 pub const OUTPUT_UUID: &str = "output-0";
@@ -156,12 +187,15 @@ fn push_node_synapses(spec: &TreeSpec, id: usize, synapses: &mut Vec<String>) {
         -spec.threshold(id),
         Some("condition"),
     ));
-    for (child, role) in [(2 * id + 2, "positive"), (2 * id + 1, "negative")] {
+    for (child, role, leaf_one) in [
+        (2 * id + 2, "positive", BIAS_ONE_POSITIVE_UUID),
+        (2 * id + 1, "negative", BIAS_ONE_NEGATIVE_UUID),
+    ] {
         if child < internal {
             synapses.push(typed_synapse_json(&node_uuid(child), &to, 1.0, Some(role)));
         } else {
             synapses.push(typed_synapse_json(
-                BIAS_ONE_UUID,
+                leaf_one,
                 &to,
                 spec.leaf_value(child - internal),
                 Some(role),
@@ -179,7 +213,7 @@ fn push_node_synapses(spec: &TreeSpec, id: usize, synapses: &mut Vec<String>) {
 #[must_use]
 pub fn tree_creature_json(spec: &TreeSpec) -> String {
     let internal = spec.num_internal_nodes();
-    let mut neurons = vec![neuron_json("constant", BIAS_ONE_UUID, 1.0, "IDENTITY")];
+    let mut neurons = bias_one_neurons();
     let mut synapses = Vec::with_capacity(internal * 4 + 1);
     // Heap numbering is level order, so descending ids visit the deepest level
     // first — every child is emitted before the parent that reads it.
@@ -239,11 +273,11 @@ pub fn tree_reference_output(spec: &TreeSpec, inputs: &[f32]) -> f32 {
 #[must_use]
 pub fn mixed_neural_if_creature_json(spec: &TreeSpec, hidden: usize) -> String {
     let num_inputs = spec.num_inputs;
-    let mut neurons = Vec::with_capacity(hidden + 3);
+    let mut neurons = Vec::with_capacity(hidden + 5);
     for h in 0..hidden {
         neurons.push(neuron_json("hidden", &format!("hidden-{h}"), 0.05, "TANH"));
     }
-    neurons.push(neuron_json("constant", BIAS_ONE_UUID, 1.0, "IDENTITY"));
+    neurons.extend(bias_one_neurons());
     neurons.push(neuron_json("hidden", &node_uuid(0), 0.0, "IF"));
     neurons.push(neuron_json("output", OUTPUT_UUID, 0.0, "IDENTITY"));
 
@@ -277,13 +311,13 @@ pub fn mixed_neural_if_creature_json(spec: &TreeSpec, hidden: usize) -> String {
         Some("condition"),
     ));
     synapses.push(typed_synapse_json(
-        BIAS_ONE_UUID,
+        BIAS_ONE_POSITIVE_UUID,
         &root,
         spec.leaf_value(1),
         Some("positive"),
     ));
     synapses.push(typed_synapse_json(
-        BIAS_ONE_UUID,
+        BIAS_ONE_NEGATIVE_UUID,
         &root,
         spec.leaf_value(0),
         Some("negative"),
@@ -309,11 +343,11 @@ pub fn mixed_neural_if_creature_json(spec: &TreeSpec, hidden: usize) -> String {
 pub fn grafted_creature_json(spec: &TreeSpec, hidden: usize) -> String {
     let spec = &TreeSpec::new(spec.num_inputs, 1, spec.seed);
     let num_inputs = spec.num_inputs;
-    let mut neurons = Vec::with_capacity(hidden + 3);
+    let mut neurons = Vec::with_capacity(hidden + 5);
     for h in 0..hidden {
         neurons.push(neuron_json("hidden", &format!("hidden-{h}"), 0.05, "TANH"));
     }
-    neurons.push(neuron_json("constant", BIAS_ONE_UUID, 1.0, "IDENTITY"));
+    neurons.extend(bias_one_neurons());
     neurons.push(neuron_json("hidden", &node_uuid(0), 0.0, "IF"));
     neurons.push(neuron_json("output", OUTPUT_UUID, 0.0, "IDENTITY"));
 

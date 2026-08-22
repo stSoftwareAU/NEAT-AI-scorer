@@ -230,6 +230,7 @@ fn score_components_reject_widthless_export() {
         input: 0,
         output: 1,
         neurons: vec![NeuronExport {
+            id: None,
             neuron_type: "output".to_string(),
             uuid: "output-0".to_string(),
             bias: 0.0,
@@ -243,6 +244,7 @@ fn score_components_reject_widthless_export() {
         }],
         semantic_version: Some("4.0.0".to_string()),
         forward_only: true,
+        memetic: None,
     };
     let err = compute_score_components(&creature).expect_err("input:0 must be rejected");
     assert_eq!(

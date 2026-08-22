@@ -51,4 +51,17 @@
 # `CompiledNetwork` via struct literal — every fixture goes through
 # `compile_creature` — so no scorer code change is required. Verified by a
 # clean `cargo check -p rust_scorer` against sibling neat-core 0.9.0.
-0.9.0
+#
+# 0.9.0 -> 0.10.0: acknowledge neat-core #569 (GRQ#4257), which retyped the
+# public `MemeticExport::weights` field from
+# `BTreeMap<String, Vec<MemeticWeightExport>>` to the new `MemeticWeights` enum
+# so both valid `memetic.weights` wire forms parse. rust_scorer never reads
+# memetic weights, but neat-core #559 also added `CreatureExport::memetic` and
+# `NeuronExport::id`, and scorer builds both structs by literal in its own
+# tests — those literals now name the new fields (`memetic: None`, `id: None`).
+# No production scorer code changed. Verified by the full quality gate against
+# sibling neat-core 0.10.0, plus
+# `rust_scorer/tests/memetic_wire_forms_scoring.rs`, which asserts a creature
+# carrying either wire form parses, compiles and scores identically to the same
+# creature without one.
+0.10.0
