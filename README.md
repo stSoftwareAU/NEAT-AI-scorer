@@ -63,7 +63,7 @@ The root [`rust-toolchain.toml`](./rust-toolchain.toml) closes that gap by pinni
 
 ```toml
 [toolchain]
-channel = "1.95.0"
+channel = "1.98.0"
 components = ["rustfmt", "clippy"]
 ```
 
@@ -71,7 +71,7 @@ components = ["rustfmt", "clippy"]
 
 ```mermaid
 flowchart LR
-    TC["rust-toolchain.toml<br/>channel = 1.95.0"]
+    TC["rust-toolchain.toml<br/>channel = 1.98.0"]
     TC --> L["Local ./quality.sh<br/>(rustup)"]
     TC --> C["CI workflows<br/>(dtolnay/rust-toolchain)"]
     L --> R["Same rustc / clippy / rustfmt"]
