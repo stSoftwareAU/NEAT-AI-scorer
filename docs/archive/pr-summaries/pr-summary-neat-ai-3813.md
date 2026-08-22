@@ -16,8 +16,8 @@ evolve run therefore fell back to WASM scoring, hundreds of times per
 `./quality.sh`, and the native batch path was effectively dead while every run
 still looked green.
 
-neat-core fixed the deserialiser in **0.10.0** (`MemeticWeights`, neat-core #569
-/ GRQ#4257, hardened by #570). This repo already consumes it — the
+neat-core fixed the deserialiser in **0.10.0** (`MemeticWeights`, neat-core #569,
+hardened by #570). This repo already consumes it — the
 `neat-core.expected-version` baseline was moved to 0.10.0 in #576 — so nothing
 was left to bump. What was missing was a gate holding the guarantee **from the
 binary's side**, which is what this change adds.
