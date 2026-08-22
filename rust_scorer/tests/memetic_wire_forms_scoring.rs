@@ -1,11 +1,11 @@
-//! GRQ#4259 / neat-core#569 — a creature carrying `memetic.weights` in either
-//! valid wire form flows through the scorer unchanged.
+//! neat-core#569 — a creature carrying `memetic.weights` in either valid wire
+//! form flows through the scorer unchanged.
 //!
 //! neat-core 0.10.0 retyped the public `MemeticExport::weights` field from
 //! `BTreeMap<String, Vec<MemeticWeightExport>>` to the `MemeticWeights` enum so
 //! that both NEAT-AI wire forms parse — the UUID-keyed row array written by
-//! `MemeticWireExport.ts` (the form that cost the fleet a Backprop stage,
-//! GRQ#4257) and the id-keyed map. `rust_scorer` never reads memetic weights,
+//! `MemeticWireExport.ts` (the form that cost the fleet a Backprop stage) and
+//! the id-keyed map. `rust_scorer` never reads memetic weights,
 //! but every creature it scores is parsed by neat-core, so this is the
 //! behaviour the acknowledged breaking bump has to preserve: both forms parse,
 //! neither changes any score component, and an invalid form still fails loud.
@@ -41,7 +41,8 @@ fn creature_json(memetic: Option<&str>) -> String {
     }
 }
 
-/// The UUID-keyed row array — `MemeticWeightWireRow[]`, the GRQ#4257 form.
+/// The UUID-keyed row array — `MemeticWeightWireRow[]`, the form NEAT-AI
+/// writes for any JSON that leaves the process.
 const ROW_FORM: &str = r#"{"biases":{"output-0":0.25},"weights":[
     {"fromUUID":"input-0","toUUID":"hidden-0","weight":0.125},
     {"fromUUID":"hidden-0","toUUID":"output-0","weight":-0.5}
@@ -55,7 +56,7 @@ const MAP_FORM: &str = r#"{"biases":{"-1":0.25},"weights":{
 #[test]
 fn row_form_memetic_creature_parses_compiles_and_scores() {
     let creature = parse_creature_json(&creature_json(Some(ROW_FORM)))
-        .expect("the UUID row form must parse — GRQ#4257");
+        .expect("the UUID-keyed row form must parse");
 
     let memetic = creature
         .memetic
