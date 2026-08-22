@@ -14,5 +14,5 @@
 # still passes under the new compiler, and land the bump in its own PR. See the
 # "Pinned Rust toolchain" section in README.md.
 [toolchain]
-channel = "1.95.0"
+channel = "1.98.0"
 components = ["rustfmt", "clippy"]
