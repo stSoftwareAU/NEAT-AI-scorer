@@ -213,6 +213,7 @@ pub struct ScoreComponents {
 ///     input: 1,
 ///     output: 1,
 ///     neurons: vec![NeuronExport {
+///         id: None,
 ///         neuron_type: "output".to_string(),
 ///         uuid: "output-0".to_string(),
 ///         bias: -0.3,
@@ -226,6 +227,7 @@ pub struct ScoreComponents {
 ///     }],
 ///     semantic_version: Some("4.0.0".to_string()),
 ///     forward_only: true,
+///     memetic: None,
 /// };
 ///
 /// let components = compute_score_components(&creature).unwrap();
@@ -722,12 +724,14 @@ mod tests {
             output: 1,
             neurons: vec![
                 neat_core::creature::NeuronExport {
+                    id: None,
                     neuron_type: "hidden".to_string(),
                     uuid: "hidden-0".to_string(),
                     bias: 0.5,
                     squash: Some("TANH".to_string()),
                 },
                 neat_core::creature::NeuronExport {
+                    id: None,
                     neuron_type: "output".to_string(),
                     uuid: "output-0".to_string(),
                     bias: -0.3,
@@ -756,6 +760,7 @@ mod tests {
             ],
             semantic_version: Some("4.1.0".to_string()),
             forward_only: false,
+            memetic: None,
         };
 
         let components = compute_score_components(&creature).unwrap();
@@ -774,6 +779,7 @@ mod tests {
             input: 1,
             output: 1,
             neurons: vec![neat_core::creature::NeuronExport {
+                id: None,
                 neuron_type: "output".to_string(),
                 uuid: "output-0".to_string(),
                 bias,
@@ -787,6 +793,7 @@ mod tests {
             }],
             semantic_version: Some("4.0.0".to_string()),
             forward_only: false,
+            memetic: None,
         }
     }
 

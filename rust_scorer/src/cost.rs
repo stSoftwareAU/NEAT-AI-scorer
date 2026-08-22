@@ -198,6 +198,7 @@ impl CostKind {
 ///     input: 1,
 ///     output: 1,
 ///     neurons: vec![NeuronExport {
+///         id: None,
 ///         neuron_type: "output".to_string(),
 ///         uuid: "output-0".to_string(),
 ///         bias: 0.0,
@@ -211,6 +212,7 @@ impl CostKind {
 ///     }],
 ///     semantic_version: Some("4.0.0".to_string()),
 ///     forward_only: true,
+///     memetic: None,
 /// };
 /// let mut network = compile_creature(&creature).unwrap();
 ///

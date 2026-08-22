@@ -156,6 +156,7 @@ mod tests {
             input: 0,
             output: 1,
             neurons: vec![NeuronExport {
+                id: None,
                 neuron_type: "output".to_string(),
                 uuid: "output-0".to_string(),
                 bias: 0.0,
@@ -164,6 +165,7 @@ mod tests {
             synapses: vec![],
             semantic_version: None,
             forward_only: true,
+            memetic: None,
         };
         assert_eq!(
             validate_creature_width(&creature),
@@ -177,6 +179,7 @@ mod tests {
             synapses: vec![],
             semantic_version: None,
             forward_only: true,
+            memetic: None,
         };
         assert_eq!(
             validate_creature_width(&creature),
