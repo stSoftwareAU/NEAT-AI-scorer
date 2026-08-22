@@ -1,0 +1,51 @@
+{
+  "input": 1,
+  "output": 1,
+  "forwardOnly": true,
+  "semanticVersion": "4.0.0",
+  "neurons": [
+    {
+      "type": "output",
+      "uuid": "output-0",
+      "bias": 0.0,
+      "squash": "IDENTITY"
+    }
+  ],
+  "synapses": [
+    {
+      "fromUUID": "input-0",
+      "toUUID": "output-0",
+      "weight": 1.0
+    }
+  ],
+  "memetic": {
+    "generation": 3,
+    "score": 0.708,
+    "biases": {
+      "output-0": -0.1116
+    },
+    "weights": [],
+    "ancestry": [
+      {
+        "generation": 2,
+        "score": 0.681,
+        "biases": {
+          "output-0": -0.0904
+        },
+        "weights": [
+          {
+            "fromUUID": "input-0",
+            "toUUID": "output-0",
+            "weight": 0.9871
+          }
+        ]
+      },
+      {
+        "generation": 1,
+        "score": 0.652,
+        "biases": {},
+        "weights": []
+      }
+    ]
+  }
+}

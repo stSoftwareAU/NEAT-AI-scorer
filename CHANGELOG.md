@@ -17,6 +17,21 @@ section to the released version with its date.
 
 ### Added
 
+- **Binary-level regression gate for creatures carrying a `memetic` block
+  (stSoftwareAU/NEAT-AI#3813).** `rust_scorer/tests/memetic_creature_parse.rs`
+  feeds two committed fixtures — `rust_scorer/tests/fixtures/memetic_creature.json`
+  and `memetic_creature_empty_weights.json`, trimmed evolved exports carrying a
+  populated `memetic` block — to the **compiled** `rust_scorer` binary, so the
+  `fs::read_to_string` → `parse_creature_json` path the CLI actually uses is the
+  one under test. They cover the array-form `memetic.weights`, the empty
+  `"weights": []` that every creature evolved without a memetic pass exports, and
+  array-form `weights` one snapshot deeper in `memetic.ancestry[]`. Against a
+  map-only neat-core the binary died with
+  `Creature JSON error: invalid type: sequence, expected a map` before doing any
+  work and NEAT-AI evolve fell back to WASM scoring on every call; the tests now
+  fail loud on that exact string and assert the run reaches real work instead.
+  The neat-core baseline stays **0.10.0** — the release that carries the tolerant
+  deserialiser — with the reasoning recorded in `neat-core.expected-version`.
 - **CPU/GPU parity contract for `IF` decision-tree creatures (Issue #574).**
   `rust_scorer/src/if_tree_fixture.rs` builds the canonical tree fixtures
   `NEAT-AI-Forests` will generate — depth-1 stump, nested tree, mixed

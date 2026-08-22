@@ -64,4 +64,14 @@
 # `rust_scorer/tests/memetic_wire_forms_scoring.rs`, which asserts a creature
 # carrying either wire form parses, compiles and scores identically to the same
 # creature without one.
+#
+# 0.10.0 stays the baseline (NEAT-AI#3813). 0.10.0 IS the release carrying the
+# tolerant `memetic.weights` deserialiser that unbreaks `rust_scorer` on every
+# evolved creature, so there is no newer version to move to. neat-core has since
+# published 0.10.1 (#570 deserialiser tests, #571 float round-trip); both are
+# patch-level within the handled 0.10 line, which this gate allows and which
+# needs no acknowledgement. `rust_scorer/tests/memetic_creature_parse.rs` pins
+# the guarantee from the binary's side: it fails against a map-only neat-core
+# (verified against 0.9.12 — `Creature JSON error: invalid type: sequence,
+# expected a map`) and passes against the sibling clone at 0.10.1.
 0.10.0
