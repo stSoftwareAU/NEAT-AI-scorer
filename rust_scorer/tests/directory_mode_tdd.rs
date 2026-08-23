@@ -523,8 +523,15 @@ fn directory_mode_auto_shallow_scratch_topology_keeps_gpu() {
     }
 }
 
+/// Issue #579 replaced the pre-#579 `directory_mode_rejects_forward_only_false`
+/// guard: directory mode no longer refuses `forwardOnly: false` creatures at
+/// load time, it scores them with the same per-record state reset the
+/// single-creature path applies. The reset semantics and the single-creature
+/// parity are pinned in `tests/recurrent_directory_tdd.rs`; this test keeps the
+/// load-time contract itself — no error, real JSON, the creature's own flag
+/// reported back.
 #[test]
-fn directory_mode_rejects_forward_only_false() {
+fn directory_mode_accepts_forward_only_false() {
     let bin = env!("CARGO_BIN_EXE_rust_scorer");
     let tmp = tempfile::tempdir().expect("create tempdir");
     let creatures_dir = tmp.path().join("creatures");
@@ -540,10 +547,18 @@ fn directory_mode_rejects_forward_only_false() {
         .arg(&data_dir)
         .output()
         .expect("spawn scorer");
-    assert!(!output.status.success(), "forwardOnly=false should fail");
-    let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("forwardOnly=false"),
-        "expected forwardOnly error, got: {stderr}",
+        output.status.success(),
+        "forwardOnly=false must be scored, stderr:\n{}",
+        String::from_utf8_lossy(&output.stderr),
+    );
+
+    let parsed: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("stdout must be JSON");
+    let entry = parsed.get("a").expect("missing `a` key");
+    assert_eq!(
+        entry.get("forwardOnly").and_then(|v| v.as_bool()),
+        Some(false),
+        "the reported forwardOnly must be the creature's own flag, got: {entry}",
     );
 }

@@ -22,6 +22,19 @@
 //! `par_iter_mut` over per-creature worker networks, which oversubscribed the
 //! global Rayon pool with `creatures × workers` tasks.
 //!
+//! ## Recurrent creatures (Issue #579)
+//!
+//! A directory may mix `forwardOnly: true` and `forwardOnly: false` creatures.
+//! Each worker carries its own creature's flag into `accumulate_cost_sum`, so a
+//! recurrent creature is scored exactly as the single-creature path scores it:
+//! `forward_only = false` makes the upstream kernel call
+//! `CompiledNetwork::reset_state` before every record, which keeps records
+//! independent and therefore keeps the per-worker record partition above valid.
+//! The cost is that recurrent creatures lose the 8-way/4-way SIMD batch
+//! kernels (upstream gates both on `forward_only`) and fall to the scalar
+//! per-record scan — several times slower for **those creatures only**;
+//! forward-only creatures sharing the batch are untouched.
+//!
 //! ## Task granularity (Issue #537)
 //!
 //! `NEAT_SCORER_WORKER_SPLIT=k` multiplies that worker budget by `k`, so each
@@ -231,12 +244,10 @@ fn load_creatures_from_dir(creatures_dir: &Path) -> Result<Vec<LoadedCreature>, 
         // file is opened (no fallback, no re-derivation from `neurons`).
         validate_creature_width(&creature)
             .map_err(|e| format!("Creature '{}': {e}", path.display()))?;
-        if !creature.forward_only {
-            return Err(format!(
-                "Creature '{}' has forwardOnly=false; multi-creature directory mode requires forwardOnly=true for every creature",
-                path.display()
-            ));
-        }
+        // Issue #579: `forwardOnly=false` is accepted here. The per-chunk hot
+        // loop threads each creature's own flag into `accumulate_cost_sum`, so
+        // a recurrent creature is scored with the per-record state reset the
+        // single-creature path applies — no state leaks across records.
 
         loaded.push(LoadedCreature {
             key,
@@ -640,11 +651,17 @@ fn score_from_creature_dir_cpu(
         worker_offsets.push(acc);
     }
 
-    // Reverse map: each worker → its owning creature index.
+    // Reverse map: each worker → its owning creature index, plus that
+    // creature's own `forwardOnly` flag (Issue #579). The flag is resolved
+    // per worker so the hot loop indexes it with the same `worker_idx` the
+    // `par_iter` already carries, instead of chasing back through the
+    // creature list inside the parallel closure.
     let mut worker_creature_idx: Vec<usize> = Vec::with_capacity(total_workers);
+    let mut worker_forward_only: Vec<bool> = Vec::with_capacity(total_workers);
     for (ci, &w) in workers_per.iter().enumerate() {
         for _ in 0..w {
             worker_creature_idx.push(ci);
+            worker_forward_only.push(loaded[ci].creature.forward_only);
         }
     }
 
@@ -685,7 +702,9 @@ fn score_from_creature_dir_cpu(
             &[],
             num_inputs,
             num_outputs,
-            true,
+            // Issue #579: worker 0 belongs to creature 0, so probe with that
+            // creature's own flag rather than a hard-coded `true`.
+            worker_forward_only[0],
         )?;
     }
 
@@ -760,7 +779,12 @@ fn score_from_creature_dir_cpu(
                         &floats[range.clone()],
                         num_inputs,
                         num_outputs,
-                        true,
+                        // Issue #579: each worker scores with its own
+                        // creature's flag. `false` makes the upstream kernel
+                        // clear the network state before every record, so a
+                        // recurrent creature's records stay independent and
+                        // partitioning the chunk across workers stays valid.
+                        worker_forward_only[worker_idx],
                     )?;
                 } else {
                     *sum = 0.0;
@@ -909,7 +933,9 @@ fn score_from_creature_dir_cpu(
                 record_count: scored,
                 hidden_neurons,
                 synapse_count,
-                forward_only: true,
+                // Issue #579: report the creature's own flag, not the batch's
+                // former `forwardOnly=true` precondition.
+                forward_only: loaded_creature.creature.forward_only,
                 training_read_backend: training_read_backend.clone(),
                 gpu_backend,
                 read_buf_len: Some(fused_read_buf_len),
@@ -959,8 +985,13 @@ fn score_from_creature_dir_cpu(
 /// * `Ok(())` — either the set is GPU-hostable, or it could not even be
 ///   loaded/compiled. Load/compile failures are deliberately *not* treated as
 ///   GPU-incompatibility: they are left for the normal scoring path to surface
-///   with its existing, precise error message (e.g. shape mismatch,
-///   `forwardOnly=false`).
+///   with its existing, precise error message (e.g. shape mismatch, an invalid
+///   observation width).
+///
+/// Issue #579: `forwardOnly` plays no part in this classification — it only
+/// counts neurons and squashes. A recurrent creature is as GPU-hostable as a
+/// forward-only one of the same shape, because both kernels zero every
+/// non-input activation per `(creature, record)` thread.
 ///
 /// # Examples
 ///
@@ -974,7 +1005,7 @@ fn score_from_creature_dir_cpu(
 /// }
 /// ```
 pub fn gpu_directory_compatible(creatures_dir: &Path) -> Result<(), GpuPrepareError> {
-    // A load failure here (missing dir, shape mismatch, forwardOnly=false, …)
+    // A load failure here (missing dir, shape mismatch, bad width, …)
     // is not a GPU-hostability question — return Ok so the real scoring path
     // re-runs the load and reports the precise error itself.
     let loaded = match load_creatures_from_dir(creatures_dir) {
@@ -1415,7 +1446,12 @@ fn score_from_creature_dir_gpu_impl(
                 record_count: total_records,
                 hidden_neurons,
                 synapse_count,
-                forward_only: true,
+                // Issue #579: report the creature's own flag. The kernels zero
+                // every non-input activation per `(creature, record)` thread,
+                // so a GPU thread never carries state between records — the
+                // reset semantics `forwardOnly=false` requires hold here
+                // without a shader change.
+                forward_only: loaded_creature.creature.forward_only,
                 training_read_backend: training_read_backend.clone(),
                 gpu_backend,
                 read_buf_len: Some(fused_read_buf_len),

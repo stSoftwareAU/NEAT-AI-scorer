@@ -531,3 +531,130 @@ fn parity_rmse_ranks_creatures_same_order_as_mse() {
         "expected strictly increasing error levels across the fixed datasets"
     );
 }
+
+/// Issue #579 — recurrent (`forward_only = false`) fixture with a genuine back
+/// edge: `output-0` (neuron index 2) feeds `hidden-0` (neuron index 1), which
+/// the compiler evaluates first. With the per-record reset the edge reads a
+/// cleared activation; without it, it reads the previous record's output.
+fn recurrent_1_in_1_out() -> CompiledNetwork {
+    let json = creature_envelope(
+        1,
+        1,
+        &[
+            neuron_json("hidden", "hidden-0", 0.0, "IDENTITY"),
+            neuron_json("output", "output-0", 0.0, "IDENTITY"),
+        ],
+        &[
+            synapse_json("input-0", "hidden-0", 0.5),
+            synapse_json("hidden-0", "output-0", 1.0),
+            // Back edge — the reason this creature is not forward-only.
+            synapse_json("output-0", "hidden-0", 0.5),
+        ],
+    );
+    compile_creature(&parse_creature_json(&json).expect("parse recurrent_1_in_1_out"))
+        .expect("compile recurrent_1_in_1_out")
+}
+
+/// Every cost the CLI accepts, in declaration order.
+const EVERY_COST: [CostKind; 8] = [
+    CostKind::Mse,
+    CostKind::Rmse,
+    CostKind::Mae,
+    CostKind::Mape,
+    CostKind::Msle,
+    CostKind::Hinge,
+    CostKind::CrossEntropy,
+    CostKind::CategoricalError,
+];
+
+/// Positive-only records so every cost (including the log-based ones) stays in
+/// its defined domain. Nine records cross the SIMD-batch boundary the
+/// forward-only paths use, proving the recurrent dispatch never takes it.
+const RECURRENT_PAIRS: [(f32, f32); 9] = [
+    (0.5, 0.25),
+    (0.25, 0.125),
+    (0.75, 0.5),
+    (0.125, 0.0625),
+    (0.625, 0.75),
+    (0.375, 0.25),
+    (0.875, 0.5),
+    (0.1875, 0.125),
+    (0.9375, 0.875),
+];
+
+/// Issue #579 — directory mode hands a **whole chunk** of records to
+/// `accumulate_cost_sum` with `forward_only = false`, whereas the
+/// single-creature recurrent path hands over one record at a time. For every
+/// supported cost the two must agree bit-for-bit: `packed_record_scan` resets
+/// the network state before each record, so records stay independent and the
+/// chunk sum accumulates in the same f64 order as the per-record loop.
+///
+/// This is the numerical contract that lets a recurrent creature be scored in
+/// a batch at all — without it, partitioning a chunk across workers would
+/// change the answer.
+#[test]
+fn recurrent_chunk_dispatch_matches_per_record_dispatch_for_every_cost() {
+    let chunk = pack_pairs(&RECURRENT_PAIRS);
+
+    for cost in EVERY_COST {
+        let mut chunk_net = recurrent_1_in_1_out();
+        let chunk_sum = accumulate_cost_sum(cost, &mut chunk_net, &chunk, 1, 1, false)
+            .expect("chunked recurrent dispatch must succeed");
+
+        let mut record_net = recurrent_1_in_1_out();
+        let mut per_record_sum = 0.0_f64;
+        for pair in RECURRENT_PAIRS {
+            let record = pack_pairs(&[pair]);
+            per_record_sum += accumulate_cost_sum(cost, &mut record_net, &record, 1, 1, false)
+                .expect("per-record recurrent dispatch must succeed");
+        }
+
+        assert_eq!(
+            chunk_sum.to_bits(),
+            per_record_sum.to_bits(),
+            "{}: chunked recurrent sum {chunk_sum} must be bit-identical to the per-record sum {per_record_sum}",
+            cost.as_str(),
+        );
+    }
+}
+
+/// Issue #579 — the `forward_only` argument is load-bearing, not cosmetic: on
+/// a creature with a back edge, skipping the per-record reset leaks the
+/// previous record's output into the next activation and changes the answer.
+/// Three records keep the dispatch on the scalar scan for both flag values, so
+/// the only difference under test is the reset itself.
+#[test]
+fn recurrent_flag_changes_the_chunk_sum_on_a_back_edge() {
+    // Zero targets, so each record's error is the square of the creature's
+    // output and a leaked activation cannot cancel out of the sum.
+    let pairs: [(f32, f32); 3] = [(0.5, 0.0), (0.25, 0.0), (0.75, 0.0)];
+    let chunk = pack_pairs(&pairs);
+
+    let mut reset_net = recurrent_1_in_1_out();
+    let reset_sum = accumulate_cost_sum(CostKind::Mse, &mut reset_net, &chunk, 1, 1, false)
+        .expect("reset dispatch must succeed");
+
+    let mut leaking_net = recurrent_1_in_1_out();
+    let leaking_sum = accumulate_cost_sum(CostKind::Mse, &mut leaking_net, &chunk, 1, 1, true)
+        .expect("forward-only dispatch must succeed");
+
+    assert_ne!(
+        reset_sum.to_bits(),
+        leaking_sum.to_bits(),
+        "a back edge must make forward_only load-bearing (both sums were {reset_sum})",
+    );
+
+    // The reset value is analytically exact: `output = 0.5 * input`, so each
+    // record contributes `(target - 0.5 * input)^2` over one output.
+    let expected: f64 = pairs
+        .iter()
+        .map(|&(input, target)| {
+            let diff = target as f64 - 0.5 * input as f64;
+            diff * diff
+        })
+        .sum();
+    assert!(
+        (reset_sum - expected).abs() < EPS_SMOOTH,
+        "reset semantics must clear the back edge: actual={reset_sum}, expected={expected}",
+    );
+}
