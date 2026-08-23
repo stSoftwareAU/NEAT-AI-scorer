@@ -17,6 +17,28 @@ section to the released version with its date.
 
 ### Added
 
+- **Directory mode scores `forwardOnly: false` (recurrent) creatures
+  (Issue #579).** The load-time guard in
+  `rust_scorer/src/multi_score.rs` that rejected any creature directory
+  containing a recurrent creature is gone. The per-chunk worker pool now carries
+  a `worker_forward_only` vector alongside `worker_creature_idx`, so each worker
+  passes **its own creature's** flag to `cost::accumulate_cost_sum` instead of a
+  hard-coded `true`; with `forward_only = false` the upstream kernel clears the
+  network state before every record, which keeps records independent and
+  therefore keeps the Rayon record partition valid. A directory may mix
+  forward-only and recurrent creatures, each entry's `forwardOnly` JSON field
+  now reports the creature's own flag, and `rust_scorer <dir>` reports the same
+  `error` as `rust_scorer <file>` for the same recurrent creature. The GPU path
+  needed no shader change — both kernels already zero every non-input activation
+  per `(creature, record)` thread. Recurrent creatures lose the upstream SIMD
+  batch kernels (gated on `forward_only`) and fall to the scalar per-record
+  scan; forward-only creatures in the same batch are unaffected. New coverage:
+  `rust_scorer/tests/recurrent_directory_tdd.rs` (reset semantics, single-creature
+  parity, mixed batch) plus two `rust_scorer/tests/cost_parity.rs` tests
+  (chunk-vs-per-record dispatch bit-identical for all eight costs; the
+  `forward_only` flag is load-bearing on a back edge). The pre-#579
+  `directory_mode_rejects_forward_only_false` test is replaced by
+  `directory_mode_accepts_forward_only_false` — a deliberate behaviour change.
 - **Binary-level regression gate for creatures carrying a `memetic` block
   (stSoftwareAU/NEAT-AI#3813).** `rust_scorer/tests/memetic_creature_parse.rs`
   feeds two committed fixtures — `rust_scorer/tests/fixtures/memetic_creature.json`

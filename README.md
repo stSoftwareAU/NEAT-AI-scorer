@@ -133,7 +133,46 @@ rust_scorer <creature.json | creatures_dir> <training_data_dir>
 
 - `creature.json` path: scores one creature and returns the existing single-object output.
 - `creatures_dir` path: scores every `*.json` in that directory in one pass over training data and returns one JSON object keyed by each file's stem (filename without extension or folders).
-- Directory mode requires `forwardOnly: true` and matching `input` / `output` shape across all files.
+- Directory mode requires a matching `input` / `output` shape across all files. Since **Issue #579** it accepts `forwardOnly: false` creatures — see [Recurrent creatures in directory mode](#recurrent-creatures-in-directory-mode-issue-579) below.
+
+### Recurrent creatures in directory mode (Issue #579)
+
+A creature directory may mix `forwardOnly: true` and `forwardOnly: false`
+creatures. Each is scored under **its own** flag, so a recurrent creature in a
+batch gets the same per-record state reset the single-creature path applies —
+`neat_core::loss::packed_record_scan` calls `CompiledNetwork::reset_state()`
+before every record, a back edge therefore reads `0.0`, and records stay
+independent. Independence is what keeps the batch path valid: a chunk is still
+partitioned across Rayon workers, and each creature's `forwardOnly` follows its
+worker.
+
+```mermaid
+flowchart LR
+    L["load_creatures_from_dir()"] --> W["worker pool<br/>(worker → creature, forwardOnly)"]
+    W --> C["accumulate_cost_sum(..., forward_only)"]
+    C -->|true| S["SIMD 8-way / 4-way batch<br/>(state carried — no back edges)"]
+    C -->|false| R["scalar packed_record_scan<br/>reset_state() per record"]
+    S --> F["per-creature error"]
+    R --> F
+```
+
+Consequences worth knowing before you batch a recurrent population:
+
+- **Same answer as single-creature mode.** `rust_scorer <dir>` and
+  `rust_scorer <file>` report the same `error` for the same recurrent creature
+  (pinned by `rust_scorer/tests/recurrent_directory_tdd.rs`).
+- **`forwardOnly` is echoed per creature** in the directory JSON, so a caller
+  can see which entries took the recurrent path.
+- **Recurrent creatures lose the SIMD batch kernels** (upstream gates the 8-way
+  and 4-way paths on `forward_only`) and fall to the scalar per-record scan —
+  several times slower *for those creatures only*. Forward-only creatures
+  sharing the batch are unaffected; `reset_state()` costs O(neurons) stores per
+  record.
+- **The GPU path needs no change.** Both `forward_mse_batched` and
+  `forward_mse_scratch` zero every non-input activation per
+  `(creature, record)` thread, so a GPU thread never carries state between
+  records — the reset semantics hold on GPU by construction, and the
+  hostability/topology probes classify neuron counts only.
 
 ### GPU mode (Issues #80 / #83)
 
@@ -1104,7 +1143,10 @@ forward-only path and the per-record recurrent path:
 - **Per-record recurrent path.** `forwardOnly: false` creatures use
   `TrainingDataIterator` to feed `[inputs..., targets...]` packed records into
   the same `accumulate_cost_sum` helper one record at a time, so every
-  supported cost works here too.
+  supported cost works here too. Directory mode (Issue #579) passes a whole
+  chunk to the same helper with `forward_only = false`; the per-record reset
+  inside `packed_record_scan` makes the two numerically identical, pinned per
+  cost by `rust_scorer/tests/cost_parity.rs`.
 - **`CATEGORICAL_ERROR` dispatches** through `categorical_error_sum_batch_packed`
   (landed via [`NEAT-AI-core#88`](https://github.com/stSoftwareAU/NEAT-AI-core/issues/88);
   unblocked here in #134) — the dispatch returns the integer count of
