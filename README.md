@@ -402,6 +402,64 @@ helper, these builders become its scorer-side consumers — the parity assertion
 are written against the semantics, not the builder, so the swap is a fixture
 change rather than a test rewrite.
 
+### Synapses are keyed by `(from, to, type)` (Issue #581)
+
+`NEAT-AI-core#577` relaxed the duplicate-synapse rule: the key is the
+`(fromUUID, toUUID, type)` **triple**, so one source may feed an `IF` neuron
+through more than one role. The contribution that must apply *whichever way the
+node branches* no longer needs an `IDENTITY` relay neuron existing purely to be
+a second distinct source. Every other squash sums its inward synapses regardless
+of role, so a repeated pair into a point-wise target is still refused — as
+`CreatureError::TypedDuplicateSynapse`, distinct from the
+`CreatureError::DuplicateSynapse` an exact repeated triple earns.
+
+This engine is the one that would **disagree first**, which is why the guard is
+pinned rather than assumed. `rust_scorer` resolves every synapse independently
+and sums each role's bucket; a loader keyed by `(from, to)` alone keeps one edge
+per ordered pair and silently drops the rest, so the same JSON means two
+different things:
+
+```mermaid
+flowchart LR
+    J["creature JSON<br/>A→IF positive<br/>A→IF negative"]
+    J --> RS["rust_scorer<br/>(from, to, type)"]
+    J --> TS["TypeScript loader<br/>(from, to) — NEAT-AI#3873 open"]
+    RS --> K["both edges kept<br/>each branch carries A"]
+    TS --> D["one edge kept<br/>one branch loses A"]
+    K --> S1["score X"]
+    D --> S2["score Y ≠ X"]
+    S1 --> W["divergence — a production<br/>'improvement' that was not real"]
+    S2 --> W
+```
+
+The fixtures live in
+[`rust_scorer/src/dual_role_fixture.rs`](rust_scorer/src/dual_role_fixture.rs):
+the relay-free creature (one constant carrying all three roles, one input column
+carrying both branches), the pre-#577 relay workaround that describes the *same*
+function, the creature a `(from, to)`-keyed loader is left holding, and the two
+shapes that must still be refused. They are consumed by
+[`tests/dual_role_parity.rs`](rust_scorer/tests/dual_role_parity.rs), which
+asserts that:
+
+- **nothing is dropped on load** — the synapse count is identical in the raw
+  JSON, the parsed export and the compiled network (the Rust-side spelling of
+  the `jsonSynapses === loadedSynapses` assertion `NEAT-AI-Forests`' `ts_parity.rs`
+  makes against `Creature.scoreDir`);
+- **the relaxed form and the relay workaround agree exactly** — bit-identical
+  activations and an identical loss through the real directory pipeline, so
+  upstream may drop the relay without moving a score;
+- **a dropped edge is detectable** — the `(from, to)`-keyed creature scores
+  differently, so the assertions above cannot pass vacuously;
+- **both GPU kernels agree** with CPU within the same `1e-3` cross-backend
+  tolerance, since the kernels bucket by synapse role too.
+
+Nothing in the scorer's own scoring path keys synapses by `(from, to)`: it
+iterates `creature.synapses` in declaration order and reports
+`synapse_count = creature.synapses.len()`. The TypeScript half of the rule
+(`NEAT-AI#3873`) is still open, so `if_tree_fixture.rs` keeps its three separate
+bias-1 constants — a conservative choice that keeps those fixtures loadable by
+**both** engines, not a requirement of this one.
+
 ### Cost function selector (Issues #120, #121)
 
 The `--cost <NAME>` flag selects which built-in loss function the scorer

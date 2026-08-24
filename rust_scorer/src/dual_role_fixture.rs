@@ -296,7 +296,10 @@ pub fn repeated_triple_creature_json(spec: &TreeSpec) -> String {
     );
     let intact = dual_role_if_creature_json(spec);
     let doubled = intact.replacen(&repeated, &format!("{repeated},{repeated}"), 1);
-    assert_ne!(doubled, intact, "the positive edge must exist to be doubled");
+    assert_ne!(
+        doubled, intact,
+        "the positive edge must exist to be doubled"
+    );
     doubled
 }
 
@@ -508,6 +511,9 @@ mod tests {
                 records[base + SPEC.num_inputs] != dual_role_reference_output(&SPEC, inputs)
             })
             .count();
-        assert!(differing > 0, "every target reproduced the creature exactly");
+        assert!(
+            differing > 0,
+            "every target reproduced the creature exactly"
+        );
     }
 }

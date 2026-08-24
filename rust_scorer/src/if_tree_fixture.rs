@@ -30,14 +30,18 @@
 //! neurons are hosted by both GPU kernels (Issue #312), so the fixture needs no
 //! reserved bias column in the corpus and works against any record layout.
 //!
-//! A creature may not carry two synapses between the same ordered pair of
-//! neurons — NEAT-AI's TypeScript loader keys synapses by `(from, to)` and
-//! collapses duplicates, and `neat_core::compile_creature` rejects them
-//! outright (NEAT-AI-core#556). One `IF` node reads up to **three** bias-1
-//! sources — condition, positive branch, negative branch — so it needs three
-//! distinct constants ([`BIAS_ONE_UUID`], [`BIAS_ONE_POSITIVE_UUID`],
-//! [`BIAS_ONE_NEGATIVE_UUID`]), not one reused three times. All three hold the
-//! same `1.0`, so the arithmetic is unchanged; only the wiring is legal.
+//! These fixtures give each of the `IF` node's three bias-1 sources its own
+//! constant ([`BIAS_ONE_UUID`], [`BIAS_ONE_POSITIVE_UUID`],
+//! [`BIAS_ONE_NEGATIVE_UUID`]) rather than reusing one three times. All three
+//! hold the same `1.0`, so the arithmetic is identical either way — the split
+//! is about the wiring, and it is now a **conservative choice, not a
+//! requirement**: `neat_core::compile_creature` keys synapses by the
+//! `(from, to, type)` triple since NEAT-AI-core#577, so an `IF` target may read
+//! one source through several roles. The split is kept here because NEAT-AI's
+//! TypeScript loader still keys on `(from, to)` alone (NEAT-AI#3873 is open),
+//! so these fixtures stay loadable by **both** engines. The relaxed shape has
+//! its own fixtures and its own parity guard in
+//! [`crate::dual_role_fixture`] / `tests/dual_role_parity.rs` (Issue #581).
 //!
 //! Once `NEAT-AI-core#555` lands its canonical fixture and graft helper, these
 //! builders become the scorer-side consumers of it; the parity assertions in
@@ -52,7 +56,9 @@ pub const BIAS_ONE_UUID: &str = "const-one";
 
 /// UUID of the constant neuron feeding the **positive** branch of an `IF` node
 /// whose high child is a leaf. Distinct from [`BIAS_ONE_UUID`] so the node does
-/// not carry two synapses from the same source (NEAT-AI-core#556).
+/// not carry two synapses from the same source — no longer required of an `IF`
+/// target since NEAT-AI-core#577, but kept so the fixture also loads under
+/// NEAT-AI's `(from, to)`-keyed TypeScript loader (Issue #581).
 pub const BIAS_ONE_POSITIVE_UUID: &str = "const-one-positive";
 
 /// UUID of the constant neuron feeding the **negative** branch of an `IF` node
@@ -63,7 +69,8 @@ pub const BIAS_ONE_NEGATIVE_UUID: &str = "const-one-negative";
 /// The three bias-1 constants an `IF` node hangs off, in emission order.
 ///
 /// Listed ahead of every hidden neuron that reads them, and all holding the
-/// same `1.0` — one per synapse role, so no `(from, to)` pair repeats.
+/// same `1.0` — one per synapse role, so no `(from, to)` pair repeats and the
+/// creature loads under either engine's key (see the module docs).
 fn bias_one_neurons() -> Vec<String> {
     vec![
         neuron_json("constant", BIAS_ONE_UUID, 1.0, "IDENTITY"),

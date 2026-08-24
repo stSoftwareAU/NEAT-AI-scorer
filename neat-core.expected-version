@@ -74,4 +74,17 @@
 # the guarantee from the binary's side: it fails against a map-only neat-core
 # (verified against 0.9.12 — `Creature JSON error: invalid type: sequence,
 # expected a map`) and passes against the sibling clone at 0.10.1.
+#
+# 0.10.0 still stays the baseline (Issue #581). neat-core 0.10.6 carries #577,
+# which relaxes `validate_no_duplicate_synapses` to key on the
+# `(fromUUID, toUUID, type)` triple so an `IF` target may read one source
+# through several roles; a repeated pair into any other squash becomes the new
+# `CreatureError::TypedDuplicateSynapse`. This is patch-level within the handled
+# 0.10 line and is **widening**, not breaking: every creature that compiled
+# before still compiles, and no rust_scorer code keys synapses by `(from, to)`.
+# Verified by the full quality gate against the sibling clone at 0.10.6, plus
+# `rust_scorer/tests/dual_role_parity.rs`, which pins that the relaxed shape
+# loads with every synapse intact, scores identically to the pre-#577 relay
+# workaround, and scores *differently* from the creature a `(from, to)`-keyed
+# loader is left holding.
 0.10.0
