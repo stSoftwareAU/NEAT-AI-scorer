@@ -20,6 +20,7 @@ pub mod cli;
 pub mod corpus_guard;
 pub mod cost;
 pub mod creature_width;
+pub mod dual_role_fixture;
 pub mod env_tuning;
 pub mod fixture_json;
 pub mod gpu;

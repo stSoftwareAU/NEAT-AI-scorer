@@ -38,6 +38,21 @@ pub fn neuron_json(kind: &str, uuid: &str, bias: f64, squash: &str) -> String {
     format!(r#"{{"type":"{kind}","uuid":"{uuid}","bias":{bias},"squash":"{squash}"}}"#)
 }
 
+/// One **constant** neuron object: `{"type":"constant","uuid":…,"bias":…}`.
+///
+/// Deliberately carries no `"squash"` key. A constant emits its bias unchanged,
+/// so the field would be inert here — and NEAT-AI's TypeScript loader rejects
+/// the creature outright when it is present (`constants should not have a
+/// squash was: IDENTITY`). Omitting it keeps a fixture loadable by **both**
+/// engines, which is what a cross-engine parity fixture needs (Issue #581).
+/// `neat_core::compile_creature` reads a missing squash as `IDENTITY`, so the
+/// arithmetic is identical to the four-field form.
+#[must_use]
+pub fn constant_neuron_json(uuid: &str, value: f64) -> String {
+    let value = json_number(value);
+    format!(r#"{{"type":"constant","uuid":"{uuid}","bias":{value}}}"#)
+}
+
 /// One synapse object: `{"fromUUID":…,"toUUID":…,"weight":…}`.
 #[must_use]
 pub fn synapse_json(from_uuid: &str, to_uuid: &str, weight: f64) -> String {
@@ -154,6 +169,38 @@ mod tests {
             neuron_json("output", "output-0", 0.0, "IDENTITY"),
             r#"{"type":"output","uuid":"output-0","bias":0.0,"squash":"IDENTITY"}"#
         );
+    }
+
+    #[test]
+    fn constant_neuron_json_omits_the_squash_key() {
+        // The absent key is the point: TypeScript refuses a constant that
+        // declares one, so a cross-engine fixture must not emit it.
+        assert_eq!(
+            constant_neuron_json("const-one", 1.0),
+            r#"{"type":"constant","uuid":"const-one","bias":1.0}"#
+        );
+    }
+
+    #[test]
+    fn a_squashless_constant_still_compiles() {
+        use neat_core::creature::compile_creature;
+        let json = creature_envelope(
+            1,
+            1,
+            &[
+                constant_neuron_json("const-one", 1.0),
+                neuron_json("output", "output-0", 0.0, "IDENTITY"),
+            ],
+            &[
+                synapse_json("input-0", "output-0", 1.0),
+                synapse_json("const-one", "output-0", 0.5),
+            ],
+        );
+        let creature = parse_creature_json(&json).expect("parses");
+        assert_eq!(creature.neurons[0].squash, None);
+        let mut net = compile_creature(&creature).expect("compiles");
+        // bias 1.0 through weight 0.5 plus the input passed straight through.
+        assert_eq!(net.activate(&[2.0], 1)[0], 2.5);
     }
 
     #[test]

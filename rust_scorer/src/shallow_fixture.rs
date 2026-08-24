@@ -194,8 +194,14 @@ mod tests {
 
     #[test]
     fn shallow_creature_input_hidden_edges_are_distinct() {
-        // Regression guard: duplicate (input, hidden) pairs would let neat_core
-        // merge edges and silently shrink the synapse count, corrupting the A/B.
+        // Regression guard: the hidden neurons here carry point-wise squashes,
+        // which sum their inward synapses regardless of role — so two edges
+        // from one source are exactly one with the summed weight. That stays a
+        // `TypedDuplicateSynapse` refusal from `compile_creature` after
+        // NEAT-AI-core#577 relaxed the key to `(from, to, type)`: the relaxation
+        // covers `IF` targets only (Issue #581). A duplicate pair here would
+        // therefore fail the whole A/B rather than shrink it silently, and this
+        // guard names the offending edge instead.
         let json = shallow_creature_json(ENC_INPUTS, 1, ENC_HIDDEN, ENC_SYNAPSES);
         let creature = parse_creature_json(&json).expect("parse");
         let mut seen = std::collections::HashSet::new();

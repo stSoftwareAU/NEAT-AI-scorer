@@ -17,6 +17,34 @@ section to the released version with its date.
 
 ### Added
 
+- **Parity guard for `(from, to, type)`-keyed synapses (Issue #581).**
+  `neat-core` 0.10.6 (NEAT-AI-core#577) relaxed the duplicate-synapse rule so one
+  source may feed an `IF` neuron through more than one role — the contribution
+  that must apply whichever way the node branches no longer needs an `IDENTITY`
+  relay purely to be a second distinct source. This engine already scored that
+  shape correctly, and the behaviour is now **pinned rather than assumed**. New
+  `rust_scorer/src/dual_role_fixture.rs` builds the relay-free creature (one
+  constant carrying all three roles, one input column carrying both branches),
+  the pre-#577 relay workaround describing the same function, the creature a
+  `(from, to)`-keyed loader is left holding, and the two shapes that must still
+  be refused (a repeated pair into a point-wise target; an exact repeated
+  triple). New `rust_scorer/tests/dual_role_parity.rs` asserts the synapse count
+  is identical in the raw JSON, the parsed export and the compiled network — the
+  Rust-side spelling of the `jsonSynapses === loadedSynapses` assertion
+  `NEAT-AI-Forests`' `ts_parity.rs` makes against `Creature.scoreDir` — that the
+  relaxed and relay forms activate bit-identically and score identically through
+  the real directory pipeline, that the dropped-edge creature scores
+  *differently* (so the guard cannot pass vacuously), and that both GPU kernels
+  agree with CPU within the `1e-3` cross-backend tolerance. Also new:
+  `fixture_json::constant_neuron_json`, which omits the `"squash"` key that
+  NEAT-AI's TypeScript loader refuses on a constant, so a fixture stays loadable
+  by both engines. No production scorer code changed — nothing in the scoring
+  path keys synapses by `(from, to)`. Fixture comments in `if_tree_fixture.rs`
+  and `shallow_fixture.rs` that stated the `(from, to)` rule as fact now record
+  it as the TypeScript loader's key (NEAT-AI#3873 is still open), with the
+  three-separate-constants split kept as a deliberate both-engines choice rather
+  than a requirement.
+
 - **Directory mode scores `forwardOnly: false` (recurrent) creatures
   (Issue #579).** The load-time guard in
   `rust_scorer/src/multi_score.rs` that rejected any creature directory
