@@ -34,7 +34,7 @@ use crate::cost::CostKind;
 use crate::creature_width::validate_creature_width;
 use crate::gpu::{GpuBackendLabel, GpuMode, ScoringPath};
 use crate::host_report::{DEFAULT_REPORT_RECORD_BYTES, HostReport};
-use crate::multi_score::{score_from_creature_dir_gpu_sampled, score_from_creature_dir_sampled};
+use crate::multi_score::{DirectoryScores, score_from_creature_dir_gpu_sampled};
 use crate::read_tuning::{
     training_read_backend_label, training_read_target_bytes_from_env_for_readers,
 };
@@ -232,6 +232,10 @@ enum RunOutput {
     // (one heap pointer) and stays small.
     Single(Box<ScoreResult>),
     Multi(BTreeMap<String, ScoreResult>),
+    // GRQ#4387: the isolating CPU directory path. Serialises to the same flat
+    // stem-keyed object as `Multi`, with an offender entry in place of the
+    // `ScoreResult` of any creature the scorer could not score.
+    MultiIsolated(DirectoryScores),
     // Issue #545: `--host-report` scores nothing and prints the knob diagnostic.
     // Boxed for the same reason as `Single`: Issue #549 added the
     // `file_read_workers` knob, which pushed the inline payload over clippy's
@@ -430,14 +434,19 @@ fn run(cli: &Cli) -> Result<RunOutput, String> {
         // could not host the creature set, or the path is not GPU-default),
         // or the mode is Off. Report `cpu-fallback` so `gpuBackend` reflects
         // what actually ran (Issue #83).
-        score_from_creature_dir_sampled(
+        // GRQ#4387: the CPU path isolates per-creature faults — one creature
+        // that will not parse, load, compile or score is reported as its own
+        // entry and the rest of the directory is still scored. The GPU legs
+        // above keep the strict contract: they have no per-creature reporting
+        // seam, and `auto` already falls through to this path on any error.
+        multi_score::score_from_creature_dir_isolated(
             creature_path,
             data_path,
             GpuBackendLabel::CpuFallback,
             cli.cost,
             &sample,
         )
-        .map(RunOutput::Multi)
+        .map(RunOutput::MultiIsolated)
     } else {
         let creature_json = fs::read_to_string(creature_path).map_err(|e| {
             format!(
@@ -652,11 +661,25 @@ fn score_from_json(
     })
 }
 
+/// Exit status when the run itself failed and no scores were produced.
+pub const EXIT_RUN_FAILED: i32 = 1;
+
+/// Exit status when the batch completed but at least one creature in the
+/// directory could not be scored (GRQ#4387).
+///
+/// Distinct from [`EXIT_RUN_FAILED`] on purpose: stdout still carries a
+/// complete JSON map, so a batch caller can take the scores it did get and
+/// quarantine the named offenders, instead of throwing the generation away.
+/// A caller that does not know this code sees a non-zero exit and behaves
+/// exactly as it did before — the pre-GRQ#4387 whole-batch failure.
+pub const EXIT_CREATURE_FAILURES: i32 = 3;
+
 /// Entry point for the `rust_scorer` binary: parse argv, score, print JSON.
 ///
-/// Exits the process with status `1` (after an `Error: ...` line on stderr) when
-/// scoring or serialisation fails, so the CLI contract is unchanged from when
-/// this lived in `src/main.rs`.
+/// Exits the process with [`EXIT_RUN_FAILED`] (after an `Error: ...` line on
+/// stderr) when scoring or serialisation fails, and with
+/// [`EXIT_CREATURE_FAILURES`] when the JSON on stdout is complete but names at
+/// least one creature that could not be scored.
 pub fn main() {
     let cli = Cli::parse();
 
@@ -664,19 +687,43 @@ pub fn main() {
     // `eprintln!("Error: ...")` + `exit(1)` path as scoring errors, instead of
     // panicking via `expect`. `serde_json` errors on non-finite floats, so a
     // malformed result must exit cleanly rather than abort the process.
+    let mut creature_failures = 0_usize;
     let output = run(&cli).and_then(|out| match out {
         RunOutput::Single(result) => serde_json::to_string_pretty(&result)
             .map_err(|e| format!("Failed to serialise result to JSON: {e}")),
         RunOutput::Multi(result_map) => serde_json::to_string_pretty(&result_map)
             .map_err(|e| format!("Failed to serialise multi-creature result to JSON: {e}")),
+        RunOutput::MultiIsolated(scores) => {
+            // GRQ#4387: name every offender on stderr as well as in the JSON.
+            // The wording is the scorer's own, unchanged from the aborting
+            // path, so consumers that scrape stderr for the offending file
+            // keep working against the isolating scorer.
+            for (key, failure) in &scores.failed {
+                eprintln!("[creature-failed] {key}: {}", failure.message);
+            }
+            creature_failures = scores.failed.len();
+            serde_json::to_string_pretty(&scores)
+                .map_err(|e| format!("Failed to serialise multi-creature result to JSON: {e}"))
+        }
         RunOutput::Host(report) => report.to_json(),
     });
 
     match output {
-        Ok(json) => println!("{json}"),
+        Ok(json) => {
+            println!("{json}");
+            if creature_failures > 0 {
+                // Fail loud: the batch is not clean, and the caller must not
+                // reconcile a partial generation to a green run.
+                eprintln!(
+                    "Error: {creature_failures} creature(s) in the directory could not be scored; \
+                     their stems carry a `failed` entry in the JSON on stdout"
+                );
+                process::exit(EXIT_CREATURE_FAILURES);
+            }
+        }
         Err(e) => {
             eprintln!("Error: {e}");
-            process::exit(1);
+            process::exit(EXIT_RUN_FAILED);
         }
     }
 }
@@ -687,8 +734,9 @@ mod tests {
     fn run_single(cli: &Cli) -> Result<ScoreResult, String> {
         match run(cli)? {
             RunOutput::Single(result) => Ok(*result),
-            RunOutput::Multi(_) => Err("Expected single-creature output".to_string()),
-            RunOutput::Host(_) => Err("Expected single-creature output".to_string()),
+            RunOutput::Multi(_) | RunOutput::MultiIsolated(_) | RunOutput::Host(_) => {
+                Err("Expected single-creature output".to_string())
+            }
         }
     }
 

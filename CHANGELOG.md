@@ -15,6 +15,44 @@ section to the released version with its date.
 
 ## [Unreleased]
 
+### Changed
+
+- **Directory mode isolates the offending creature instead of failing the whole
+  batch (GRQ#4387).** One `.json` that would not parse, would not compile,
+  disagreed with the batch shape, or produced numbers the score maths refuses
+  used to abort the run — nothing on stdout, exit 1, every other creature's
+  score lost. GRQ-25 lost 23 creatures' scores to one duplicate-synapse
+  creature that way. Directory mode now scores everything it can and reports
+  each offender under its own filename stem as an entry carrying
+  `failed: true`, a machine-readable `reason`
+  (`READ` / `PARSE` / `WIDTH` / `SHAPE` / `COMPILE` / `SCORE`) and the scorer's
+  own message. stdout stays a complete JSON map, every offender is also named
+  on stderr as `[creature-failed] <stem>: <message>`, and the process exits the
+  new `EXIT_CREATURE_FAILURES` (**3**) — distinguishable from `EXIT_RUN_FAILED`
+  (**1**). A consumer that does not know exit 3 still sees a non-zero exit and
+  behaves exactly as before.
+
+  The `#3815` boundary is intact: "score the rest" is not "quietly score
+  fewer". An offender never receives a fabricated score, and a directory in
+  which *no* creature survived is still exit 1 with no JSON — including the
+  Issue #571 width guard, which still fires before the training corpus is
+  touched when the widthless creature is the only one there.
+
+  New public API: `multi_score::score_from_creature_dir_isolated` returns
+  `DirectoryScores { scored, failed }`. `score_from_creature_dir`,
+  `score_from_creature_dir_sampled` and `score_from_creature_dir_with_early_exit`
+  keep the strict, first-offender-aborts contract byte for byte, as do the GPU
+  directory legs. Pinned by `rust_scorer/tests/directory_mode_isolates_offenders.rs`.
+
+  **Test changed, deliberately:**
+  `input_output_width_guard.rs::directory_path_rejects_zero_input_before_reading_data`
+  became `directory_path_isolates_a_zero_input_creature_and_never_scores_it`. Its
+  directory holds a scorable creature alongside the widthless one, so the batch
+  no longer aborts; the test now pins that the offender is named, is never
+  scored, and does not cost its sibling a score.
+  `directory_path_rejects_zero_output_before_reading_data` — the widthless
+  creature alone — is unchanged and still pins the before-any-data guard.
+
 ### Added
 
 - **Parity guard for `(from, to, type)`-keyed synapses (Issue #581).**

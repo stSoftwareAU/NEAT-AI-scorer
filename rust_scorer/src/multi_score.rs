@@ -169,6 +169,163 @@ struct LoadedCreature {
     creature: CreatureExport,
 }
 
+/// Why one creature in a directory could not be scored (GRQ#4387).
+///
+/// Every variant is a fault of **that one file** — never of the run — so the
+/// directory path isolates it and scores the rest of the batch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum CreatureFailureKind {
+    /// The `.json` file could not be read off disk.
+    Read,
+    /// The bytes are not a parseable creature export.
+    Parse,
+    /// `input` / `output` failed the observation-width guard (Issue #571).
+    Width,
+    /// The creature's `(input, output)` disagrees with the rest of the batch.
+    Shape,
+    /// `compile_creature` refused the topology (e.g. a duplicate synapse).
+    Compile,
+    /// Scoring produced a value the score maths refuses (NaN, negative error).
+    Score,
+}
+
+/// One creature that could not be scored, emitted in place of its
+/// [`ScoreResult`] so the rest of the directory still reports scores
+/// (GRQ#4387).
+///
+/// `failed: true` is the discriminator batch consumers branch on: a
+/// [`ScoreResult`] never carries it, so an entry with `failed` is
+/// unambiguously an offender rather than a creature that merely scored badly.
+/// `message` is the scorer's own wording — the same string the pre-GRQ#4387
+/// whole-batch abort printed — so stderr-scraping consumers keep working.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreatureFailure {
+    /// Always `true`. Present so a consumer can tell an offender entry from a
+    /// score entry without knowing the full `ScoreResult` field set.
+    pub failed: bool,
+    /// Machine-readable classification of the fault.
+    pub reason: CreatureFailureKind,
+    /// Human-readable detail, naming the offending file.
+    pub message: String,
+}
+
+impl CreatureFailure {
+    fn new(reason: CreatureFailureKind, message: String) -> Self {
+        Self {
+            failed: true,
+            reason,
+            message,
+        }
+    }
+}
+
+/// Outcome of an isolating directory-mode run (GRQ#4387).
+///
+/// `scored` holds every creature the scorer could score; `failed` holds the
+/// offenders in discovery order (load order first, then compile, then score).
+/// The two key sets are disjoint and together cover every `.json` file in the
+/// directory, so the serialised map is always complete — a consumer never has
+/// to guess why a stem went missing.
+#[derive(Debug, Default)]
+pub struct DirectoryScores {
+    /// Creatures that scored, keyed by filename stem.
+    pub scored: BTreeMap<String, ScoreResult>,
+    /// Offenders in discovery order: `(filename stem, failure)`.
+    pub failed: Vec<(String, CreatureFailure)>,
+}
+
+impl DirectoryScores {
+    /// True when at least one creature in the directory could not be scored.
+    pub fn has_failures(&self) -> bool {
+        !self.failed.is_empty()
+    }
+}
+
+impl serde::Serialize for DirectoryScores {
+    /// Serialise as one flat JSON object keyed by stem, mixing score entries
+    /// and offender entries. Emitting a single map (rather than two nested
+    /// ones) keeps the directory-mode stdout contract unchanged for every
+    /// creature that scored.
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeMap;
+        let mut map = serializer.serialize_map(Some(self.scored.len() + self.failed.len()))?;
+        for (key, value) in &self.scored {
+            map.serialize_entry(key, value)?;
+        }
+        for (key, value) in &self.failed {
+            map.serialize_entry(key, value)?;
+        }
+        map.end()
+    }
+}
+
+/// Collects per-creature faults, or — in strict mode — turns the first one
+/// into the run's error.
+///
+/// The two directory-mode contracts differ *only* in what happens at each
+/// isolation point, so both run the same code path and this sink decides.
+/// Strict mode therefore keeps the pre-GRQ#4387 ordering exactly: a bad
+/// creature still aborts before the training corpus is touched.
+struct FailureSink {
+    isolate: bool,
+    failed: Vec<(String, CreatureFailure)>,
+}
+
+impl FailureSink {
+    fn isolating() -> Self {
+        Self {
+            isolate: true,
+            failed: Vec::new(),
+        }
+    }
+
+    fn strict() -> Self {
+        Self {
+            isolate: false,
+            failed: Vec::new(),
+        }
+    }
+
+    /// Record one creature's fault. Returns `Err(message)` under strict mode so
+    /// the caller's `?` aborts the run, exactly as it did before isolation.
+    fn record(
+        &mut self,
+        key: &str,
+        reason: CreatureFailureKind,
+        message: String,
+    ) -> Result<(), String> {
+        if !self.isolate {
+            return Err(message);
+        }
+        self.failed
+            .push((key.to_string(), CreatureFailure::new(reason, message)));
+        Ok(())
+    }
+}
+
+/// Wording for a run that lost every creature: the first offender's message,
+/// which is exactly what the pre-GRQ#4387 aborting path reported.
+fn first_failure_message(failed: &[(String, CreatureFailure)]) -> String {
+    match failed.first() {
+        Some((_, failure)) => failure.message.clone(),
+        // Unreachable: the loader errors on an empty directory, so an empty
+        // survivor list always comes with at least one recorded offender.
+        None => "No creature in the directory could be scored".to_string(),
+    }
+}
+
+/// Collapse an isolating run back to the strict, pre-GRQ#4387 contract: the
+/// first offender in discovery order becomes the whole run's error, with the
+/// exact wording the aborting path used.
+fn strict_scores(scores: DirectoryScores) -> Result<BTreeMap<String, ScoreResult>, String> {
+    match scores.failed.first() {
+        Some((_, failure)) => Err(failure.message.clone()),
+        None => Ok(scores.scored),
+    }
+}
+
 /// Partition `n_records` packed records into `workers` ranges over the
 /// flat float buffer. Each returned range is a half-open `[start, end)` over
 /// the f32 slice. `workers` must be in `[1, n_records]`.
@@ -192,7 +349,26 @@ fn partition_packed_record_ranges(
     out
 }
 
+/// Strict loader: the first bad creature fails the whole directory.
+///
+/// Kept for the GPU pre-flight and topology probes, which have no way to
+/// report a per-creature offender. The isolating scoring path uses
+/// [`load_creatures_from_dir_isolated`].
 fn load_creatures_from_dir(creatures_dir: &Path) -> Result<Vec<LoadedCreature>, String> {
+    load_creatures_from_dir_into(creatures_dir, &mut FailureSink::strict())
+}
+
+/// Load every `.json` creature in `creatures_dir`, routing per-file faults
+/// through `sink` (GRQ#4387).
+///
+/// Only **run-level** faults — the path is not a directory, the directory
+/// cannot be read, it holds no `.json` file at all, or a file has no usable
+/// filename stem — fail the whole load outright, because none of them can be
+/// attributed to one creature the caller could drop.
+fn load_creatures_from_dir_into(
+    creatures_dir: &Path,
+    sink: &mut FailureSink,
+) -> Result<Vec<LoadedCreature>, String> {
     if !creatures_dir.is_dir() {
         return Err(format!(
             "Creature path '{}' is not a directory",
@@ -222,8 +398,9 @@ fn load_creatures_from_dir(creatures_dir: &Path) -> Result<Vec<LoadedCreature>, 
     let mut loaded = Vec::with_capacity(json_paths.len());
 
     for path in json_paths {
-        let creature_json = fs::read_to_string(&path)
-            .map_err(|e| format!("Failed to read creature file '{}': {e}", path.display()))?;
+        // The stem is the map key every report — score or failure — is filed
+        // under, so a file without one cannot be isolated: it stays a
+        // run-level error.
         let key = path
             .file_stem()
             .and_then(|s| s.to_str())
@@ -237,13 +414,42 @@ fn load_creatures_from_dir(creatures_dir: &Path) -> Result<Vec<LoadedCreature>, 
             })?
             .to_string();
 
-        let creature = parse_creature_json(&creature_json)
-            .map_err(|e| format!("Failed parsing creature '{}': {e}", path.display()))?;
+        let creature_json = match fs::read_to_string(&path) {
+            Ok(json) => json,
+            Err(e) => {
+                sink.record(
+                    &key,
+                    CreatureFailureKind::Read,
+                    format!("Failed to read creature file '{}': {e}", path.display()),
+                )?;
+                continue;
+            }
+        };
+
+        let creature = match parse_creature_json(&creature_json) {
+            Ok(creature) => creature,
+            Err(e) => {
+                sink.record(
+                    &key,
+                    CreatureFailureKind::Parse,
+                    format!("Failed parsing creature '{}': {e}", path.display()),
+                )?;
+                continue;
+            }
+        };
+
         // Issue #571: the top-level counts are the observation width; a
-        // `< 1` count fails the whole directory load before any training
-        // file is opened (no fallback, no re-derivation from `neurons`).
-        validate_creature_width(&creature)
-            .map_err(|e| format!("Creature '{}': {e}", path.display()))?;
+        // `< 1` count is never re-derived from `neurons` and never defaulted.
+        // GRQ#4387 narrowed the blast radius from the whole directory to this
+        // one file — the guard itself is unchanged.
+        if let Err(e) = validate_creature_width(&creature) {
+            sink.record(
+                &key,
+                CreatureFailureKind::Width,
+                format!("Creature '{}': {e}", path.display()),
+            )?;
+            continue;
+        }
         // Issue #579: `forwardOnly=false` is accepted here. The per-chunk hot
         // loop threads each creature's own flag into `accumulate_cost_sum`, so
         // a recurrent creature is scored with the per-record state reset the
@@ -256,22 +462,31 @@ fn load_creatures_from_dir(creatures_dir: &Path) -> Result<Vec<LoadedCreature>, 
         });
     }
 
-    let first = loaded
-        .first()
-        .expect("checked non-empty creature file list while loading");
-    let expected_in = first.creature.input;
-    let expected_out = first.creature.output;
-    for c in loaded.iter().skip(1) {
-        if c.creature.input != expected_in || c.creature.output != expected_out {
-            return Err(format!(
-                "Creature '{}' has input/output=({},{}) but expected ({},{}); all creatures in directory mode must share the same shape",
-                c.path.display(),
-                c.creature.input,
-                c.creature.output,
-                expected_in,
-                expected_out
-            ));
+    // The batch shape is defined by the first creature that loaded; any
+    // creature disagreeing with it is the offender, not the batch.
+    if let Some(first) = loaded.first() {
+        let expected_in = first.creature.input;
+        let expected_out = first.creature.output;
+        let mut kept = Vec::with_capacity(loaded.len());
+        for c in loaded.drain(..) {
+            if c.creature.input == expected_in && c.creature.output == expected_out {
+                kept.push(c);
+                continue;
+            }
+            sink.record(
+                &c.key,
+                CreatureFailureKind::Shape,
+                format!(
+                    "Creature '{}' has input/output=({},{}) but expected ({},{}); all creatures in directory mode must share the same shape",
+                    c.path.display(),
+                    c.creature.input,
+                    c.creature.output,
+                    expected_in,
+                    expected_out
+                ),
+            )?;
         }
+        loaded = kept;
     }
 
     Ok(loaded)
@@ -462,14 +677,83 @@ pub fn score_from_creature_dir(
 ) -> Result<BTreeMap<String, ScoreResult>, String> {
     // No callback registered → behaviour and scores are identical to before the
     // early-exit surface landed (Issue #308). Full-rate sampling (Issue #310).
-    score_from_creature_dir_cpu(
+    strict_scores(score_from_creature_dir_cpu(
         creatures_dir,
         data_path,
         gpu_backend,
         cost,
         None,
         &SampleSpec::full(),
-    )
+        &mut FailureSink::strict(),
+    )?)
+}
+
+/// GRQ#4387 — isolating variant of [`score_from_creature_dir_sampled`].
+///
+/// Scores every creature the scorer *can* score and reports the ones it cannot
+/// as [`CreatureFailure`] entries keyed by the same filename stem, instead of
+/// failing the whole directory on the first offender. One creature that will
+/// not compile therefore costs one creature's score, not the batch's.
+///
+/// `Err` is still returned for genuine **run-level** faults — an unreadable
+/// creature directory, a missing or empty training corpus, a misaligned
+/// `.bin`, an undispatchable cost — and for the degenerate case where *no*
+/// creature survived, which is a dead run rather than an isolable offender.
+///
+/// # Examples
+///
+/// ```no_run
+/// use std::path::Path;
+/// use rust_scorer::cost::CostKind;
+/// use rust_scorer::gpu::GpuBackendLabel;
+/// use rust_scorer::multi_score::score_from_creature_dir_isolated;
+/// use rust_scorer::sampling::SampleSpec;
+///
+/// let scores = score_from_creature_dir_isolated(
+///     Path::new("creatures/"),
+///     Path::new("training_data/"),
+///     GpuBackendLabel::CpuFallback,
+///     CostKind::Mse,
+///     &SampleSpec::full(),
+/// )
+/// .unwrap();
+/// for (id, failure) in &scores.failed {
+///     eprintln!("{id} was not scored: {}", failure.message);
+/// }
+/// ```
+pub fn score_from_creature_dir_isolated(
+    creatures_dir: &Path,
+    data_path: &Path,
+    gpu_backend: GpuBackendLabel,
+    cost: CostKind,
+    sample: &SampleSpec,
+) -> Result<DirectoryScores, String> {
+    let mut sink = FailureSink::isolating();
+    let run = score_from_creature_dir_cpu(
+        creatures_dir,
+        data_path,
+        gpu_backend,
+        cost,
+        None,
+        sample,
+        &mut sink,
+    );
+    match run {
+        Ok(scores) => Ok(scores),
+        // A run-level fault after offenders were already isolated (a missing
+        // corpus, say) would otherwise swallow their names, and a fault that
+        // nothing reports is the failure mode this change exists to remove.
+        Err(e) if !sink.failed.is_empty() => Err(format!(
+            "{e} [{} creature(s) already isolated: {}]",
+            sink.failed.len(),
+            sink.failed
+                .iter()
+                .map(|(_, failure)| failure.message.as_str())
+                .collect::<Vec<_>>()
+                .join("; "),
+        )),
+        Err(e) => Err(e),
+    }
 }
 
 /// Issue #310 — record-level sub-sampling variant of
@@ -489,7 +773,15 @@ pub fn score_from_creature_dir_sampled(
     cost: CostKind,
     sample: &SampleSpec,
 ) -> Result<BTreeMap<String, ScoreResult>, String> {
-    score_from_creature_dir_cpu(creatures_dir, data_path, gpu_backend, cost, None, sample)
+    strict_scores(score_from_creature_dir_cpu(
+        creatures_dir,
+        data_path,
+        gpu_backend,
+        cost,
+        None,
+        sample,
+        &mut FailureSink::strict(),
+    )?)
 }
 
 /// Issue #308 — directory-mode batch scoring with a per-chunk early-exit hook.
@@ -551,14 +843,15 @@ pub fn score_from_creature_dir_with_early_exit<F>(
 where
     F: FnMut(&[PartialScore]) -> EarlyExit,
 {
-    score_from_creature_dir_cpu(
+    strict_scores(score_from_creature_dir_cpu(
         creatures_dir,
         data_path,
         gpu_backend,
         cost,
         Some(&mut on_chunk),
         &SampleSpec::full(),
-    )
+        &mut FailureSink::strict(),
+    )?)
 }
 
 /// Shared CPU directory-mode implementation behind [`score_from_creature_dir`]
@@ -583,9 +876,21 @@ fn score_from_creature_dir_cpu(
     // Issue #310 — record-level sub-sampling. `SampleSpec::full()` restores the
     // pre-#310 full-corpus behaviour exactly.
     sample: &SampleSpec,
-) -> Result<BTreeMap<String, ScoreResult>, String> {
+    // GRQ#4387: `strict` reproduces the pre-isolation contract byte for byte —
+    // the first per-creature fault becomes the run's error, at the same point
+    // in the sequence it always did. `isolating` collects them instead.
+    sink: &mut FailureSink,
+) -> Result<DirectoryScores, String> {
     let started = Instant::now();
-    let loaded = load_creatures_from_dir(creatures_dir)?;
+    let mut loaded = load_creatures_from_dir_into(creatures_dir, sink)?;
+
+    // GRQ#4387: isolation only has meaning while something survives to be
+    // scored. With every creature rejected there is no batch left to protect,
+    // so the run fails loud with the first offender's own wording — and, as
+    // before Issue #571's guard was isolated, without touching the corpus.
+    if loaded.is_empty() {
+        return Err(first_failure_message(&sink.failed));
+    }
 
     if !data_path.is_dir() {
         return Err(format!(
@@ -624,6 +929,43 @@ fn score_from_creature_dir_cpu(
     let fused_read_buf_len = effective_fused_read_buf_len(record_bytes, fused_read_target_bytes);
     let training_read_backend = training_read_backend_label().to_string();
     let activation_threads = activation_worker_count_for_scorer();
+
+    // Issue #42: compile each creature exactly once; clone the resulting
+    // `CompiledNetwork` for any additional workers. `CompiledNetwork: Clone`
+    // landed upstream (NEAT-AI-core#11), so a clone is functionally equivalent
+    // to a second `compile_creature` call but skips JSON-graph traversal,
+    // UUID resolution, and topological ordering. For 50 creatures × 16
+    // workers this collapses 800 compiles into 50.
+    //
+    // GRQ#4387: compiling *before* the worker partition is what lets one
+    // uncompilable creature be dropped — the partition is then sized to the
+    // creatures that actually survived, instead of reserving worker slots for
+    // a creature there is no network for.
+    let compile_started = Instant::now();
+    let mut templates: Vec<CompiledNetwork> = Vec::with_capacity(loaded.len());
+    let mut compiled: Vec<LoadedCreature> = Vec::with_capacity(loaded.len());
+    for c in loaded.drain(..) {
+        compile_probe::record_compile();
+        match compile_creature(&c.creature) {
+            Ok(template) => {
+                templates.push(template);
+                compiled.push(c);
+            }
+            Err(e) => sink.record(
+                &c.key,
+                CreatureFailureKind::Compile,
+                format!(
+                    "Failed compiling worker network for creature '{}': {e}",
+                    c.path.display()
+                ),
+            )?,
+        }
+    }
+    let compile_time_secs = compile_started.elapsed().as_secs_f64();
+    let loaded = compiled;
+    if loaded.is_empty() {
+        return Err(first_failure_message(&sink.failed));
+    }
 
     // Issue #41: build a flat pool of worker networks sized to
     // `activation_threads`. Each chunk runs a single `par_iter_mut` over this
@@ -665,29 +1007,17 @@ fn score_from_creature_dir_cpu(
         }
     }
 
-    // Issue #42: compile each creature exactly once; clone the resulting
-    // `CompiledNetwork` for any additional workers. `CompiledNetwork: Clone`
-    // landed upstream (NEAT-AI-core#11), so a clone is functionally equivalent
-    // to a second `compile_creature` call but skips JSON-graph traversal,
-    // UUID resolution, and topological ordering. For 50 creatures × 16
-    // workers this collapses 800 compiles into 50.
-    let compile_started = Instant::now();
+    // Fan each creature's single compiled template out to its worker slots.
+    // The clones are the cheap half of Issue #42; the compile itself already
+    // ran above, before the partition was sized.
     let mut flat_networks: Vec<CompiledNetwork> = Vec::with_capacity(total_workers);
-    for (ci, c) in loaded.iter().enumerate() {
-        compile_probe::record_compile();
-        let template = compile_creature(&c.creature).map_err(|e| {
-            format!(
-                "Failed compiling worker network for creature '{}': {e}",
-                c.path.display()
-            )
-        })?;
+    for (ci, template) in templates.into_iter().enumerate() {
         let workers = workers_per[ci];
         for _ in 0..workers.saturating_sub(1) {
             flat_networks.push(template.clone());
         }
         flat_networks.push(template);
     }
-    let compile_time_secs = compile_started.elapsed().as_secs_f64();
 
     // Issue #121: validate that the requested cost is dispatchable before
     // entering the I/O loop. The probe uses an empty chunk — all supported
@@ -897,7 +1227,9 @@ fn score_from_creature_dir_cpu(
         if scored == 0 {
             // Defensive: the callback only ever sees a creature after ≥1 record,
             // so a zero here would mean an internal accounting bug — fail loud
-            // rather than divide by zero (Issue #3234).
+            // rather than divide by zero (Issue #3234). Deliberately *not*
+            // isolated by GRQ#4387: this is the scorer's own bookkeeping
+            // breaking, not one creature being bad.
             return Err(format!(
                 "Creature '{}' was scored against zero records",
                 loaded_creature.path.display()
@@ -906,23 +1238,38 @@ fn score_from_creature_dir_cpu(
         // Issue #339: shared finaliser — RMSE takes a host-side `sqrt` of the
         // mean here, reusing the MSE squared-error sum unchanged.
         let avg_error = cost.finalise_mean(total_mse[ci], scored);
-        // Issue #289: the scoring API now returns the typed `ScoringError`;
-        // flatten to this module's `String` error contract at the boundary.
-        let components =
-            compute_score_components(&loaded_creature.creature).map_err(|e| e.to_string())?;
+        // Issue #289: the scoring API returns the typed `ScoringError`; flatten
+        // it to this module's `String` contract. GRQ#4387: a creature whose own
+        // numbers the score maths refuses (NaN / non-finite / negative error,
+        // an impossible complexity) is that creature's fault, so it is reported
+        // as an offender rather than aborting everyone else's scores.
+        let scored_entry = compute_score_components(&loaded_creature.creature)
+            .map_err(|e| e.to_string())
+            .and_then(|components| {
+                let penalty =
+                    complexity_penalty(&components, GROWTH_COST).map_err(|e| e.to_string())?;
+                let score = calculate_score(
+                    avg_error,
+                    &components,
+                    GROWTH_COST,
+                    loaded_creature.creature.semantic_version.as_deref(),
+                )
+                .map_err(|e| e.to_string())?;
+                Ok((components, penalty, score))
+            });
+        let (components, complexity_penalty, score) = match scored_entry {
+            Ok(parts) => parts,
+            Err(e) => {
+                sink.record(
+                    &loaded_creature.key,
+                    CreatureFailureKind::Score,
+                    format!("Creature '{}': {e}", loaded_creature.path.display()),
+                )?;
+                continue;
+            }
+        };
         let hidden_neurons = components.hidden_neuron_count;
         let synapse_count = components.synapse_count;
-
-        let complexity_penalty =
-            complexity_penalty(&components, GROWTH_COST).map_err(|e| e.to_string())?;
-
-        let score = calculate_score(
-            avg_error,
-            &components,
-            GROWTH_COST,
-            loaded_creature.creature.semantic_version.as_deref(),
-        )
-        .map_err(|e| e.to_string())?;
 
         results.insert(
             loaded_creature.key.clone(),
@@ -957,7 +1304,14 @@ fn score_from_creature_dir_cpu(
         );
     }
 
-    Ok(results)
+    if results.is_empty() {
+        return Err(first_failure_message(&sink.failed));
+    }
+
+    Ok(DirectoryScores {
+        scored: results,
+        failed: std::mem::take(&mut sink.failed),
+    })
 }
 
 /// Issue #180 — CPU-only pre-flight that decides whether a GPU kernel can host

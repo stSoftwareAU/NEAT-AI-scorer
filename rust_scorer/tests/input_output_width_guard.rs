@@ -128,27 +128,71 @@ fn creature_stdin_path_rejects_zero_input_before_reading_data() {
 // Multi-creature directory path (`rust_scorer <creatures_dir> <data_dir>`)
 // ---------------------------------------------------------------------------
 
+/// GRQ#4387 changed the blast radius of this guard, not the guard: a widthless
+/// creature sharing a directory with a scorable one no longer aborts the batch,
+/// it is isolated. What the guard still owes is that the widthless creature is
+/// **named** and is **never scored** — a fabricated score for a creature whose
+/// observation width was rejected is precisely what Issue #571 forbids.
+///
+/// The pre-GRQ#4387 assertion — that the guard fires before the data directory
+/// is even looked at — now belongs to the case where *no* creature survives; it
+/// is pinned by `directory_path_rejects_zero_output_before_reading_data` below,
+/// whose directory holds nothing but the widthless creature.
 #[test]
-fn directory_path_rejects_zero_input_before_reading_data() {
+fn directory_path_isolates_a_zero_input_creature_and_never_scores_it() {
     let tmp = tempfile::tempdir().unwrap();
     let creatures = tmp.path().join("creatures");
+    let data = tmp.path().join("data");
     std::fs::create_dir(&creatures).unwrap();
+    std::fs::create_dir(&data).unwrap();
     std::fs::write(creatures.join("ok.json"), creature_json(1, 1)).unwrap();
     std::fs::write(creatures.join("widthless.json"), creature_json(0, 1)).unwrap();
+    // One 1-input / 1-output record: 8 bytes.
+    std::fs::write(data.join("0.bin"), 0.5_f32.to_le_bytes().repeat(2)).unwrap();
 
     for gpu in ["off", "auto"] {
         let output = Command::new(scorer_bin())
             .arg("--gpu")
             .arg(gpu)
             .arg(&creatures)
-            .arg(missing_data_dir(tmp.path()))
+            .arg(&data)
             .output()
             .expect("spawn scorer");
-        assert_rejected_before_data(&output, INPUT_ZERO_MSG);
+
         let stderr = String::from_utf8_lossy(&output.stderr);
+        assert_eq!(
+            output.status.code(),
+            Some(3),
+            "an isolated offender must exit 3 (batch partly failed), got stderr:\n{stderr}"
+        );
+        assert!(
+            stderr.contains(INPUT_ZERO_MSG),
+            "stderr must carry the shared width error `{INPUT_ZERO_MSG}`, got:\n{stderr}"
+        );
         assert!(
             stderr.contains("widthless.json"),
             "directory mode must name the offending creature, got:\n{stderr}"
+        );
+
+        let parsed: serde_json::Value =
+            serde_json::from_slice(&output.stdout).expect("stdout must still be a JSON map");
+        let widthless = parsed.get("widthless").expect("offender must be reported");
+        assert_eq!(
+            widthless.get("failed").and_then(|v| v.as_bool()),
+            Some(true),
+            "the widthless creature must be an offender entry, got: {widthless}"
+        );
+        assert!(
+            widthless.get("score").is_none(),
+            "a widthless creature must never be handed a score, got: {widthless}"
+        );
+        assert!(
+            parsed
+                .get("ok")
+                .and_then(|e| e.get("score"))
+                .and_then(|v| v.as_f64())
+                .is_some(),
+            "the scorable creature must keep its score, got: {parsed}"
         );
     }
 }

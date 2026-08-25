@@ -134,6 +134,54 @@ rust_scorer <creature.json | creatures_dir> <training_data_dir>
 - `creature.json` path: scores one creature and returns the existing single-object output.
 - `creatures_dir` path: scores every `*.json` in that directory in one pass over training data and returns one JSON object keyed by each file's stem (filename without extension or folders).
 - Directory mode requires a matching `input` / `output` shape across all files. Since **Issue #579** it accepts `forwardOnly: false` creatures — see [Recurrent creatures in directory mode](#recurrent-creatures-in-directory-mode-issue-579) below.
+- Since **GRQ#4387** a creature that cannot be scored no longer takes the batch down — see [Per-creature failures in directory mode](#per-creature-failures-in-directory-mode-grq4387) below.
+
+### Per-creature failures in directory mode (GRQ#4387)
+
+One `.json` in the directory that will not parse, will not compile, disagrees
+with the batch shape, or whose numbers the score maths refuses used to abort the
+whole run: nothing on stdout, exit 1, every other creature's score lost. GRQ-25
+lost 23 creatures' scores to one duplicate-synapse creature that way.
+
+Directory mode now **isolates the offender**:
+
+- every creature that *can* be scored still is;
+- the offender keeps its place in the map under its own filename stem, as an
+  entry carrying `failed: true`, a machine-readable `reason`
+  (`READ` / `PARSE` / `WIDTH` / `SHAPE` / `COMPILE` / `SCORE`) and the scorer's
+  own message — never a score;
+- stdout stays a **complete** JSON map, so no stem silently disappears;
+- every offender is also named on stderr as `[creature-failed] <stem>: <message>`;
+- the process exits **3** — "the batch completed, some creatures did not" —
+  which is distinguishable from **1**, "the run failed".
+
+Isolation never quietly reconciles a dead batch to a green run. A directory in
+which *no* creature survived is still exit 1 with no JSON: there is no batch
+left to protect, so the first offender's message becomes the run's error, and
+the guards that fired before the training corpus was touched still do.
+
+```mermaid
+flowchart TD
+    L[load each *.json] --> P{parses, compiles,<br/>shares the batch shape?}
+    P -->|yes| S[score in the shared corpus pass]
+    P -->|no| F["failed: true entry<br/>keyed by stem"]
+    S --> M[one JSON map on stdout]
+    F --> M
+    M --> Any{any offender?}
+    Any -->|none| Zero[exit 0]
+    Any -->|some, and something scored| Three[exit 3]
+    Any -->|nothing scored| One[exit 1, no JSON]
+```
+
+Consumers that do not know exit 3 see a non-zero exit and behave exactly as they
+did before, so the change is safe in both directions across a version skew.
+
+The library keeps both contracts: `score_from_creature_dir_isolated` returns the
+`DirectoryScores` above, while `score_from_creature_dir`,
+`score_from_creature_dir_sampled` and `score_from_creature_dir_with_early_exit`
+keep the strict, first-offender-aborts behaviour byte for byte. The GPU
+directory legs are strict too — they have no per-creature reporting seam, and
+`--gpu auto` already falls through to the isolating CPU path on any error.
 
 ### Recurrent creatures in directory mode (Issue #579)
 
@@ -826,7 +874,7 @@ single positional argument (`<training_data_dir>`).
 
 Single-creature mode JSON includes **`forwardOnly`** (from the creature) and **`trainingReadBackend`**: on a native release build you should see **`pipelined_double_buffer`** when `forwardOnly` is `true` (fused scoring + `training_bin_stream`). If `forwardOnly` is `false`, you get **`record_iterator`** instead (no pipelining — much slower on large data). The **`gpuBackend`** field reports the `wgpu` backend that **actually ran** the scoring kernel — `"metal"`, `"vulkan"`, `"dx12"` or `"gl"` when a GPU hosted the run, and `"cpu-fallback"` when the CPU pipeline ran (see [GPU mode](#gpu-mode-issues-80--83) above for the routing rules). When record-level sub-sampling runs (`--sample-rate < 1`, see [Record-level sub-sampling](#record-level-sub-sampling----sample-rate-issue-310)) a **`sampleRate`** field echoes the effective rate and `recordCount` is the number of *sampled* records scored; the field is absent for a full-corpus run. **`compileTimeSecs`** (Issue #42) reports the wall-clock seconds spent in `compile_creature` — plus any per-worker `CompiledNetwork` clone — before scoring starts, so the fixed startup share of `timeTaken` can be told apart from scoring time; it is omitted when no compile timing was recorded.
 
-In directory mode, output is a top-level object keyed by creature filename stem, where each value has the same shape as a single-creature `ScoreResult`.
+In directory mode, output is a top-level object keyed by creature filename stem, where each value has the same shape as a single-creature `ScoreResult` — or, since GRQ#4387, an offender entry for a creature that could not be scored (see [Per-creature failures in directory mode](#per-creature-failures-in-directory-mode-grq4387)).
 
 ```json
 {
@@ -837,6 +885,11 @@ In directory mode, output is a top-level object keyed by creature filename stem,
   "creature-12-1": {
     "score": 0.9999998,
     "error": 0.0
+  },
+  "creature-13-1": {
+    "failed": true,
+    "reason": "COMPILE",
+    "message": "Failed compiling worker network for creature '/tmp/batch/creature-13-1.json': duplicate synapse input-7 -> hidden-2"
   }
 }
 ```
