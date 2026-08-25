@@ -102,11 +102,32 @@ impl std::fmt::Display for ScoringError {
 
 impl std::error::Error for ScoringError {}
 
+/// Decades of magnitude above 1.0 that span the useful range of a weight or
+/// bias. A value at or beyond `10^MAGNITUDE_DECADE_CAP` is treated as fully
+/// penalised — nothing in this domain needs a weight that large.
+pub const MAGNITUDE_DECADE_CAP: f64 = 12.0;
+
+/// `Number.MAX_SAFE_INTEGER`, the ceiling the TypeScript clamps magnitudes to.
+const MAX_SAFE_MAGNITUDE: f64 = 9_007_199_254_740_991.0;
+
+/// Cost of a fully-saturated magnitude penalty, as a multiple of `growth_cost`.
+///
+/// At the fleet's `growth_cost` of 1e-7 a fully-saturated creature pays 1e-5 of
+/// score. Raising this is the single knob that makes magnitude matter more
+/// relative to structure.
+pub const MAGNITUDE_COST: f64 = 100.0;
+
 /// Calculates a penalty value based on the magnitude of a weight or bias.
 ///
-/// Encourages smaller weights/biases. Returns 0 for values <= 1,
-/// and approaches (but never reaches) 1 for large values.
-/// Uses recursive logarithmic compression for very large values.
+/// Each **decade** of magnitude above 1.0 costs a constant amount, so growth is
+/// never free: `0.999 * log10(v) / MAGNITUDE_DECADE_CAP` up to the cap, then an
+/// asymptotic tail that approaches — but never reaches — 1.
+///
+/// The previous curve, `1 / (1 + 1/v)`, was already 0.990 at `v = 100` and
+/// 0.9999 at `v = 1000`, so beyond about two decades it could no longer tell a
+/// sensible weight from an absurd one. Weights across the fleet drifted to an
+/// average magnitude in the thousands, with individual values reaching 1e+195,
+/// because nothing in the score objected.
 ///
 /// Matches the TypeScript `valuePenalty()` in `src/architecture/Score.ts`.
 ///
@@ -124,6 +145,10 @@ impl std::error::Error for ScoringError {}
 /// // Larger magnitudes approach — but never reach — 1.0.
 /// let p = value_penalty(10.0).unwrap();
 /// assert!(p > 0.0 && p < 1.0);
+/// // Every decade costs the same, unlike the old saturating curve.
+/// let (a, b) = (value_penalty(10.0).unwrap(), value_penalty(100.0).unwrap());
+/// let (c, d) = (value_penalty(1e6).unwrap(), value_penalty(1e7).unwrap());
+/// assert!(((b - a) - (d - c)).abs() < 1e-12);
 /// // Negative input is rejected.
 /// assert!(value_penalty(-1.0).is_err());
 /// ```
@@ -140,28 +165,14 @@ pub fn value_penalty(value: f64) -> Result<f64, ScoringError> {
         return Err(ScoringError::NonFiniteValue { value });
     }
 
-    let primary_penalty = 1.0 / (1.0 + 1.0 / value);
+    let decades = value.log10();
+    let penalty = if decades < MAGNITUDE_DECADE_CAP {
+        0.999 * decades / MAGNITUDE_DECADE_CAP
+    } else {
+        // Asymptotic tail: monotonic, continuous at the cap, always < 1.
+        0.999 + 0.001 * (1.0 - MAGNITUDE_DECADE_CAP / decades)
+    };
 
-    if primary_penalty > 0.999 {
-        let compress_penalty = 0.999 + value_penalty(value.ln())? / 1000.0;
-        debug_assert!(
-            compress_penalty < 1.0,
-            "Compressed Penalty: {compress_penalty} is >= 1"
-        );
-        return Ok(compress_penalty);
-    }
-
-    debug_assert!(
-        primary_penalty < 1.0,
-        "Primary Penalty: {primary_penalty} is >= 1"
-    );
-    Ok(primary_penalty)
-}
-
-/// Calculates the combined weight/bias penalty from max and average absolute values.
-fn calculate_penalty(max: f64, avg: f64) -> Result<f64, ScoringError> {
-    let penalty = (value_penalty(max)? + value_penalty(avg)?) / 2.0;
-    debug_assert!(penalty.is_finite(), "Penalty: {penalty} is not finite");
     debug_assert!(penalty >= 0.0, "Penalty: {penalty} is negative");
     debug_assert!(penalty < 1.0, "Penalty: {penalty} is >= 1");
     Ok(penalty)
@@ -191,6 +202,15 @@ pub struct ScoreComponents {
     pub avg_weight_bias: f64,
     /// Sum of squash function complexity penalties for all non-input neurons.
     pub squash_complexity_penalty: f64,
+    /// Mean of [`value_penalty`] over **every** weight and bias.
+    ///
+    /// The magnitude term reads this rather than `(max, avg)`. Penalising the
+    /// max and the average gave the other ~38,000 values in a production
+    /// creature no gradient at all: growing a typical weight by a full decade
+    /// moved the score by ~1e-12, so evolution shaved the single largest weight
+    /// and let the body of the distribution drift. Averaging the per-value
+    /// penalty gives every weight and bias an equal say.
+    pub mean_value_penalty: f64,
 }
 
 /// Computes score components from a creature export.
@@ -247,6 +267,7 @@ pub fn compute_score_components(
     let mut total_weight_bias: f64 = 0.0;
     let mut count_weight_bias: usize = 0;
     let mut squash_penalty: f64 = 0.0;
+    let mut sum_value_penalty: f64 = 0.0;
 
     // Gather weight statistics from synapses
     for synapse in &creature.synapses {
@@ -263,6 +284,9 @@ pub fn compute_score_components(
         }
         total_weight_bias += w;
         count_weight_bias += 1;
+        // Clamped for the same reason the aggregates below are: a weight can
+        // reach 1e+195 before any guard sees it. Matches the TypeScript.
+        sum_value_penalty += value_penalty(w.min(MAX_SAFE_MAGNITUDE))?;
     }
 
     // Gather bias statistics and squash complexity from non-input neurons
@@ -279,6 +303,7 @@ pub fn compute_score_components(
         }
         total_weight_bias += b;
         count_weight_bias += 1;
+        sum_value_penalty += value_penalty(b.min(MAX_SAFE_MAGNITUDE))?;
 
         // Accumulate squash complexity
         let squash_name = neuron.squash.as_deref().unwrap_or("IDENTITY");
@@ -305,6 +330,12 @@ pub fn compute_score_components(
         0.0
     };
 
+    let mean_value_penalty = if count_weight_bias > 0 {
+        sum_value_penalty / count_weight_bias as f64
+    } else {
+        0.0
+    };
+
     let hidden_neuron_count = creature
         .neurons
         .iter()
@@ -317,6 +348,7 @@ pub fn compute_score_components(
         max_weight_bias: safe_max,
         avg_weight_bias,
         squash_complexity_penalty: squash_penalty,
+        mean_value_penalty,
     })
 }
 
@@ -330,9 +362,10 @@ pub fn compute_score_components(
 /// `complexityPenalty = hiddenNeurons * growthCost + synapses * growthCost / 10
 ///                      + (weightBiasPenalty + squashComplexityPenalty) * growthCost / 100`
 ///
-/// The weight/bias term routes through `calculate_penalty` (which validates
-/// finiteness), so every call site shares the same numerical behaviour and the
-/// same structured-error propagation (Issue #201).
+/// The magnitude term is `meanValuePenalty * growthCost * MAGNITUDE_COST` and
+/// carries its own coefficient rather than sharing the squash term's `/100`,
+/// which is what previously capped the whole magnitude contribution at 1e-9 of
+/// score on the fleet's `growth_cost`.
 ///
 /// # Examples
 ///
@@ -345,6 +378,7 @@ pub fn compute_score_components(
 ///     max_weight_bias: 1.5,
 ///     avg_weight_bias: 0.75,
 ///     squash_complexity_penalty: 0.0,
+///     mean_value_penalty: 0.0,
 /// };
 /// let penalty = complexity_penalty(&components, 0.01).unwrap();
 /// assert!(penalty > 0.0);
@@ -353,13 +387,17 @@ pub fn complexity_penalty(
     components: &ScoreComponents,
     growth_cost: f64,
 ) -> Result<f64, ScoringError> {
-    let weight_bias_penalty =
-        calculate_penalty(components.max_weight_bias, components.avg_weight_bias)?;
-    let total_penalty = weight_bias_penalty + components.squash_complexity_penalty;
-
-    Ok(components.hidden_neuron_count as f64 * growth_cost
+    let penalty = components.hidden_neuron_count as f64 * growth_cost
         + components.synapse_count as f64 * growth_cost / 10.0
-        + total_penalty * growth_cost / 100.0)
+        + components.squash_complexity_penalty * growth_cost / 100.0
+        + components.mean_value_penalty * growth_cost * MAGNITUDE_COST;
+
+    debug_assert!(
+        penalty.is_finite(),
+        "Complexity penalty {penalty} is not finite"
+    );
+    debug_assert!(penalty >= 0.0, "Complexity penalty {penalty} is negative");
+    Ok(penalty)
 }
 
 /// Calculates the final score for a creature.
@@ -388,6 +426,7 @@ pub fn complexity_penalty(
 ///     max_weight_bias: 0.0,
 ///     avg_weight_bias: 0.0,
 ///     squash_complexity_penalty: 0.0,
+///     mean_value_penalty: 0.0,
 /// };
 /// // Zero error, no complexity, current major version → a perfect score of 1.0.
 /// let score = calculate_score(0.0, &components, 0.01, Some("4.1.0")).unwrap();
@@ -537,34 +576,44 @@ mod tests {
 
     #[test]
     fn test_value_penalty_never_reaches_one() {
+        // Inside the linear region a value of 1e6 sits exactly half way to the
+        // 12-decade cap. The old curve put it at 0.99993, indistinguishable
+        // from 1e195.
         let p = value_penalty(1_000_000.0).unwrap();
         assert!(p < 1.0);
-        assert!(p > 0.999);
+        assert!(
+            (p - 0.999 * 6.0 / MAGNITUDE_DECADE_CAP).abs() < 1e-12,
+            "1e6 is 6 decades up, got {p}"
+        );
     }
 
     #[test]
     fn test_value_penalty_known_values() {
-        // valuePenalty(10) = 1 / (1 + 1/10) = 1 / 1.1 ≈ 0.9090909...
+        // valuePenalty(v) = 0.999 * log10(v) / 12 inside the linear region.
         let p = value_penalty(10.0).unwrap();
-        assert!((p - 0.909_090_909_090_909_1).abs() < 1e-12);
+        assert!((p - 0.999 / MAGNITUDE_DECADE_CAP).abs() < 1e-12, "got {p}");
 
-        // valuePenalty(2) = 1 / (1 + 1/2) = 1/1.5 ≈ 0.6666...
         let p2 = value_penalty(2.0).unwrap();
-        assert!((p2 - 2.0 / 3.0).abs() < 1e-12);
+        assert!(
+            (p2 - 0.999 * 2.0_f64.log10() / MAGNITUDE_DECADE_CAP).abs() < 1e-12,
+            "got {p2}"
+        );
     }
 
     #[test]
     fn test_value_penalty_compression() {
-        // Values large enough to trigger compression (primary_penalty > 0.999)
-        // 1/(1+1/v) > 0.999  =>  v > 999
-        let p = value_penalty(1000.0).unwrap();
-        assert!(p >= 0.999);
+        // Beyond the decade cap the asymptotic tail keeps the penalty under 1
+        // while still rising, so an absurd magnitude is never free.
+        let p = value_penalty(1e12).unwrap();
+        assert!(
+            p >= 0.999,
+            "at the cap the penalty should be ~0.999, got {p}"
+        );
         assert!(p < 1.0);
 
-        let p2 = value_penalty(10_000.0).unwrap();
-        assert!(p2 >= 0.999);
-        assert!(p2 < 1.0);
-        assert!(p2 > p);
+        let p2 = value_penalty(1e195).unwrap();
+        assert!(p2 < 1.0, "penalty must never reach 1, got {p2}");
+        assert!(p2 > p, "the tail must stay strictly increasing");
     }
 
     #[test]
@@ -588,16 +637,34 @@ mod tests {
     }
 
     #[test]
-    fn test_calculate_penalty_symmetric() {
-        let penalty = calculate_penalty(5.0, 2.0).unwrap();
-        let expected = (value_penalty(5.0).unwrap() + value_penalty(2.0).unwrap()) / 2.0;
-        assert!((penalty - expected).abs() < 1e-12);
+    fn test_value_penalty_costs_the_same_per_decade() {
+        // The property the old `1/(1 + 1/v)` curve lacked: it was 0.990 at 100
+        // and 0.9999 at 1000, so past two decades growth was effectively free.
+        let step_low = value_penalty(100.0).unwrap() - value_penalty(10.0).unwrap();
+        let step_mid = value_penalty(1e6).unwrap() - value_penalty(1e5).unwrap();
+        let step_high = value_penalty(1e11).unwrap() - value_penalty(1e10).unwrap();
+        assert!(
+            (step_low - step_mid).abs() < 1e-12 && (step_mid - step_high).abs() < 1e-12,
+            "decades must cost equally: {step_low} {step_mid} {step_high}"
+        );
     }
 
     #[test]
-    fn test_calculate_penalty_zero_for_small() {
-        let penalty = calculate_penalty(0.5, 0.3).unwrap();
-        assert_eq!(penalty, 0.0);
+    fn test_value_penalty_discriminates_where_the_fleet_lives() {
+        // Published creatures carry avg|w| in the thousands and max|w| ~1e8.
+        // The old curve scored those 0.9999 and 0.99999999 — indistinguishable.
+        let avg = value_penalty(4_544.0).unwrap();
+        let max = value_penalty(1.631e8).unwrap();
+        assert!(
+            max - avg > 0.3,
+            "the fleet's avg and max magnitudes must be clearly separated, got {avg} vs {max}"
+        );
+    }
+
+    #[test]
+    fn test_value_penalty_zero_for_small() {
+        assert_eq!(value_penalty(0.5).unwrap(), 0.0);
+        assert_eq!(value_penalty(1.0).unwrap(), 0.0);
     }
 
     #[test]
@@ -621,6 +688,7 @@ mod tests {
             max_weight_bias: 0.5,
             avg_weight_bias: 0.3,
             squash_complexity_penalty: 0.0,
+            mean_value_penalty: 0.0,
         };
         // Error=0, version matched => score close to 1 (minus small synapse penalty)
         let score = calculate_score(0.0, &components, 0.0001, Some("4.0.0")).unwrap();
@@ -636,6 +704,7 @@ mod tests {
             max_weight_bias: 0.5,
             avg_weight_bias: 0.3,
             squash_complexity_penalty: 0.0,
+            mean_value_penalty: 0.0,
         };
         let score = calculate_score(0.5, &components, 0.0, Some("4.0.0")).unwrap();
         assert!((score - 0.5).abs() < 1e-12);
@@ -649,6 +718,7 @@ mod tests {
             max_weight_bias: 0.5,
             avg_weight_bias: 0.3,
             squash_complexity_penalty: 0.0,
+            mean_value_penalty: 0.0,
         };
         let score_v4 = calculate_score(0.0, &components, 0.0, Some("4.1.0")).unwrap();
         let score_v3 = calculate_score(0.0, &components, 0.0, Some("3.0.0")).unwrap();
@@ -667,6 +737,7 @@ mod tests {
             max_weight_bias: 0.5,
             avg_weight_bias: 0.3,
             squash_complexity_penalty: 0.0,
+            mean_value_penalty: 0.0,
         };
         let growth_cost = 0.001;
         // Expected: 10 * 0.001 + 50 * 0.001 / 10 + 0 * 0.001 / 100
@@ -685,6 +756,7 @@ mod tests {
             max_weight_bias: 2.0,
             avg_weight_bias: 1.5,
             squash_complexity_penalty: 3.0,
+            mean_value_penalty: 0.0,
         };
         let growth_cost = 0.001;
 
@@ -697,24 +769,72 @@ mod tests {
     }
 
     #[test]
-    fn test_complexity_penalty_routes_through_calculate_penalty() {
-        // The weight/bias term must match calculate_penalty (not a raw
-        // value_penalty average) so every call site shares one behaviour.
+    fn test_complexity_penalty_charges_the_magnitude_term() {
+        // The magnitude term carries its own coefficient rather than sharing
+        // the squash term's /100, which is what made it worth at most 1e-9 of
+        // score at the fleet's growth_cost.
         let components = ScoreComponents {
             hidden_neuron_count: 4,
             synapse_count: 7,
             max_weight_bias: 5.0,
             avg_weight_bias: 2.0,
-            squash_complexity_penalty: 0.0,
+            squash_complexity_penalty: 3.0,
+            mean_value_penalty: 0.25,
         };
         let growth_cost = 0.01;
 
-        let weight_bias_penalty = calculate_penalty(5.0, 2.0).unwrap();
-        let total_penalty = weight_bias_penalty + components.squash_complexity_penalty;
-        let expected =
-            4.0 * growth_cost + 7.0 * growth_cost / 10.0 + total_penalty * growth_cost / 100.0;
+        let expected = 4.0 * growth_cost
+            + 7.0 * growth_cost / 10.0
+            + 3.0 * growth_cost / 100.0
+            + 0.25 * growth_cost * MAGNITUDE_COST;
 
         assert!((complexity_penalty(&components, growth_cost).unwrap() - expected).abs() < 1e-12);
+    }
+
+    #[test]
+    fn test_magnitude_penalty_gives_every_value_a_gradient() {
+        // `(max, avg)` gave a typical weight in a 38k-value creature a gradient
+        // of ~1e-12 per decade. The mean over all values must move for ANY
+        // value growing, not just the largest.
+        use neat_core::creature::{CreatureExport, NeuronExport, SynapseExport};
+        let build = |w: f64| CreatureExport {
+            input: 2,
+            output: 1,
+            neurons: vec![NeuronExport {
+                id: None,
+                neuron_type: "output".to_string(),
+                uuid: "output-0".to_string(),
+                bias: 0.1,
+                squash: Some("IDENTITY".to_string()),
+            }],
+            synapses: vec![
+                SynapseExport {
+                    from_uuid: "input-0".to_string(),
+                    to_uuid: "output-0".to_string(),
+                    weight: 1e6,
+                    synapse_type: None,
+                },
+                SynapseExport {
+                    from_uuid: "input-1".to_string(),
+                    to_uuid: "output-0".to_string(),
+                    weight: w,
+                    synapse_type: None,
+                },
+            ],
+            semantic_version: Some("4.0.0".to_string()),
+            forward_only: true,
+            memetic: None,
+        };
+        // `w` is never the maximum, so under the old (max, avg) aggregate its
+        // decade of growth barely registered.
+        let small = compute_score_components(&build(10.0)).unwrap();
+        let bigger = compute_score_components(&build(100.0)).unwrap();
+        assert!(
+            bigger.mean_value_penalty > small.mean_value_penalty,
+            "a non-maximal value growing a decade must raise the penalty: {} vs {}",
+            small.mean_value_penalty,
+            bigger.mean_value_penalty
+        );
     }
 
     #[test]
@@ -839,6 +959,7 @@ mod tests {
             max_weight_bias: 0.5,
             avg_weight_bias: 0.3,
             squash_complexity_penalty: 0.0,
+            mean_value_penalty: 0.0,
         };
         // Issue #289: assert on the typed error's `Display` text.
         let nan = calculate_score(f64::NAN, &components, 0.0, Some("4.0.0"))
@@ -860,6 +981,7 @@ mod tests {
             max_weight_bias: 0.5,
             avg_weight_bias: 0.3,
             squash_complexity_penalty: 0.0,
+            mean_value_penalty: 0.0,
         };
         // Issue #289: assert on the typed error's `Display` text.
         let err = calculate_score(-0.1, &components, 0.0, Some("4.0.0"))
@@ -901,6 +1023,7 @@ mod tests {
             max_weight_bias: 0.5,
             avg_weight_bias: 0.3,
             squash_complexity_penalty: 0.0,
+            mean_value_penalty: 0.0,
         };
         assert_eq!(
             calculate_score(f64::NAN, &components, 0.0, None).unwrap_err(),
