@@ -188,6 +188,26 @@ section to the released version with its date.
 
 ### Fixed
 
+- **A `wgpu` device lost mid-run falls back to CPU instead of panicking
+  (Issue #583).** `wgpu` reports a lost device *fatally* — `Device::poll` calls
+  `handle_error_fatal`, which `panic!`s — so no `Result` the GPU runner returns
+  could report it. On a headless Linux host (no session, no `XDG_RUNTIME_DIR`)
+  the panic exited **101**, the NEAT-AI batch bridge turned that into a
+  `ScorerStrictError`, and a 1075-second evolve stage died with no result. New
+  `rust_scorer/src/gpu/device_loss.rs` catches the unwind at the run boundary
+  and classifies it: under `--gpu auto` a lost device logs **one** grep-able
+  `[gpu] auto fallback to CPU directory mode: …` line and the CPU pipeline
+  finishes the batch — valid JSON, `gpuBackend: "cpu-fallback"`, exit 0, exactly
+  where a missing adapter already lands. Under `--gpu on` the run still fails,
+  but with a diagnostic and exit 1 rather than a panic and exit 101. Any other
+  GPU abort is caught too, reported as its own variant so the log does not blame
+  the environment for a bug, and the Issue #273 `map_async` readback errors keep
+  their existing behaviour. The default panic dump is suppressed **only** for a
+  device-loss panic inside the guard, so a genuine bug is never silenced. Also
+  fixed alongside it: `BatchedRunner::score_chunk` discarded the `Device::poll`
+  result, so a poll timeout let the readback map a buffer of undefined contents
+  and report it as a score — it is now a recoverable `Err`.
+
 - **`RMSE` docs no longer read as a redundant alias of `MSE` (Issue #556).**
   The README cost-table row and the paragraph beneath it said `RMSE` "ranks
   identically to MSE", which invited the question of why it exists at all.

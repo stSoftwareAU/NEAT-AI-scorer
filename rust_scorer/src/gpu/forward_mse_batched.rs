@@ -841,7 +841,12 @@ impl BatchedRunner {
         slice.map_async(wgpu::MapMode::Read, move |r| {
             let _ = sender.send(r);
         });
-        let _ = device.poll(wgpu::PollType::wait_indefinitely());
+        // Issue #583 — a poll that fails is reported, never swallowed: the
+        // readback below would otherwise consume a buffer whose contents are
+        // undefined. Device loss does not arrive here as an `Err` (`wgpu`
+        // panics fatally inside `Device::poll` for that); `gpu::device_loss`
+        // catches the unwind at the run boundary.
+        poll_wait_result(device.poll(wgpu::PollType::wait_indefinitely()))?;
         map_readback_result(receiver.recv())?;
 
         let mapped = slice.get_mapped_range();
@@ -1209,6 +1214,23 @@ fn map_readback_result<E: std::fmt::Debug>(
     recv.map_err(|_| "partials map_async sender dropped".to_string())?
         .map_err(|e| format!("partials map_async failed: {e:?}"))?;
     Ok(())
+}
+
+/// Turn the `Device::poll` result into `Ok(())` or a descriptive error string
+/// (Issue #583).
+///
+/// `wgpu` returns `PollError::Timeout` / `PollError::WrongSubmissionIndex` here
+/// and panics fatally for everything else (device loss included). The returned
+/// errors used to be discarded, so a poll that never observed the dispatch
+/// completing let the readback below map a buffer of undefined contents and
+/// report it as a score. Surfacing them as `Err` keeps the `--gpu auto` caller
+/// on the existing CPU-fallback path.
+///
+/// Generic over the error type so the mapping is unit-testable without a live
+/// GPU.
+fn poll_wait_result<S, E: std::fmt::Display>(poll: Result<S, E>) -> Result<(), String> {
+    poll.map(|_| ())
+        .map_err(|e| format!("GPU poll failed while waiting for the partials readback: {e}"))
 }
 
 #[cfg(test)]
@@ -1726,5 +1748,28 @@ mod tests {
         drop(sender);
         let err = map_readback_result(receiver.recv()).expect_err("dropped sender surfaces as Err");
         assert_eq!(err, "partials map_async sender dropped");
+    }
+
+    #[test]
+    fn poll_wait_result_ok_on_completed_poll() {
+        // A poll that observed the submission complete yields `Ok(())`.
+        let poll: Result<&str, &str> = Ok("QueueEmpty");
+        assert!(poll_wait_result(poll).is_ok());
+    }
+
+    #[test]
+    fn poll_wait_result_err_on_poll_failure() {
+        // Issue #583 — a poll timeout is no longer discarded: the readback that
+        // follows would otherwise map a buffer of undefined contents.
+        let poll: Result<&str, &str> = Err("operation timed out");
+        let err = poll_wait_result(poll).expect_err("a poll failure surfaces as Err");
+        assert!(
+            err.contains("GPU poll failed"),
+            "error should name the poll failure, got: {err}",
+        );
+        assert!(
+            err.contains("operation timed out"),
+            "error should carry the underlying cause, got: {err}",
+        );
     }
 }
