@@ -293,15 +293,19 @@ fn run(cli: &Cli) -> Result<RunOutput, String> {
     let (gpu_backend, gpu_ctx) = match mode {
         GpuMode::Off => (GpuBackendLabel::CpuFallback, None),
         GpuMode::Auto => (GpuBackendLabel::CpuFallback, None),
-        GpuMode::On => match gpu::select_adapter() {
-            Ok(Some(ctx)) => {
+        // Issue #583: adapter selection is a `wgpu` call too, and `wgpu`
+        // reports a dead device fatally — guard it so even a driver that dies
+        // during selection exits with a diagnostic instead of a panic.
+        GpuMode::On => match gpu::device_loss::catch_gpu_panic(gpu::select_adapter) {
+            Ok(Ok(Some(ctx))) => {
                 let backend = ctx.backend;
                 (backend, Some(Arc::new(ctx)))
             }
-            Ok(None) => return Err(
+            Ok(Ok(None)) => return Err(
                 "No compatible GPU adapter found and --gpu on was requested (use --gpu auto to fall back to CPU, or --gpu off to skip GPU detection entirely)".to_string(),
             ),
-            Err(e) => return Err(e.to_string()),
+            Ok(Err(e)) => return Err(e.to_string()),
+            Err(failure) => return Err(failure.to_string()),
         },
     };
 
@@ -369,6 +373,18 @@ fn run(cli: &Cli) -> Result<RunOutput, String> {
             GpuMode::On => true,
             GpuMode::Auto => gpu::auto_should_use_gpu_directory(dir_probe, cli.cost),
         };
+        // CPU directory mode — the destination for every fallback below and for
+        // a mode that never wanted GPU. Reports `cpu-fallback` so `gpuBackend`
+        // reflects what actually ran (Issue #83).
+        let run_cpu_directory = || {
+            score_from_creature_dir_sampled(
+                creature_path,
+                data_path,
+                GpuBackendLabel::CpuFallback,
+                cli.cost,
+                &sample,
+            )
+        };
         if want_gpu_for_directory {
             // Resolve the GPU context for this directory. Under `--gpu on` it
             // was selected up-front. Under `--gpu auto` (Issue #180) selection
@@ -381,13 +397,16 @@ fn run(cli: &Cli) -> Result<RunOutput, String> {
                 GpuMode::On => gpu_ctx.clone().map(|ctx| (gpu_backend, ctx)),
                 GpuMode::Auto => match multi_score::gpu_directory_compatible(creature_path) {
                     // GPU-hostable — create the adapter now and run the kernel.
-                    Ok(()) => match gpu::select_adapter() {
-                        Ok(Some(ctx)) => {
+                    // Guarded since Issue #583: a driver that dies during
+                    // selection must not take the process with it.
+                    Ok(()) => match gpu::device_loss::catch_gpu_panic(gpu::select_adapter) {
+                        Ok(Ok(Some(ctx))) => {
                             let backend = ctx.backend;
                             Some((backend, Arc::new(ctx)))
                         }
-                        // No adapter (or selection error) — `auto` must never
-                        // abort scoring, so fall through to CPU silently.
+                        // No adapter, a selection error, or a driver abort —
+                        // `auto` must never abort scoring, so fall through to
+                        // CPU silently.
                         _ => None,
                     },
                     // The set exceeds the shader cap (or uses an unsupported
@@ -404,40 +423,32 @@ fn run(cli: &Cli) -> Result<RunOutput, String> {
             };
 
             if let Some((backend, ctx)) = resolved_ctx {
-                match score_from_creature_dir_gpu_sampled(
-                    creature_path,
-                    data_path,
-                    backend,
-                    ctx,
-                    2,
-                    cli.cost,
-                    &sample,
-                ) {
-                    Ok(r) => return Ok(RunOutput::Multi(r)),
-                    Err(e) => {
-                        // `--gpu on` is a hard requirement — surface the error.
-                        // `--gpu auto` should never abort scoring: silently fall
-                        // back to the CPU path so callers always get a result.
-                        if matches!(mode, GpuMode::On) {
-                            return Err(e);
-                        }
-                        eprintln!("[gpu] auto fallback to CPU directory mode: {e}");
-                    }
-                }
+                // Issue #583: a `wgpu` device lost mid-run panics inside
+                // `Device::poll`, so no `Result` from the runner can report it.
+                // The guard catches that unwind (and the Issue #273 recoverable
+                // readback errors) and applies one policy: `auto` logs once and
+                // degrades to CPU — valid JSON, exit 0, exactly where a missing
+                // adapter already lands — while `on` returns a diagnostic the
+                // caller exits non-zero with, never a panic and exit 101.
+                return gpu::device_loss::run_with_device_loss_fallback(
+                    mode,
+                    || {
+                        score_from_creature_dir_gpu_sampled(
+                            creature_path,
+                            data_path,
+                            backend,
+                            ctx,
+                            2,
+                            cli.cost,
+                            &sample,
+                        )
+                    },
+                    run_cpu_directory,
+                )
+                .map(RunOutput::Multi);
             }
         }
-        // CPU directory mode — either Auto declined GPU (no adapter, kernel
-        // could not host the creature set, or the path is not GPU-default),
-        // or the mode is Off. Report `cpu-fallback` so `gpuBackend` reflects
-        // what actually ran (Issue #83).
-        score_from_creature_dir_sampled(
-            creature_path,
-            data_path,
-            GpuBackendLabel::CpuFallback,
-            cli.cost,
-            &sample,
-        )
-        .map(RunOutput::Multi)
+        run_cpu_directory().map(RunOutput::Multi)
     } else {
         let creature_json = fs::read_to_string(creature_path).map_err(|e| {
             format!(

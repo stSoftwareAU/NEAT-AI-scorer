@@ -212,6 +212,8 @@ flowchart TD
     Adapter -->|none + Auto| CPU
     Adapter -->|none + On| Err[exit non-zero]
     GPUKernel -->|kernel rejects creature| CPU
+    GPUKernel -->|device lost mid-run #583<br/>+ Auto| CPU
+    GPUKernel -->|device lost mid-run #583<br/>+ On| Err
 ```
 
 Under `--gpu auto` the directory path runs a **CPU-only pre-flight**
@@ -235,6 +237,43 @@ scratch-only pool whose creatures all have ≤256 **non-input** neurons
 (`MAX_SHALLOW_NON_INPUT_NEURONS`) keeps the GPU path and prints no fallback note;
 deep pools behave exactly as #317 left them. Numbers and the reproduce command
 are in [`docs/performance-baseline.md`](docs/performance-baseline.md).
+
+#### Device loss mid-run (Issue #583)
+
+Losing the device **after** an adapter was acquired now lands where an absent
+adapter already lands. `wgpu` reports a lost device *fatally* — it `panic!`s
+inside `Device::poll` rather than returning an error:
+
+```text
+thread 'main' panicked at wgpu-29.0.4/src/backend/wgpu_core.rs:1911:30:
+Error in Device::poll: Validation Error
+
+Caused by:
+  Parent device is lost
+```
+
+That unwind used to leave the process with exit **101**, which the NEAT-AI batch
+bridge turns into a `ScorerStrictError` — one dropped device on a headless host
+(no session, no `XDG_RUNTIME_DIR`) killed a 1075-second evolve stage. A lost
+device is an *environmental* event, not a bad creature, so
+`rust_scorer/src/gpu/device_loss.rs` catches the unwind at the run boundary:
+
+| Mode   | Device lost mid-run                                                                    |
+|--------|-----------------------------------------------------------------------------------------|
+| `auto` | One stderr note, then the **CPU pipeline** finishes the batch — valid JSON, `gpuBackend: "cpu-fallback"`, **exit 0** |
+| `on`   | `Error: the GPU device was lost mid-run (…)` and **exit 1** — a diagnostic, never a panic |
+| `off`  | Never touches `wgpu`; unaffected                                                        |
+
+The `auto` note is one grep-able line, with the underlying `wgpu` cause
+flattened onto it:
+
+```text
+[gpu] auto fallback to CPU directory mode: the GPU device was lost mid-run (Error in Device::poll: Validation Error Caused by: Parent device is lost) — an environmental fault, not a scoring failure; scoring continues on the CPU pipeline
+```
+
+The same guard covers any other GPU abort (classified separately, so the log
+does not blame the environment for a bug) and the `map_async` readback errors
+the runner already returned since Issue #273.
 
 ### GPU acceleration (Issue #83)
 

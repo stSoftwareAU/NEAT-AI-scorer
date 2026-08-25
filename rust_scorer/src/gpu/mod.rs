@@ -37,7 +37,16 @@
 //! dispatching to the GPU runner. When `--gpu auto` finds no compatible
 //! adapter, every path silently falls back to CPU — `auto` must never abort
 //! scoring.
+//!
+//! ## Device loss mid-run (Issue #583)
+//!
+//! Losing the device *after* an adapter was acquired lands in the same place.
+//! `wgpu` reports that fatally (it `panic!`s inside `Device::poll`), so the
+//! [`device_loss`] submodule catches the unwind at the run boundary and turns
+//! it into the ordinary `auto` CPU fallback — or, under `--gpu on`, into a
+//! diagnostic and exit 1 instead of a panic and exit 101.
 
+pub mod device_loss;
 pub mod forward_mse_batched;
 
 use forward_mse_batched::DirectoryGpuTopology;
