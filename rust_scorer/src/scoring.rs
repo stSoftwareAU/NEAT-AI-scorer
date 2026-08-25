@@ -178,6 +178,38 @@ pub fn value_penalty(value: f64) -> Result<f64, ScoringError> {
     Ok(penalty)
 }
 
+/// Penalty charged for a single weight or bias of absolute value `value`.
+///
+/// This is the call-site contract around [`value_penalty`]: the magnitude is
+/// made absolute and clamped to `MAX_SAFE_MAGNITUDE` first. Individual values
+/// reach 1e+195 through compaction multiplications long before any aggregate
+/// overflow guard sees them, and the TypeScript `valuePenalty()` rejects
+/// anything past that bound outright — so clamping here is what keeps the two
+/// engines returning the same number for the magnitudes production actually
+/// produces (NEAT-AI#3881).
+///
+/// Matches the TypeScript `magnitudePenalty()` in `src/architecture/Score.ts`.
+/// Both engines are pinned to the shared corpus in
+/// `rust_scorer/tests/fixtures/magnitude-penalty-corpus.json`.
+///
+/// # Examples
+///
+/// ```
+/// use rust_scorer::scoring::magnitude_penalty;
+/// // Sign is ignored.
+/// assert_eq!(magnitude_penalty(-100.0).unwrap(), magnitude_penalty(100.0).unwrap());
+/// // A magnitude past the safe bound is charged, not rejected.
+/// let clamped = magnitude_penalty(1.1559466326634707e195).unwrap();
+/// assert!(clamped < 1.0);
+/// assert_eq!(clamped, magnitude_penalty(9_007_199_254_740_991.0).unwrap());
+/// ```
+pub fn magnitude_penalty(value: f64) -> Result<f64, ScoringError> {
+    if value.is_nan() {
+        return Err(ScoringError::NonFiniteValue { value });
+    }
+    value_penalty(value.abs().min(MAX_SAFE_MAGNITUDE))
+}
+
 /// Returns the squash function complexity penalty for a given squash type.
 ///
 /// Only the IF aggregate function carries a non-zero complexity penalty (3).
@@ -284,9 +316,7 @@ pub fn compute_score_components(
         }
         total_weight_bias += w;
         count_weight_bias += 1;
-        // Clamped for the same reason the aggregates below are: a weight can
-        // reach 1e+195 before any guard sees it. Matches the TypeScript.
-        sum_value_penalty += value_penalty(w.min(MAX_SAFE_MAGNITUDE))?;
+        sum_value_penalty += magnitude_penalty(w)?;
     }
 
     // Gather bias statistics and squash complexity from non-input neurons
@@ -303,7 +333,7 @@ pub fn compute_score_components(
         }
         total_weight_bias += b;
         count_weight_bias += 1;
-        sum_value_penalty += value_penalty(b.min(MAX_SAFE_MAGNITUDE))?;
+        sum_value_penalty += magnitude_penalty(b)?;
 
         // Accumulate squash complexity
         let squash_name = neuron.squash.as_deref().unwrap_or("IDENTITY");
