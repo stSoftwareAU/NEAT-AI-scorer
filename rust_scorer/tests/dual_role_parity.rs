@@ -21,8 +21,9 @@
 //!    `ts_parity.rs` makes against `Creature.scoreDir`, and the assertion that
 //!    would have caught the original divergence.
 //! 2. **The relaxed form and the relay workaround are the same function.** They
-//!    activate bit-identically and score identically through the real directory
-//!    pipeline, so upstream may drop the relay without moving a single score.
+//!    activate bit-identically, reduce to a bit-identical loss over the whole
+//!    corpus, and score equal through the real directory pipeline, so upstream
+//!    may drop the relay without moving a score.
 //! 3. **A dropped edge is detectable, not assumed.** The creature a
 //!    `(from, to)`-keyed loader is left holding scores *differently*, so test 1
 //!    cannot pass vacuously.
@@ -30,10 +31,24 @@
 //!    relaxed shape is scored on GPU and compared against CPU when an adapter is
 //!    present.
 //!
-//! **Documented tolerance.** CPU↔CPU comparisons — reference, relay-equivalence
-//! and pipeline score — are exact (`==`), because both forms perform the same
-//! `f32` arithmetic in the same order. Cross-backend comparisons use the
-//! repository's established `1e-3` relative tolerance (Issue #82/#312/#574).
+//! **Documented tolerance (Issue #585).** Bit-exactness is asserted wherever
+//! the two forms genuinely perform the same `f32` arithmetic in the same order:
+//! every per-record activation (against the independent reference and against
+//! each other) and the whole-corpus loss reduced in **one** partition by
+//! `mse_sum_batch_packed`. The **directory pipeline** score is compared within
+//! [`CPU_PIPELINE_REL_TOLERANCE`] instead, because that pipeline splits each
+//! creature's chunk across the workers it was allotted and folds the `f64`
+//! partials back — and `multi_score::workers_per_creature_split` allots a
+//! *ragged* count when `activation_threads` is not a multiple of the population
+//! (3 creatures on 8 threads → `[3, 3, 2]`, Issue #537). Two creatures in one
+//! directory then reduce the same per-record errors in a different association
+//! order, which moves the last bits of an `f64` sum: this assertion was `==`
+//! and failed by 2 ULP on any host whose thread count made the split ragged.
+//! Re-association is bounded by `n_records × f64::EPSILON` (≈ 4.5e-13 for this
+//! corpus; ≤ 6.1e-15 measured across thread counts 1..=16), so the `1e-12`
+//! bound holds while the dropped-edge creature stays 9.0e-3 away — ten orders
+//! of magnitude clear of the bound. Cross-backend comparisons keep
+//! the repository's established `1e-3` relative tolerance (Issue #82/#312/#574).
 //!
 //! GPU bodies skip cleanly when no adapter is available; the CPU assertions gate
 //! every run.
@@ -66,7 +81,29 @@ use rust_scorer::scoring::ScoreResult;
 /// Cross-backend relative tolerance on a per-creature loss (Issue #82/#312).
 const CROSS_BACKEND_REL_TOLERANCE: f64 = 1e-3;
 
+/// Relative tolerance between two **directory-pipeline** CPU scores of the same
+/// corpus (Issue #585).
+///
+/// The pipeline reduces each creature's per-record errors in as many `f64`
+/// partial sums as that creature was allotted workers, and the allotment is
+/// ragged whenever `activation_threads` is not a multiple of the population, so
+/// two creatures scoring the same records can re-associate the reduction
+/// differently. The re-association error is bounded by
+/// `n_records × f64::EPSILON` — ≈ 4.5e-13 for the 2,048-record corpus here —
+/// and is not a difference in the function being scored: the identical-order
+/// reduction is asserted bit-exactly by
+/// [`the_whole_corpus_loss_is_bit_identical_between_the_forms`].
+const CPU_PIPELINE_REL_TOLERANCE: f64 = 1e-12;
+
+/// Number of records every corpus in this suite carries.
+const CORPUS_RECORDS: usize = 2_048;
+
 const NUM_INPUTS: usize = 6;
+
+/// Relative difference between two losses, symmetric in its arguments.
+fn relative_difference(a: f64, b: f64) -> f64 {
+    (a - b).abs() / a.abs().max(b.abs()).max(f64::MIN_POSITIVE)
+}
 
 /// The creature under test: one `IF` node whose condition, positive and
 /// negative buckets are fed by repeated sources.
@@ -237,6 +274,44 @@ fn dropping_the_shared_negative_edge_changes_the_prediction() {
     );
 }
 
+// --- Whole-corpus loss, reduced in one partition ------------------------------
+
+/// The bit-exact half of the score contract (Issue #585).
+///
+/// Reduced in a single partition — one `mse_sum_batch_packed` call over the
+/// whole corpus — the two forms sum the same per-record errors in the same
+/// order, so their losses are equal to the last bit. This is where "the relay
+/// changes nothing" is genuinely testable: no worker partition, no host thread
+/// count, nothing between the two numbers but the creatures themselves.
+#[test]
+fn the_whole_corpus_loss_is_bit_identical_between_the_forms() {
+    let spec = spec();
+    let records = dual_role_corpus_records(&spec, CORPUS_RECORDS);
+    let loss = |json: &str| {
+        let mut net = compile(json);
+        mse_sum_batch_packed(&mut net, &records, NUM_INPUTS, 1, true)
+    };
+
+    let relaxed = loss(&dual_role_if_creature_json(&spec));
+    let relayed = loss(&relay_equivalent_if_creature_json(&spec));
+    let dropped = loss(&dropped_shared_branch_creature_json(&spec));
+
+    assert!(
+        relaxed > 0.0,
+        "a zero loss would make the comparison vacuous"
+    );
+    assert_eq!(
+        relaxed, relayed,
+        "reduced in one partition, the relay-free creature and its relay \
+         workaround must sum to the same bits"
+    );
+    assert_ne!(
+        relaxed, dropped,
+        "losing a branch edge must move the loss — otherwise the parity guard \
+         is vacuous"
+    );
+}
+
 // --- Full-pipeline scoring ---------------------------------------------------
 
 /// Both forms scored through the real directory pipeline must return the same
@@ -244,6 +319,16 @@ fn dropping_the_shared_negative_edge_changes_the_prediction() {
 ///
 /// This is the end-to-end shape of the cross-engine comparison: the same corpus,
 /// the same cost, three creatures, scored the way production scores them.
+///
+/// Issue #585 — the pipeline comparison is bounded by
+/// [`CPU_PIPELINE_REL_TOLERANCE`], not `==`. The pipeline splits each creature's
+/// chunk across the workers it was allotted, and that allotment is ragged when
+/// `activation_threads` is not a multiple of the population, so two creatures
+/// can fold the same per-record errors into a different number of `f64`
+/// partials. The bits of the *function* are pinned by
+/// [`the_whole_corpus_loss_is_bit_identical_between_the_forms`]; what this test
+/// pins is that nothing larger than reduction noise separates the two forms
+/// end to end, while the dropped-edge creature stays orders of magnitude away.
 #[test]
 fn directory_scoring_agrees_between_the_forms_and_separates_the_dropped_one() {
     let spec = spec();
@@ -269,7 +354,7 @@ fn directory_scoring_agrees_between_the_forms_and_separates_the_dropped_one() {
     )
     .expect("write dropped creature");
 
-    let n_records = 2_048;
+    let n_records = CORPUS_RECORDS;
     let records = dual_role_corpus_records(&spec, n_records);
     std::fs::write(data_dir.join("0.bin"), records_to_le_bytes(&records)).expect("write corpus");
 
@@ -283,15 +368,23 @@ fn directory_scoring_agrees_between_the_forms_and_separates_the_dropped_one() {
     assert_eq!(scores.len(), 3, "every candidate must be scored");
 
     let error = |name: &str| scores.get(name).expect("candidate scored").error;
-    assert_eq!(
+    let parity_drift = relative_difference(error("relaxed"), error("relayed"));
+    assert!(
+        parity_drift <= CPU_PIPELINE_REL_TOLERANCE,
+        "the relay-free creature and its relay workaround must score the same: \
+         relaxed={} relayed={} relative_difference={parity_drift} exceeds \
+         {CPU_PIPELINE_REL_TOLERANCE}",
         error("relaxed"),
-        error("relayed"),
-        "the relay-free creature and its relay workaround must score identically"
+        error("relayed")
     );
-    assert_ne!(
+    let dropped_gap = relative_difference(error("relaxed"), error("dropped"));
+    assert!(
+        dropped_gap > CPU_PIPELINE_REL_TOLERANCE * 1e6,
+        "losing a branch edge must move the loss far beyond reduction noise — \
+         otherwise the parity guard is vacuous: relaxed={} dropped={} \
+         relative_difference={dropped_gap}",
         error("relaxed"),
-        error("dropped"),
-        "losing a branch edge must move the loss — otherwise the parity guard is vacuous"
+        error("dropped")
     );
     for name in ["relaxed", "relayed", "dropped"] {
         let result = scores.get(name).expect("candidate scored");

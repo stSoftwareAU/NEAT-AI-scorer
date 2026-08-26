@@ -1628,6 +1628,34 @@ mod tests {
         assert_eq!(w, vec![1; 50]);
     }
 
+    /// Issue #585: a ragged worker allotment makes two creatures reduce the
+    /// *same* chunk in a different number of `f64` partials, so their scores
+    /// agree to a tolerance rather than to the bit. This is the mechanism the
+    /// `dual_role_parity` score comparison documents — pinned here as a fact
+    /// about the partition, not as an observation about one host.
+    #[test]
+    fn a_ragged_worker_allotment_partitions_the_same_chunk_differently() {
+        // 3 creatures on 8 threads: the first two get 3 workers, the third 2.
+        let w = workers_per_creature_split(3, 8, 1, usize::MAX);
+        assert_eq!(w, vec![3, 3, 2]);
+
+        let vpr = 7;
+        let n_records = 2_048;
+        let three = partition_packed_record_ranges(vpr, n_records, w[0]);
+        let two = partition_packed_record_ranges(vpr, n_records, w[2]);
+        assert_ne!(
+            three.len(),
+            two.len(),
+            "the allotment must yield a different number of record sub-ranges"
+        );
+        // Both still tile the whole chunk — the records are the same, only the
+        // grouping of their per-record errors differs.
+        for ranges in [&three, &two] {
+            assert_eq!(ranges[0].start, 0);
+            assert_eq!(ranges[ranges.len() - 1].end, n_records * vpr);
+        }
+    }
+
     #[test]
     fn partition_packed_record_ranges_covers_full_buffer_with_no_overlap() {
         // 7 records / 3 workers → [3, 2, 2]; ranges should tile [0, 7*vpr).
