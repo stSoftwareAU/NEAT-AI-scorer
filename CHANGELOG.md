@@ -32,8 +32,9 @@ section to the released version with its date.
   is identical in the raw JSON, the parsed export and the compiled network — the
   Rust-side spelling of the `jsonSynapses === loadedSynapses` assertion
   `NEAT-AI-Forests`' `ts_parity.rs` makes against `Creature.scoreDir` — that the
-  relaxed and relay forms activate bit-identically and score identically through
-  the real directory pipeline, that the dropped-edge creature scores
+  relaxed and relay forms activate bit-identically and score equal through
+  the real directory pipeline (see the Issue #585 entry below for the exact
+  bound each comparison carries), that the dropped-edge creature scores
   *differently* (so the guard cannot pass vacuously), and that both GPU kernels
   agree with CPU within the `1e-3` cross-backend tolerance. Also new:
   `fixture_json::constant_neuron_json`, which omits the `"squash"` key that
@@ -187,6 +188,33 @@ section to the released version with its date.
   `docs/performance-baseline.md`.
 
 ### Fixed
+
+- **`dual_role_parity` no longer demands bit-exact equality from a reduction
+  that is free to re-associate (Issue #585).**
+  `directory_scoring_agrees_between_the_forms_and_separates_the_dropped_one`
+  asserted `==` between the relay-free creature's directory-pipeline score and
+  its relay workaround's, and failed by 2 ULP
+  (`1.3229378675896557` vs `…73`). The cause is not the architecture it was
+  reported on and not the extra `IDENTITY` relay: directory scoring folds each
+  creature's chunk from as many `f64` partial sums as that creature was allotted
+  workers, and `workers_per_creature_split` allots a **ragged** count when
+  `activation_threads` is not a multiple of the population (3 creatures on 8
+  threads → `[3, 3, 2]`, Issue #537). Two creatures then reduce the identical
+  per-record errors in a different association order. The reported failure
+  reproduces bit-for-bit under `NEAT_SCORER_ACTIVATION_THREADS=8` on aarch64 and
+  disappears at `6`, `7` or `12`. The parity contract now states a bound per
+  comparison: **bit-exact** for every per-record activation and for the
+  whole-corpus loss reduced in one partition (new
+  `the_whole_corpus_loss_is_bit_identical_between_the_forms`, which calls
+  `mse_sum_batch_packed` over all 2,048 records), **`1e-12` relative** for the
+  directory-pipeline score, and the unchanged **`1e-3` relative** cross-backend
+  tolerance. Measured drift across thread counts `1..=16` is ≤ `6.1e-15`; a
+  dropped branch edge still moves the loss by `9.0e-3`, so the guard separates a
+  real divergence by ten orders of magnitude. New
+  `multi_score::tests::a_ragged_worker_allotment_partitions_the_same_chunk_differently`
+  pins the mechanism, and the README
+  "Synapses are keyed by `(from, to, type)`" section carries the bound table.
+  No production scoring code changed.
 
 - **A `wgpu` device lost mid-run falls back to CPU instead of panicking
   (Issue #583).** `wgpu` reports a lost device *fatally* — `Device::poll` calls

@@ -26,8 +26,13 @@
 //! ```
 //!
 //! Both forms describe the *same* function, so the scorer must give them the
-//! *same* score — that equality is the parity assertion, and it is exact rather
-//! than approximate because the relay contributes `0.0 + 1.0 * x`.
+//! *same* score — that equality is the parity assertion. Because the relay
+//! contributes `0.0 + 1.0 * x`, the equality is **bit-exact** wherever the two
+//! forms reduce in the same order: every per-record activation, and a
+//! whole-corpus loss summed in one partition. Through the directory pipeline it
+//! is a stated tolerance instead — that pipeline reduces each creature in as
+//! many `f64` partials as it was allotted workers, and the allotment is ragged
+//! when the thread count is not a multiple of the population (Issue #585).
 //!
 //! ## Why it is a cross-engine fixture
 //!
@@ -173,11 +178,13 @@ pub fn dual_role_if_creature_json(spec: &TreeSpec) -> String {
 /// Three constants replace the one, and two `IDENTITY` relays replace the
 /// shared column's direct branch edges. No ordered pair repeats, so this form
 /// was — and remains — legal under the old `(from, to)` key. It exists to be
-/// scored alongside [`dual_role_if_creature_json`]: the two must agree exactly.
+/// scored alongside [`dual_role_if_creature_json`]: the two must agree.
 ///
 /// Relay arithmetic is `0.0 + 1.0 * x`, and each `IF` bucket sums in the same
-/// order as the relay-free form, so the equality is bit-exact and not a
-/// tolerance.
+/// order as the relay-free form, so every activation — and any loss reduced in
+/// the same order over the same records — is bit-identical. Only the directory
+/// pipeline's `f64` reduction can re-associate between the two (Issue #585),
+/// and only within the tolerance `tests/dual_role_parity.rs` states.
 #[must_use]
 pub fn relay_equivalent_if_creature_json(spec: &TreeSpec) -> String {
     let shared = format!("input-{}", shared_feature(spec));

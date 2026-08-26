@@ -484,13 +484,52 @@ asserts that:
   JSON, the parsed export and the compiled network (the Rust-side spelling of
   the `jsonSynapses === loadedSynapses` assertion `NEAT-AI-Forests`' `ts_parity.rs`
   makes against `Creature.scoreDir`);
-- **the relaxed form and the relay workaround agree exactly** — bit-identical
-  activations and an identical loss through the real directory pipeline, so
-  upstream may drop the relay without moving a score;
+- **the relaxed form and the relay workaround agree** — bit-identical
+  activations, a bit-identical whole-corpus loss, and an equal score through the
+  real directory pipeline, so upstream may drop the relay without moving a
+  score;
 - **a dropped edge is detectable** — the `(from, to)`-keyed creature scores
   differently, so the assertions above cannot pass vacuously;
 - **both GPU kernels agree** with CPU within the same `1e-3` cross-backend
   tolerance, since the kernels bucket by synapse role too.
+
+#### Which comparisons are bit-exact (Issue #585)
+
+The parity contract is exact **where the two forms reduce in the same order**,
+and a stated tolerance where the pipeline is free to reduce them differently:
+
+| Comparison | Bound | Why |
+|---|---|---|
+| CPU activation vs the independent reference | bit-exact | one record, one evaluation order |
+| relay-free vs relay activation, per record | bit-exact | the relay contributes `0.0 + 1.0 · x`; each `IF` bucket sums in the same order |
+| relay-free vs relay whole-corpus loss (`mse_sum_batch_packed`, one partition) | bit-exact | the same per-record errors summed in the same order |
+| relay-free vs relay **directory-pipeline** score | `1e-12` relative | the pipeline folds each creature's chunk from as many `f64` partials as it was allotted workers |
+| CPU vs GPU per-creature loss | `1e-3` relative | the repository-wide cross-backend tolerance (Issues #82/#312/#574) |
+
+The pipeline row is not a weakening of the rule — it is the `f64` reduction
+being associative only to within rounding.
+`multi_score::workers_per_creature_split` allots a **ragged** worker count when
+`activation_threads` is not a multiple of the population (3 creatures on 8
+threads → `[3, 3, 2]`, Issue #537), so two creatures scoring the identical
+records group their per-record errors differently:
+
+```mermaid
+flowchart LR
+    R["2,048 records<br/>identical per-record errors"]
+    R --> A["relaxed — 3 workers<br/>683 + 683 + 682"]
+    R --> B["relayed — 2 workers<br/>1024 + 1024"]
+    A --> SA["Σ f64 → 1.3229378675896557"]
+    B --> SB["Σ f64 → 1.3229378675896573"]
+    SA --> D["2 ULP apart — reduction noise,<br/>not a difference in the function"]
+    SB --> D
+```
+
+Asserting `==` there made the suite fail on any host whose thread count made the
+split ragged — the reported x86-64 failure reproduces bit-for-bit under
+`NEAT_SCORER_ACTIVATION_THREADS=8` and disappears at `6`, `7` or `12`, on any
+architecture. The largest drift measured across thread counts `1..=16` is
+`6.1e-15`; a dropped branch edge — the divergence the guard exists to catch —
+moves the loss by `9.0e-3`, ten orders of magnitude clear of the bound.
 
 Nothing in the scorer's own scoring path keys synapses by `(from, to)`: it
 iterates `creature.synapses` in declaration order and reports
