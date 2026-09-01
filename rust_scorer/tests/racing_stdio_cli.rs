@@ -298,7 +298,7 @@ fn a_malformed_verdict_exits_non_zero() {
     let run = race(&creatures, &data, |_| Some("{\"verdict\":42}".to_string()));
     assert!(!run.status_success, "a malformed verdict must fail loud");
     assert!(
-        run.stderr.contains("unparseable verdict"),
+        run.stderr.contains("unparsable verdict"),
         "stderr must name the protocol fault, got: {}",
         run.stderr
     );

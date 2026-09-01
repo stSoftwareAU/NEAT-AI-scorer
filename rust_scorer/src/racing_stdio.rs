@@ -168,7 +168,7 @@ impl<R: BufRead, W: Write> RacingStdio<R, W> {
         }
         let verdict: Verdict = serde_json::from_str(trimmed).map_err(|e| {
             format!(
-                "--race-stdio: unparseable verdict after chunk {}: {e} (line: {trimmed})",
+                "--race-stdio: unparsable verdict after chunk {}: {e} (line: {trimmed})",
                 self.chunk
             )
         })?;
@@ -249,12 +249,12 @@ mod tests {
     }
 
     #[test]
-    fn unparseable_verdict_fails_loud() {
+    fn unparsable_verdict_fails_loud() {
         let (exit, _, failure) = drive("not json\n", &[partial(0, "a", 0.1, 8)]);
         assert_eq!(exit, EarlyExit::AbortAll);
         let failure = failure.expect("malformed verdict must be recorded as a failure");
         assert!(
-            failure.contains("unparseable verdict"),
+            failure.contains("unparsable verdict"),
             "unexpected failure: {failure}"
         );
     }
