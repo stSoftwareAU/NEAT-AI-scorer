@@ -35,6 +35,7 @@ use crate::creature_width::validate_creature_width;
 use crate::gpu::{GpuBackendLabel, GpuMode, ScoringPath};
 use crate::host_report::{DEFAULT_REPORT_RECORD_BYTES, HostReport};
 use crate::multi_score::{score_from_creature_dir_gpu_sampled, score_from_creature_dir_sampled};
+use crate::racing_stdio::RacingStdio;
 use crate::read_tuning::{
     training_read_backend_label, training_read_target_bytes_from_env_for_readers,
 };
@@ -140,6 +141,26 @@ struct Cli {
     /// `--sample-rate` is `1` or absent.
     #[arg(long, value_name = "PHASE", default_value_t = 0)]
     sample_phase: u64,
+
+    /// Race the directory-mode batch over stdio: publish per-chunk partial
+    /// scores on stdout and read one abandon verdict per chunk from stdin
+    /// (Issue #308's early-exit hook, consumed by NEAT-AI#3928).
+    ///
+    /// Only valid with a **creatures directory** positional argument. After
+    /// every scored chunk the scorer writes one line
+    /// `{"racing":"chunk","chunk":N,"partials":[…]}` and blocks until the
+    /// caller answers with exactly one of `{"verdict":"continue"}`,
+    /// `{"verdict":"abort","creatures":[i,…]}`, or `{"verdict":"abortAll"}`.
+    /// The result map is printed afterwards exactly as in plain directory
+    /// mode; answering `continue` every time reproduces the full-corpus scores
+    /// bit-identically.
+    ///
+    /// Runs on the CPU directory path — the GPU kernel has no early-exit
+    /// surface — so `--gpu on` is rejected rather than silently full-scoring.
+    /// A closed stdin, or a malformed or unknown verdict, aborts the sweep with
+    /// a non-zero exit.
+    #[arg(long)]
+    race_stdio: bool,
 
     /// Print the detected host resources and every resolved knob as one JSON
     /// object, then exit — score nothing (Issue #545).
@@ -267,6 +288,26 @@ fn run(cli: &Cli) -> Result<RunOutput, String> {
         None => SampleSpec::full(),
     };
 
+    // NEAT-AI#3928: `--race-stdio` drives the Issue #308 early-exit hook, which
+    // exists only on the CPU directory path. Refuse the combinations that could
+    // not honour it rather than silently full-scoring a caller who asked to
+    // race — a full-corpus sweep is exactly what racing is meant to avoid, and
+    // it would look like a working race that never saved anything.
+    if cli.race_stdio {
+        if cli.creature_stdin {
+            return Err(
+                "--race-stdio scores a creatures directory; it cannot be combined with --creature-stdin"
+                    .to_string(),
+            );
+        }
+        if matches!(mode, GpuMode::On) {
+            return Err(
+                "--race-stdio has no GPU kernel: the early-exit hook is CPU directory mode only (drop --gpu on, or drop --race-stdio)"
+                    .to_string(),
+            );
+        }
+    }
+
     // Issue #121/#339/#316: `--gpu on` with a cost the kernels cannot serve is a
     // hard error. The batched/scratch kernels host MSE and RMSE (squared-error
     // sum, RMSE via a host-side `sqrt`) and MAE (absolute-error sum); every
@@ -335,7 +376,20 @@ fn run(cli: &Cli) -> Result<RunOutput, String> {
 
     let creature_path = &cli.args[0];
     let data_path = &cli.args[1];
+    if cli.race_stdio && !creature_path.is_dir() {
+        return Err(format!(
+            "--race-stdio requires a creatures directory; '{}' is not a directory",
+            creature_path.display()
+        ));
+    }
     if creature_path.is_dir() {
+        // NEAT-AI#3928: racing owns the whole directory sweep — it runs on the
+        // CPU path with the caller's policy in the loop, so it is resolved
+        // before any GPU routing.
+        if cli.race_stdio {
+            return run_racing_directory(creature_path, data_path, cli.cost, &sample)
+                .map(RunOutput::Multi);
+        }
         // Issue #205: under `--gpu auto`, a non-MSE cost makes
         // `auto_should_use_gpu` return false, so the directory path runs on
         // CPU. That fallback was otherwise silent (only the
@@ -467,6 +521,40 @@ fn run(cli: &Cli) -> Result<RunOutput, String> {
         )
         .map(|r| RunOutput::Single(Box::new(r)))
     }
+}
+
+/// Score a creatures directory with the caller's racing policy in the loop
+/// (NEAT-AI#3928).
+///
+/// Each scored chunk is published on stdout and one verdict is read back from
+/// stdin by [`RacingStdio`]; a protocol fault becomes this function's `Err`, so
+/// the binary exits non-zero with the reason rather than returning a result the
+/// caller's policy never agreed to.
+fn run_racing_directory(
+    creatures_dir: &Path,
+    data_path: &Path,
+    cost: CostKind,
+    sample: &SampleSpec,
+) -> Result<BTreeMap<String, ScoreResult>, String> {
+    let stdin = std::io::stdin();
+    let stdout = std::io::stdout();
+    let mut driver = RacingStdio::new(stdin.lock(), stdout.lock());
+    let scored = multi_score::score_from_creature_dir_sampled_with_early_exit(
+        creatures_dir,
+        data_path,
+        // The early-exit hook is CPU-only, so the reported backend is the same
+        // `cpu-fallback` label every other CPU directory sweep carries.
+        GpuBackendLabel::CpuFallback,
+        cost,
+        sample,
+        |partials| driver.on_chunk(partials),
+    );
+    // A protocol fault wins over the scoring outcome: the sweep it aborted
+    // produced partial scores for creatures the caller never abandoned.
+    if let Some(failure) = driver.failure() {
+        return Err(failure.to_string());
+    }
+    scored
 }
 
 fn score_from_json(
@@ -795,6 +883,7 @@ mod tests {
             cost: CostKind::default(),
             sample_rate: None,
             sample_phase: 0,
+            race_stdio: false,
             host_report: false,
             record_bytes: DEFAULT_REPORT_RECORD_BYTES,
             args: vec![creature.to_path_buf(), data.to_path_buf()],
@@ -1197,6 +1286,7 @@ mod tests {
             cost: CostKind::default(),
             sample_rate: None,
             sample_phase: 0,
+            race_stdio: false,
             host_report: false,
             record_bytes: DEFAULT_REPORT_RECORD_BYTES,
             args: vec![PathBuf::from("/tmp/creature.json"), PathBuf::from("/tmp")],
@@ -1217,6 +1307,7 @@ mod tests {
             cost: CostKind::default(),
             sample_rate: None,
             sample_phase: 0,
+            race_stdio: false,
             host_report: false,
             record_bytes: DEFAULT_REPORT_RECORD_BYTES,
             args: vec![PathBuf::from("/tmp")],
