@@ -561,6 +561,33 @@ where
     )
 }
 
+/// [`score_from_creature_dir_with_early_exit`] over a sub-sampled corpus.
+///
+/// Composes the Issue #308 early-exit hook with the Issue #310 record-level
+/// sampler so a caller can race candidates against a sampled corpus rather than
+/// having to pick one of the two. `SampleSpec::full()` makes this identical to
+/// [`score_from_creature_dir_with_early_exit`].
+pub fn score_from_creature_dir_sampled_with_early_exit<F>(
+    creatures_dir: &Path,
+    data_path: &Path,
+    gpu_backend: GpuBackendLabel,
+    cost: CostKind,
+    sample: &SampleSpec,
+    mut on_chunk: F,
+) -> Result<BTreeMap<String, ScoreResult>, String>
+where
+    F: FnMut(&[PartialScore]) -> EarlyExit,
+{
+    score_from_creature_dir_cpu(
+        creatures_dir,
+        data_path,
+        gpu_backend,
+        cost,
+        Some(&mut on_chunk),
+        sample,
+    )
+}
+
 /// Shared CPU directory-mode implementation behind [`score_from_creature_dir`]
 /// (no callback) and [`score_from_creature_dir_with_early_exit`] (Issue #308).
 ///

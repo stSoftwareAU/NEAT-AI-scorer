@@ -29,6 +29,7 @@ pub mod host_resources;
 pub mod if_tree_fixture;
 pub mod multi_score;
 pub mod prod_fixture;
+pub mod racing_stdio;
 pub mod read_tuning;
 pub mod sampling;
 pub mod scoring;

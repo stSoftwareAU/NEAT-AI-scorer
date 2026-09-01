@@ -984,6 +984,44 @@ flowchart TD
     G --> H
 ```
 
+#### Driving early exit from a subprocess caller: `--race-stdio` (NEAT-AI#3928)
+
+The API above is a **library** entrypoint — the callback must be Rust linked
+into this crate. Callers that run `rust_scorer` as a subprocess (every NEAT-AI
+deployment) had no way to register one, so the hook was implemented and never
+reached. `--race-stdio` exposes it over line-delimited JSON on the directory
+path:
+
+```bash
+rust_scorer --gpu off --race-stdio creatures/ training_data/
+```
+
+After each scored chunk the scorer writes one line to stdout and **blocks**
+until the caller answers with exactly one verdict line on stdin:
+
+```text
+scorer → caller  {"racing":"chunk","chunk":1,"partials":[{"index":0,"key":"alpha","partialError":0.51,"recordsScored":1024}]}
+caller → scorer  {"verdict":"continue"}
+caller → scorer  {"verdict":"abort","creatures":[2,5]}
+caller → scorer  {"verdict":"abortAll"}
+```
+
+The result map is printed after the sweep exactly as in plain directory mode,
+so a caller consumes `{"racing":…}` lines as they arrive and parses whatever
+remains as the result.
+
+- **Parity:** answering `continue` every time reproduces the non-racing
+  directory scores bit-identically (`tests/racing_stdio_cli.rs`).
+- **Fail loud:** a closed stdin, an empty line, a malformed verdict or an
+  unknown verdict name aborts the sweep and exits non-zero. Degrading to
+  "continue" would hand back a full-corpus score the caller never agreed to —
+  indistinguishable from a race that saved nothing.
+- **CPU directory mode only:** the GPU kernel has no early-exit surface, so
+  `--gpu on` is rejected, as is a single-creature file target. `--sample-rate`
+  composes normally.
+- **Probing:** `--race-stdio` appears in `--help`, so a caller can detect
+  whether the installed binary supports racing before asking for it.
+
 For forward-only single-creature fused scoring, activation parallelism also
 defaults to a **host-aware** worker count (every logical CPU on mid/large hosts;
 clamped on low-RAM machines so compiled-network clones stay within memory).

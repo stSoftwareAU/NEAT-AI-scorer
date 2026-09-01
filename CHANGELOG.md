@@ -17,6 +17,29 @@ section to the released version with its date.
 
 ### Added
 
+- **`--race-stdio`: the Issue #308 early-exit hook, reachable from a
+  subprocess caller (NEAT-AI#3928).** `score_from_creature_dir_with_early_exit`
+  is a library entrypoint, so the callback that decides which creatures to
+  abandon has to be Rust linked into this crate — every NEAT-AI deployment
+  drives `rust_scorer` as a **subprocess** and therefore could never register
+  one. The hook shipped and nothing called it. `--race-stdio` closes that gap
+  with a line-delimited protocol on the directory path: after each scored chunk
+  the scorer writes
+  `{"racing":"chunk","chunk":N,"partials":[{"index","key","partialError","recordsScored"}]}`
+  to stdout and blocks for exactly one verdict line on stdin —
+  `{"verdict":"continue"}`, `{"verdict":"abort","creatures":[i,…]}` or
+  `{"verdict":"abortAll"}` — then prints the usual result map. Answering
+  `continue` every time reproduces the non-racing directory scores
+  **bit-identically** (`rust_scorer/tests/racing_stdio_cli.rs`). A closed
+  stdin, an empty line, a malformed verdict or an unknown verdict name aborts
+  the sweep and exits non-zero rather than silently completing a full-corpus
+  sweep the caller never asked for; `--gpu on` and a single-creature file
+  target are refused for the same reason (the hook is CPU directory mode only).
+  New `rust_scorer/src/racing_stdio.rs` (protocol driver, generic over the
+  streams so it is unit-testable without a subprocess) and
+  `multi_score::score_from_creature_dir_sampled_with_early_exit`, which composes
+  the hook with the Issue #310 sampler.
+
 - **Parity guard for `(from, to, type)`-keyed synapses (Issue #581).**
   `neat-core` 0.10.6 (NEAT-AI-core#577) relaxed the duplicate-synapse rule so one
   source may feed an `IF` neuron through more than one role — the contribution
