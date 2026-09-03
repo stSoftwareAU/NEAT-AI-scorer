@@ -1087,10 +1087,10 @@ Measured on an Apple M4 (10 cores) over a 200 MB corpus in 26 files — see
 ### External termination names itself (Issue #591)
 
 A killed scorer used to be the one abnormal exit that said nothing. When a
-GRQ-24 sampler run hit its 3-hour per-task cap mid-batch, `run_core` signalled
-the process group, `rust_scorer` died on the **default** disposition of
-`SIGUSR1`, and all the NEAT-AI batch bridge could report was an exit code and an
-unrelated GPU note:
+production sampler run hit its 3-hour per-task wall-clock cap mid-batch, the
+fleet supervisor signalled the process group, `rust_scorer` died on the
+**default** disposition of `SIGUSR1`, and all the NEAT-AI batch bridge could
+report was an exit code and an unrelated GPU note:
 
 ```text
 [scorer-strict] no-named-creature reason=EXEC_FAILURE exitCode=158

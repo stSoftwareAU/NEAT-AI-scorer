@@ -1,10 +1,10 @@
 //! External termination is an environmental event, not a scoring failure
 //! (Issue #591).
 //!
-//! A GRQ-24 sampler run hit its 3-hour per-task cap mid-batch. `run_core`
-//! signalled the process group, `rust_scorer` died on the **default**
-//! disposition of `SIGUSR1`, and everything the NEAT-AI batch bridge could see
-//! was an exit code and an unrelated GPU note:
+//! A production sampler run hit its 3-hour per-task wall-clock cap mid-batch.
+//! The fleet supervisor signalled the process group, `rust_scorer` died on the
+//! **default** disposition of `SIGUSR1`, and everything the NEAT-AI batch
+//! bridge could see was an exit code and an unrelated GPU note:
 //!
 //! ```text
 //! [scorer-strict] no-named-creature reason=EXEC_FAILURE exitCode=158
@@ -204,7 +204,7 @@ mod tests {
 
     #[test]
     fn exit_code_follows_the_128_plus_signo_convention() {
-        // The GRQ-24 log's `exitCode=158` is macOS SIGUSR1 (30).
+        // The production log's `exitCode=158` is macOS SIGUSR1 (30).
         assert_eq!(exit_code(30), 158);
         assert_eq!(exit_code(15), 143);
         assert_eq!(exit_code(2), 130);

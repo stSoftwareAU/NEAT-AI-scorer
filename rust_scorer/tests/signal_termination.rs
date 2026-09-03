@@ -1,9 +1,9 @@
 //! External termination must be loud, not silent (Issue #591).
 //!
-//! A GRQ-24 sampler run hit its 3-hour per-task cap while `rust_scorer` was
-//! mid-batch. `run_core` signalled the process group, the scorer died on the
-//! **default** disposition, and the only thing the NEAT-AI batch bridge could
-//! see was
+//! A production sampler run hit its 3-hour per-task wall-clock cap while
+//! `rust_scorer` was mid-batch. The fleet supervisor signalled the process
+//! group, the scorer died on the **default** disposition, and the only thing
+//! the NEAT-AI batch bridge could see was
 //!
 //! ```text
 //! [scorer-strict] no-named-creature reason=EXEC_FAILURE exitCode=158
