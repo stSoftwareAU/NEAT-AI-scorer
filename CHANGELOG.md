@@ -15,6 +15,27 @@ section to the released version with its date.
 
 ## [Unreleased]
 
+### Fixed
+
+- **External termination names itself instead of dying silently (Issue #591).**
+  A production sampler run hit its 3-hour per-task wall-clock cap mid-batch; the
+  fleet supervisor signalled the process group, `rust_scorer` died on the
+  **default** disposition of `SIGUSR1`, and the NEAT-AI batch bridge saw only
+  `exitCode=158` (`128 + 30`, macOS `SIGUSR1`) and an unrelated `[gpu] auto
+  fallback` note — an environmental kill indistinguishable from a scoring
+  defect. New `rust_scorer/src/signal_exit.rs` arms an async-signal-safe handler
+  for every catchable termination signal (`SIGHUP`, `SIGINT`, `SIGQUIT`,
+  `SIGTERM`, `SIGUSR1`, `SIGUSR2`) at the top of `cli::main`: it writes one
+  grep-able `[signal] rust_scorer terminated by SIGUSR1 (signal 30) — external
+  termination, not a scoring failure; no result JSON was produced; exiting 158`
+  line to stderr with `write(2)` and exits `128 + signo` via `_exit(2)`,
+  preserving the status the caller already observed. The unflushed stdout is
+  dropped deliberately so no half-written result map escapes; `SIGKILL` stays
+  silent because no process can catch it, and a handler that fails to install is
+  reported rather than swallowed. `rust_scorer/tests/signal_termination.rs`
+  parks the compiled binary mid-sweep under `--race-stdio` and delivers a real
+  signal, so the contract is asserted against the shipped process.
+
 ### Added
 
 - **`--race-stdio`: the Issue #308 early-exit hook, reachable from a
