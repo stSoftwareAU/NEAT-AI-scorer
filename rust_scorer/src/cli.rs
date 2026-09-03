@@ -41,6 +41,7 @@ use crate::read_tuning::{
 };
 use crate::sampling::{SampleSpec, parse_sample_rate};
 use crate::scoring::{ScoreResult, calculate_score, compute_score_components};
+use crate::signal_exit;
 use crate::stream_score::AUTO_FILE_READ_WORKERS;
 use crate::{cost, gpu, multi_score, scoring, stream_score};
 
@@ -757,6 +758,18 @@ fn score_from_json(
 /// scoring or serialisation fails, so the CLI contract is unchanged from when
 /// this lived in `src/main.rs`.
 pub fn main() {
+    // Issue #591: arm the termination-signal diagnostics before any work, so a
+    // cap kill mid-batch names itself instead of dying silently. A handler that
+    // could not be installed is reported rather than swallowed.
+    let unarmed = signal_exit::install();
+    if !unarmed.is_empty() {
+        eprintln!(
+            "[signal] warning: no termination diagnostic armed for {} — a kill by one of these will exit silently ({})",
+            unarmed.join(", "),
+            std::io::Error::last_os_error()
+        );
+    }
+
     let cli = Cli::parse();
 
     // Issue #201: route serialisation failures through the same

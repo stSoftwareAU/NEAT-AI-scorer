@@ -34,5 +34,6 @@ pub mod read_tuning;
 pub mod sampling;
 pub mod scoring;
 pub mod shallow_fixture;
+pub mod signal_exit;
 pub mod stream_io;
 pub mod stream_score;
