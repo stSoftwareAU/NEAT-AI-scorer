@@ -1084,6 +1084,48 @@ Measured on an Apple M4 (10 cores) over a 200 MB corpus in 26 files — see
 | 40 B/record (8 in / 2 out) | 178.28 ms | 77.06 ms | **−56.8 %** |
 | 9848 B/record (production width) | 109.77 ms | 60.00 ms | **−45.3 %** |
 
+### External termination names itself (Issue #591)
+
+A killed scorer used to be the one abnormal exit that said nothing. When a
+GRQ-24 sampler run hit its 3-hour per-task cap mid-batch, `run_core` signalled
+the process group, `rust_scorer` died on the **default** disposition of
+`SIGUSR1`, and all the NEAT-AI batch bridge could report was an exit code and an
+unrelated GPU note:
+
+```text
+[scorer-strict] no-named-creature reason=EXEC_FAILURE exitCode=158
+ScorerStrictError: Rust scorer batch call failed (exit 158) for 20 creature(s)
+--- rust_scorer stderr ---
+[gpu] auto fallback to CPU directory mode: …
+```
+
+Nothing there separates "the cap killed it" from "the scorer is broken".
+`rust_scorer/src/signal_exit.rs` now arms a handler for every catchable
+termination signal (`SIGHUP`, `SIGINT`, `SIGQUIT`, `SIGTERM`, `SIGUSR1`,
+`SIGUSR2`) before any work starts. One grep-able line goes to stderr, and the
+process exits with the conventional `128 + signo` — the same status the caller
+already saw, now with a reason attached:
+
+```text
+[signal] rust_scorer terminated by SIGUSR1 (signal 30) — external termination, not a scoring failure; no result JSON was produced; exiting 158
+```
+
+The signal number and exit code are the host's: macOS `SIGUSR1` is 30 (exit
+158, as in the log above), Linux is 10 (exit 138).
+
+```mermaid
+flowchart LR
+    A[cap / operator sends signal] --> B{catchable?}
+    B -- "SIGTERM, SIGUSR1, …" --> C["[signal] … line on stderr"]
+    C --> D["_exit(128 + signo)"]
+    B -- "SIGKILL" --> E[silent death — no handler can catch it]
+```
+
+The handler runs in signal context, so it allocates nothing, locks nothing and
+calls only `write(2)` and `_exit(2)`. Skipping the stdout flush is deliberate: a
+half-written result map is worse than none, and a killed sweep has no result to
+report. `SIGKILL` remains silent — no process can catch it.
+
 ### Malformed tuning values are reported, not silently ignored (Issue #204)
 
 The numeric performance knobs `NEAT_SCORER_READ_BYTES`,
