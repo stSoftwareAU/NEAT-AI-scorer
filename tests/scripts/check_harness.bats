@@ -184,3 +184,23 @@ EOF
   [ "$status" -eq 0 ]
   [[ "$output" == *"TARGET=[]"* ]]
 }
+
+@test "warn reports on stderr without flipping the exit code" {
+  script="$TMP_DIR/warning.sh"
+  cat >"$script" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+source "$HARNESS"
+usage() { echo "Usage: warning.sh"; }
+CHECK_SUBJECT="subject"
+ok "rule holds"
+warn "deficiency that cannot be failed yet"
+exit "\$EXIT_CODE"
+EOF
+  chmod +x "$script"
+  run --separate-stderr "$script"
+  [ "$status" -eq 0 ]
+  [[ "$stderr" == *"WARN subject: deficiency that cannot be failed yet"* ]]
+  [[ "$output" == *"OK   subject: rule holds"* ]]
+  [[ "$output" != *"WARN"* ]]
+}

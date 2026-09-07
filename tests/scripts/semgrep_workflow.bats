@@ -22,6 +22,9 @@ teardown() {
 # Placeholder digest used by the synthetic fixtures below. The validator only
 # checks the digest shape (sha256:<64-hex>), so any 64-hex string is fine.
 FIXTURE_DIGEST="sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+# Release tag pinned beside that digest. Renovate's `docker` manager and
+# Dependabot resolve container bumps from the tag component (Issue #602).
+FIXTURE_TAG="1.86.0"
 
 # Canonical hardened workflow using the container path. Failure tests mutate
 # this fixture to drop or break one rule at a time.
@@ -48,7 +51,7 @@ jobs:
     runs-on: ubuntu-latest
     container:
       # Semgrep v1.86.0, frozen 2026-05-18.
-      image: semgrep/semgrep@${FIXTURE_DIGEST}
+      image: semgrep/semgrep:${FIXTURE_TAG}@${FIXTURE_DIGEST}
     steps:
       - name: Checkout code
         uses: actions/checkout@v5
@@ -96,6 +99,33 @@ EOF
   [ "$(grep -c '^OK   ' <<<"$output")" -eq 7 ]
 }
 
+@test "names the bump-able version tag beside the digest (issue #602)" {
+  write_container_workflow "$TMP_WF/semgrep.yml"
+  run "$SCRIPT_UNDER_TEST" --workflow "$TMP_WF/semgrep.yml"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"pinned by digest"* ]]
+  [[ "$output" == *"$FIXTURE_TAG"* ]]
+  [[ "$output" != *"WARN"* ]]
+}
+
+@test "warns but still passes when the digest pin carries no version tag (issue #602)" {
+  write_container_workflow "$TMP_WF/semgrep.yml"
+  sed -i.bak "s|semgrep/semgrep:${FIXTURE_TAG}@${FIXTURE_DIGEST}|semgrep/semgrep@${FIXTURE_DIGEST}|" "$TMP_WF/semgrep.yml"
+  run "$SCRIPT_UNDER_TEST" --workflow "$TMP_WF/semgrep.yml"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"WARN"* ]]
+  [[ "$output" == *"no version tag"* ]]
+  [[ "$output" != *"FAIL"* ]]
+}
+
+@test "fails when the tag beside the digest is :latest (issue #602)" {
+  write_container_workflow "$TMP_WF/semgrep.yml"
+  sed -i.bak "s|semgrep/semgrep:${FIXTURE_TAG}@|semgrep/semgrep:latest@|" "$TMP_WF/semgrep.yml"
+  run "$SCRIPT_UNDER_TEST" --workflow "$TMP_WF/semgrep.yml"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"':latest'"* ]]
+}
+
 @test "passes on the semgrep/semgrep-action fixture" {
   write_action_workflow "$TMP_WF/semgrep.yml"
   run "$SCRIPT_UNDER_TEST" --workflow "$TMP_WF/semgrep.yml"
@@ -139,7 +169,7 @@ PY
 
 @test "fails when the container image is unpinned (no digest)" {
   write_container_workflow "$TMP_WF/semgrep.yml"
-  sed -i.bak "s|semgrep/semgrep@${FIXTURE_DIGEST}|semgrep/semgrep|" "$TMP_WF/semgrep.yml"
+  sed -i.bak "s|semgrep/semgrep:${FIXTURE_TAG}@${FIXTURE_DIGEST}|semgrep/semgrep|" "$TMP_WF/semgrep.yml"
   run "$SCRIPT_UNDER_TEST" --workflow "$TMP_WF/semgrep.yml"
   [ "$status" -ne 0 ]
   [[ "$output" == *"container image is not pinned"* ]]
@@ -147,7 +177,7 @@ PY
 
 @test "fails when the container image is pinned to :latest" {
   write_container_workflow "$TMP_WF/semgrep.yml"
-  sed -i.bak "s|semgrep/semgrep@${FIXTURE_DIGEST}|semgrep/semgrep:latest|" "$TMP_WF/semgrep.yml"
+  sed -i.bak "s|semgrep/semgrep:${FIXTURE_TAG}@${FIXTURE_DIGEST}|semgrep/semgrep:latest|" "$TMP_WF/semgrep.yml"
   run "$SCRIPT_UNDER_TEST" --workflow "$TMP_WF/semgrep.yml"
   [ "$status" -ne 0 ]
   [[ "$output" == *"container image is not pinned"* ]]
@@ -155,7 +185,7 @@ PY
 
 @test "fails when the container image is pinned to a mutable tag (issue #102)" {
   write_container_workflow "$TMP_WF/semgrep.yml"
-  sed -i.bak "s|semgrep/semgrep@${FIXTURE_DIGEST}|semgrep/semgrep:1.86.0|" "$TMP_WF/semgrep.yml"
+  sed -i.bak "s|semgrep/semgrep:${FIXTURE_TAG}@${FIXTURE_DIGEST}|semgrep/semgrep:1.86.0|" "$TMP_WF/semgrep.yml"
   run "$SCRIPT_UNDER_TEST" --workflow "$TMP_WF/semgrep.yml"
   [ "$status" -ne 0 ]
   [[ "$output" == *"container image is not pinned by digest"* ]]
