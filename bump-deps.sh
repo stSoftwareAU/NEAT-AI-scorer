@@ -13,7 +13,11 @@
 #      (`--quarantine-hours`, default `$VIBE_BUMP_QUARANTINE_HOURS` / 24h)
 #      so versions published less than N hours ago are deferred.
 #   3. `cargo audit` — fails non-zero on any reported advisory, naming the
-#      offending crate + advisory ID.
+#      offending crate + advisory ID. A cargo-audit that is not installed is
+#      a tooling gap, not a bump rejection (Issue #619): the stage is skipped
+#      loudly and the advisory scan is left to the CI job that owns it
+#      (`.github/workflows/cargo-audit.yml` runs it on every PR). Pass
+#      `--require-audit` (or set `BUMP_DEPS_REQUIRE_AUDIT=1`) to demand it.
 #   4. `cargo build --release` — confirms the bumped tree compiles.
 #
 # Exit 0 = clean (or no-op). Non-zero = bump rejected by audit/build/etc.;
@@ -33,6 +37,9 @@ Options:
   --skip-internal        Skip NEAT-AI-core pin refresh.
   --skip-external        Skip cargo update (crates.io).
   --skip-audit           Skip cargo audit.
+  --require-audit        Treat a missing cargo-audit as a failure instead of
+                         a loud skip. Default: $BUMP_DEPS_REQUIRE_AUDIT, else
+                         off. Issue #619.
   --skip-build           Skip cargo build --release.
   --cargo-upgrade        Use 'cargo upgrade' (cargo-edit) to bump Cargo.toml
                          manifest versions instead of 'cargo update' (lockfile
@@ -58,6 +65,7 @@ QUARANTINE_HOURS="${VIBE_BUMP_QUARANTINE_HOURS:-24}"
 SKIP_INTERNAL=0
 SKIP_EXTERNAL=0
 SKIP_AUDIT=0
+REQUIRE_AUDIT="${BUMP_DEPS_REQUIRE_AUDIT:-0}"
 SKIP_BUILD=0
 CARGO_UPGRADE=0
 NEAT_CORE_SHA_OVERRIDE=""
@@ -73,6 +81,7 @@ while [[ $# -gt 0 ]]; do
     --skip-internal)    SKIP_INTERNAL=1; shift ;;
     --skip-external)    SKIP_EXTERNAL=1; shift ;;
     --skip-audit)       SKIP_AUDIT=1; shift ;;
+    --require-audit)    REQUIRE_AUDIT=1; shift ;;
     --skip-build)       SKIP_BUILD=1; shift ;;
     --cargo-upgrade)    CARGO_UPGRADE=1; shift ;;
     --neat-core-sha)    NEAT_CORE_SHA_OVERRIDE="$2"; shift 2 ;;
@@ -309,6 +318,90 @@ bump_internal() {
   echo "internal: NEAT-AI-core ${current:0:7} -> ${upstream:0:7}"
 }
 
+# Emit "<name>\t<version>" for every package recorded in a Cargo.lock.
+lock_versions() {
+  local lock="$1"
+  [[ -f "$lock" ]] || return 0
+  awk '
+    /^\[\[package\]\]/ { name = ""; next }
+    /^name = / { name = $3; gsub(/"/, "", name); next }
+    /^version = / {
+      if (name != "") {
+        v = $3
+        gsub(/"/, "", v)
+        printf "%s\t%s\n", name, v
+        name = ""
+      }
+    }
+  ' "$lock"
+}
+
+# Apply a single vetted candidate. Captures cargo's own output in APPLY_ERR so
+# a rejection is reported with its reason instead of being discarded (#619).
+apply_one_candidate() {
+  local crate="$1" version="$2" rc=0
+  if [[ "$CARGO_UPGRADE" -eq 1 ]]; then
+    APPLY_ERR="$( (cd "$REPO_DIR" && cargo upgrade -p "$crate@$version") 2>&1 )" || rc=$?
+  else
+    APPLY_ERR="$( (cd "$REPO_DIR" && cargo update -p "$crate" --precise "$version") 2>&1 )" || rc=$?
+  fi
+  return "$rc"
+}
+
+# Retry a set of crates in ONE `cargo update` so interlocked families move
+# together (Issue #619). wasm-bindgen, js-sys and web-sys pin each other with
+# `=` requirements, so every per-crate `--precise` apply is rejected while the
+# rest of the graph stays locked — the family can only ever advance as a unit.
+#
+# A grouped resolve is more permissive than `--precise`, so the result is
+# verified against the vetted candidate list: any package whose locked version
+# changed to something the quarantine gate did not clear rolls the whole retry
+# back. Sets REGROUP_ERR on failure.
+regroup_apply() {
+  local lock="${REPO_DIR%/}/Cargo.lock"
+  REGROUP_ERR=""
+  if [[ ! -f "$lock" ]]; then
+    REGROUP_ERR="no Cargo.lock at ${lock} — cannot verify a regrouped update"
+    return 1
+  fi
+  local backup
+  backup="$(mktemp)"
+  cp "$lock" "$backup"
+
+  local args=() crate
+  for crate in "$@"; do
+    args+=(-p "$crate")
+  done
+
+  local rc=0 out
+  out="$( (cd "$REPO_DIR" && cargo update "${args[@]}") 2>&1 )" || rc=$?
+  if [[ "$rc" -ne 0 ]]; then
+    REGROUP_ERR="$out"
+    cp "$backup" "$lock"
+    rm -f "$backup"
+    return 1
+  fi
+
+  local changed violation="" entry
+  changed="$(comm -13 <(lock_versions "$backup" | sort) <(lock_versions "$lock" | sort))"
+  while IFS= read -r entry; do
+    [[ -z "$entry" ]] && continue
+    if ! printf '%s\n' "$VETTED_CANDIDATES" | grep -Fqx -- "$entry"; then
+      violation+="${entry//$'\t'/ } "
+    fi
+  done <<<"$changed"
+
+  if [[ -n "$violation" ]]; then
+    cp "$backup" "$lock"
+    rm -f "$backup"
+    REGROUP_ERR="regrouped update pulled in unvetted versions (not cleared by the ${QUARANTINE_HOURS}h quarantine): ${violation% }"
+    return 1
+  fi
+
+  rm -f "$backup"
+  return 0
+}
+
 bump_external() {
   if ! command -v cargo >/dev/null 2>&1; then
     echo "Error: cargo not available" >&2
@@ -332,9 +425,21 @@ bump_external() {
     dry_cmd=(cargo update --dry-run)
     apply_label="update"
   fi
-  local dry_log
-  dry_log="$(cd "$REPO_DIR" && "${dry_cmd[@]}" 2>&1 || true)"
+  local dry_log dry_rc=0
+  dry_log="$( (cd "$REPO_DIR" && "${dry_cmd[@]}") 2>&1 )" || dry_rc=$?
+  # A dry run that cannot resolve the graph is a real failure, not "no
+  # updates" — reporting it as a clean no-op would hide a broken tree (#619).
+  if [[ "$dry_rc" -ne 0 ]]; then
+    printf '%s\n' "$dry_log" >&2
+    echo "Error: 'cargo ${apply_label} --dry-run' failed (exit ${dry_rc}) — dependency graph could not be resolved" >&2
+    external_msg="error"
+    return 1
+  fi
+
   local applied=0 deferred=0 failed=0
+  local cand_crates=() cand_versions=()
+  VETTED_CANDIDATES=""
+  local line
   while IFS= read -r line; do
     # Match lines like:
     #   Updating  clap v4.5.20 -> v4.5.21       (cargo update)
@@ -355,25 +460,59 @@ bump_external() {
         continue
       fi
       if is_older_than_hours "$published_at" "$QUARANTINE_HOURS"; then
-        local apply_ok=1
-        if [[ "$CARGO_UPGRADE" -eq 1 ]]; then
-          (cd "$REPO_DIR" && cargo upgrade -p "$crate@$new_v") >/dev/null 2>&1 || apply_ok=0
-        else
-          (cd "$REPO_DIR" && cargo update -p "$crate" --precise "$new_v") >/dev/null 2>&1 || apply_ok=0
-        fi
-        if [[ "$apply_ok" -eq 1 ]]; then
-          applied=$((applied + 1))
-          echo "  bump: $crate -> $new_v"
-        else
-          failed=$((failed + 1))
-          echo "  fail: $crate -> $new_v (cargo $apply_label rejected)"
-        fi
+        cand_crates+=("$crate")
+        cand_versions+=("$new_v")
+        VETTED_CANDIDATES+="${crate}"$'\t'"${new_v}"$'\n'
       else
         deferred=$((deferred + 1))
         echo "  defer: $crate $new_v (within ${QUARANTINE_HOURS}h quarantine, published $published_at)"
       fi
     fi
   done <<<"$dry_log"
+
+  local retry_crates=() retry_versions=() retry_errors=()
+  local i
+  for i in "${!cand_crates[@]}"; do
+    if apply_one_candidate "${cand_crates[$i]}" "${cand_versions[$i]}"; then
+      applied=$((applied + 1))
+      echo "  bump: ${cand_crates[$i]} -> ${cand_versions[$i]}"
+    else
+      retry_crates+=("${cand_crates[$i]}")
+      retry_versions+=("${cand_versions[$i]}")
+      retry_errors+=("${APPLY_ERR}")
+    fi
+  done
+
+  # Interlocked crates rejected one at a time get one grouped retry.
+  if [[ "${#retry_crates[@]}" -gt 0 ]]; then
+    if [[ "$CARGO_UPGRADE" -eq 1 ]]; then
+      # `cargo upgrade` rewrites Cargo.toml, so the Cargo.lock verification
+      # below does not apply — report the rejection with cargo's own reason.
+      REGROUP_ERR="cargo upgrade does not support the grouped lockfile retry"
+    else
+      echo "  regroup: retrying ${#retry_crates[@]} interlocked crate(s) in one cargo update"
+      if regroup_apply "${retry_crates[@]}"; then
+        for i in "${!retry_crates[@]}"; do
+          applied=$((applied + 1))
+          echo "  bump: ${retry_crates[$i]} -> ${retry_versions[$i]} (regrouped)"
+        done
+        retry_crates=()
+        retry_errors=()
+      fi
+    fi
+  fi
+
+  if [[ "${#retry_crates[@]}" -gt 0 ]]; then
+    # Fail loud: report cargo's own reason for each rejection, then the reason
+    # the grouped retry could not rescue them either.
+    for i in "${!retry_crates[@]}"; do
+      failed=$((failed + 1))
+      echo "  fail: ${retry_crates[$i]} -> ${retry_versions[$i]} (cargo ${apply_label} rejected)"
+      printf '%s\n' "${retry_errors[$i]}" >&2
+    done
+    printf 'regroup: %s\n' "$REGROUP_ERR" >&2
+  fi
+
   if [[ "$applied" -gt 0 ]]; then
     external_changed=1
   fi
@@ -387,9 +526,21 @@ bump_external() {
 
 run_audit() {
   if ! cargo audit --version >/dev/null 2>&1; then
-    echo "Error: cargo audit not available — install with 'cargo install cargo-audit --locked'" >&2
-    audit_msg="error"
-    return 1
+    # Issue #619: a cargo-audit missing from the unattended PATH is a tooling
+    # gap, not a bump rejection. Failing here reverted every bump and left the
+    # repo with no dependency updates at all — a worse security outcome than
+    # deferring the scan to `.github/workflows/cargo-audit.yml`, which runs
+    # `cargo audit` on every PR. The skip is loud, never silent.
+    if [[ "$REQUIRE_AUDIT" -eq 1 ]]; then
+      echo "Error: cargo audit not available — install with 'cargo install cargo-audit --locked'" >&2
+      audit_msg="error"
+      return 1
+    fi
+    echo "Warning: cargo audit not available — advisory scan deferred to CI (.github/workflows/cargo-audit.yml runs it on every PR)." >&2
+    echo "Warning: install locally with 'cargo install cargo-audit --locked'; pass --require-audit to make this fatal." >&2
+    audit_msg="skipped (cargo-audit not installed)"
+    echo "audit: SKIPPED (cargo-audit not installed)"
+    return 0
   fi
   local audit_log
   if audit_log="$(cd "$REPO_DIR" && cargo audit 2>&1)"; then
