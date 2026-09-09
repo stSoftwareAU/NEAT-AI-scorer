@@ -1769,6 +1769,18 @@ The container path is the functional equivalent of the
 `scripts/check-semgrep-workflow.sh` (invoked from `quality.sh`) and
 covered end-to-end by `tests/scripts/semgrep_workflow.bats`.
 
+The preferred pin shape carries a **release tag beside that digest** —
+`image: semgrep/semgrep:<version>@sha256:<64-hex>` (Issue #617). The digest
+still decides which bytes run, so the pin is exactly as immutable, but
+Renovate's `github-actions` manager and Dependabot's `docker` ecosystem both
+resolve a bump from the **tag** and then rewrite the digest next to it: a bare
+digest gives them nothing to resolve and is frozen forever. The validator
+therefore accepts a bare `semgrep/semgrep@sha256:<digest>` as a genuine pin but
+emits a non-blocking `WARN` naming the missing tag, and fails a tag-only pin as
+before. Editing the workflow's own `image:` line needs a maintainer — the
+automation worker's credentials carry no `workflow` OAuth scope
+([Human escalation](./CONTRIBUTING.md#human-escalation)).
+
 A standalone Markdown Lint workflow
 (`.github/workflows/markdown-lint.yml`, Issue #63) runs
 `markdownlint-cli2` against the existing `.markdownlint-cli2.yaml`

@@ -130,4 +130,38 @@
 # assertions that distinguish the two versions are the parse-path refusal and
 # the inclusive ceiling, since the *compile*-path refusal itself predates the
 # bump (#177) and only moved ahead of the walk.
-0.14.1
+
+#
+# 0.14.1 -> 0.15.4: acknowledge neat-core #653 (Issue #601, 0.15.0), the only
+# breaking bump presented since 0.14.1. `CompiledNetwork::new` computed
+# `num_neurons - num_inputs` on a header read straight from a buffer, so a
+# malformed header declaring more inputs than nodes wrapped that `usize`
+# subtraction (release builds carry Cargo's default `overflow-checks = false`)
+# and aborted the module inside `Vec::with_capacity`. 0.15.0 rejects the header
+# first with a new `NetworkError::InvalidInputCount { num_inputs, num_neurons }`
+# variant.
+#
+# The break is confined to that new enum variant — `NetworkError` is not
+# `#[non_exhaustive]`, so an exhaustive `match` on it stops compiling. No
+# signature rust_scorer names moved. scorer never matches `NetworkError`
+# exhaustively: its single use is a `matches!(refused, Err(NetworkError::
+# TooManyNodes { .. }))` in `rust_scorer/src/gpu/forward_mse_batched.rs`, which
+# is unaffected by an added variant. scorer also never calls
+# `CompiledNetwork::new` — every network is built by `compile_creature`, which
+# sets `num_neurons = num_inputs + creature.neurons.len()`, so `num_inputs >
+# num_neurons` is unreachable from any scorer path and the new refusal cannot
+# fire on a scorer-loaded creature. That unreachability is why this
+# acknowledgement adds no pinning test: the guard sits on a raw-buffer
+# constructor scorer does not use, so any test of it would exercise neat-core,
+# not scorer.
+#
+# 0.15.1 -> 0.15.4 are patch-level within the handled 0.15 line and need no
+# acknowledgement: #654 (Issue #602) bounds the `propagate_codec` size check,
+# #655 (Issue #642) and the two Deno workflow additions (#656, #657) are
+# repo-tooling only, and none changes API scorer names.
+#
+# Verified against the sibling clone at 0.15.4 (ed3165a) by
+# `cargo clippy --all-targets -- -D warnings` (clean) and the full scorer test
+# suite (330 lib tests plus every integration suite and 33 doctests, 0 failed).
+
+0.15.4

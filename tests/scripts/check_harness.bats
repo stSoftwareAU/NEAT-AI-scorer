@@ -184,3 +184,23 @@ EOF
   [ "$status" -eq 0 ]
   [[ "$output" == *"TARGET=[]"* ]]
 }
+
+@test "warn reports WARN on stderr with the subject prefix and does not fail the run" {
+  script="$TMP_DIR/advisory.sh"
+  cat >"$script" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+source "$HARNESS"
+usage() { echo "Usage: advisory.sh"; }
+CHECK_SUBJECT="subject"
+ok "rule holds"
+warn "advisory only"
+exit "\$EXIT_CODE"
+EOF
+  chmod +x "$script"
+  run --separate-stderr "$script"
+  [ "$status" -eq 0 ]
+  [[ "$stderr" == *"WARN subject: advisory only"* ]]
+  [[ "$output" == *"OK   subject: rule holds"* ]]
+  [[ "$output" != *"WARN"* ]]
+}
