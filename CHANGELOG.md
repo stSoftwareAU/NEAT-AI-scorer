@@ -17,6 +17,22 @@ section to the released version with its date.
 
 ### Fixed
 
+- **Handles the neat-core 0.14.0 breaking bump — the declared observation width
+  is now bounded before it is walked (neat-core #622 / #640, Issue #609).**
+  `Develop` recorded `0.13.0` in `neat-core.expected-version` while the sibling
+  clone every host builds against had moved to `0.14.x`, so the Issue #252
+  breaking-bump gate failed `Project Validation` on **every** PR and nothing
+  could merge. The bump is a behavioural narrowing, not a signature change:
+  `validate_creature_width` refuses a declared `input` above `MAX_NODE_COUNT`
+  with `CreatureError::TooManyNodes`, so a sub-100-byte creature can no longer
+  cost one owned UUID per declared input. No scorer-reachable creature is
+  affected — `compile_creature` has refused a *total* node count above the same
+  ceiling since neat-core #177, and the total is never below `input`, so the
+  refusal only moves earlier. New `rust_scorer/tests/declared_width_ceiling.rs`
+  pins the typed refusal on the parse, compile and CLI paths, that the ceiling
+  is inclusive, and that the widest creature which has ever compiled still
+  compiles. `neat-core.expected-version` acknowledges 0.14.1.
+
 - **Builds against neat-core 0.13.0 — `CompiledNetwork`'s fields went private
   (neat-core #625 / #633).** neat-core 0.12.0 made every `CompiledNetwork`
   field private behind borrow-only accessors and 0.13.0 followed the same day.

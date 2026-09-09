@@ -101,4 +101,30 @@
 # neat-core at head, so the break was fleet-wide within minutes of merging.
 # Verified by `cargo clippy --all-targets -- -D warnings` and the full scorer
 # test suite against the sibling clone at 0.13.0 (59eb6e6).
-0.13.0
+#
+# 0.13.0 -> 0.14.1: acknowledge neat-core #640 (Issue #622, 0.14.0), which bound
+# the *declared* observation width before it is walked. `CreatureExport::input`
+# is a declared count with no backing data in the JSON, so a sub-100-byte
+# creature saying `"input": 100000000` used to cost one owned String UUID per
+# declared input; `validate_creature_width` now refuses a declared `input` above
+# `MAX_NODE_COUNT` with `CreatureError::TooManyNodes`, and `parse_creature_json`,
+# `compile_creature`, `creature_to_json`, `creature_to_json_pretty`,
+# `validate_creature_topology` and `cleanup_creature_with` all inherit the
+# refusal. 0.14.1 is patch-level within that line (#641, bump-deps quarantine).
+#
+# It is a behavioural narrowing, not a signature change: no public type or
+# function signature rust_scorer names moved, and no scorer-reachable creature
+# can be caught by the new refusal. `compile_creature` has refused a *total*
+# node count (`input` + listed neurons) above `MAX_NODE_COUNT` with the same
+# typed error since neat-core #177, and the total is never below `input`, so
+# every creature the width check now refuses was already refused one step
+# later — 0.14.0 only moves the refusal ahead of the allocation it was sizing.
+# Production width is 2461 inputs (`rust_scorer::prod_fixture`), twenty-six
+# times below the ceiling. Verified by `cargo fmt --check`,
+# `cargo clippy --all-targets -- -D warnings` and the full scorer test suite
+# against the sibling clone at 0.14.1 (255b06e), plus
+# `rust_scorer/tests/declared_width_ceiling.rs`, which pins the typed refusal on
+# the parse, compile and CLI paths, that the ceiling is inclusive, and that the
+# widest creature which has ever compiled still compiles. That suite fails
+# against 0.13.0 (3 of its 6 tests) and passes against the sibling clone.
+0.14.1
