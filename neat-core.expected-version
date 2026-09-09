@@ -126,5 +126,8 @@
 # `rust_scorer/tests/declared_width_ceiling.rs`, which pins the typed refusal on
 # the parse, compile and CLI paths, that the ceiling is inclusive, and that the
 # widest creature which has ever compiled still compiles. That suite fails
-# against 0.13.0 (3 of its 6 tests) and passes against the sibling clone.
+# against 0.13.0 (3 of its 6 tests) and passes against the sibling clone; the
+# assertions that distinguish the two versions are the parse-path refusal and
+# the inclusive ceiling, since the *compile*-path refusal itself predates the
+# bump (#177) and only moved ahead of the walk.
 0.14.1

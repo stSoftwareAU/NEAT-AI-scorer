@@ -14,7 +14,10 @@
 //!
 //! 1. **The refusal is typed and reaches the scorer's own boundary.** An absurd
 //!    declared width fails on parse and on compile with `TooManyNodes`, and the
-//!    CLI reports it and scores nothing.
+//!    CLI reports it and scores nothing. Only the *parse-path* refusal is new:
+//!    `compile_creature` has refused the same width since Issue #177, through
+//!    the total-node check described in point 3 — what 0.14.0 adds there is
+//!    that the refusal now happens **before** the walk.
 //! 2. **The ceiling is inclusive.** `input == MAX_NODE_COUNT` still parses, so
 //!    the narrowing starts exactly one input past the widest addressable
 //!    network.
@@ -69,12 +72,17 @@ fn absurd_declared_width_is_refused_on_parse_with_the_typed_error() {
 }
 
 #[test]
-fn absurd_declared_width_is_refused_on_compile_with_the_same_typed_error() {
+fn no_boundary_accepts_a_declared_width_past_the_ceiling() {
+    // The parse boundary refuses it (new in 0.14.0) ...
     let json = creature_json(MAX_NODE_COUNT + 1);
-    // Parsing already refuses it, so compile is exercised through the struct
-    // the parser would have produced: build it by hand at the boundary.
     let err = parse_creature_json(&json).expect_err("parse must refuse it");
     assert!(matches!(err, CreatureError::TooManyNodes { .. }));
+
+    // ... and so does the compile boundary, which cannot be reached through
+    // the parser any more. Widen an export the parser did produce, so compile
+    // is exercised on the same shape. This half is the Issue #177 total-node
+    // guarantee, unchanged by the bump: it is here so the suite pins that
+    // *no* boundary accepts the width, not just the one that moved.
 
     let mut creature = parse_creature_json(&creature_json(MAX_NODE_COUNT))
         .expect("the ceiling itself parses, giving a valid export to widen");
