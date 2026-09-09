@@ -16,6 +16,22 @@ name: Markdown Lint
 # under this workflow's privileges.
 #   * actions/checkout — SHA-pinned to v5 (Node 24).
 #   * actions/setup-node — SHA-pinned to v6 (Node 24).
+#
+# Install pinning policy (Issue #594, enforced by
+# `scripts/check-markdown-lint-workflow.sh` rule 6): `uses:` SHA-pinning does
+# not reach inside a `run:` block, and the repository's dependency quarantine
+# only covers manifests a bump tool can manage — a `run:` block is neither. An
+# unpinned `npm install -g markdownlint-cli2` would therefore resolve whatever
+# the registry serves at that moment, so a hijacked or malicious release would
+# execute on the runner, under this workflow's GITHUB_TOKEN, the instant it was
+# published and with no embargo. The install below names an exact `@x.y.z`, so
+# a re-published version cannot silently change what runs here.
+#
+# Bump protocol: this repository runs no Renovate/Dependabot (dependency bumps
+# are per-PR via `bump-deps.sh`, Issue #105), so the pin is advanced by hand —
+# `npm view markdownlint-cli2 version`, confirm the release is older than the
+# quarantine window ($VIBE_BUMP_QUARANTINE_HOURS, default 24h), update the
+# version below, and re-run `markdownlint-cli2` locally in the same PR.
 
 on:
   # Issue #371: this is a lint/checker workflow, so it gates the pull request
@@ -58,7 +74,9 @@ jobs:
           node-version: "lts/*"
 
       - name: Install markdownlint-cli2
-        run: npm install -g markdownlint-cli2
+        # Exact version pin — see the "Install pinning policy" note above
+        # (Issue #594). 0.23.2, published 2026-07-27.
+        run: npm install -g markdownlint-cli2@0.23.2
 
       - name: Run markdownlint-cli2
         run: markdownlint-cli2

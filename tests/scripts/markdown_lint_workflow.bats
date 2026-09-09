@@ -47,7 +47,7 @@ jobs:
         with:
           node-version: "lts/*"
       - name: Install markdownlint-cli2
-        run: npm install -g markdownlint-cli2
+        run: npm install -g markdownlint-cli2@0.23.2
       - name: Run markdownlint-cli2
         run: markdownlint-cli2
 EOF
@@ -59,7 +59,7 @@ EOF
   [ "$status" -eq 0 ]
   # Issue #360: prove every rule was individually evaluated and passed via the
   # machine-checkable "OK   " marker rather than pinning informational wording.
-  [ "$(grep -c '^OK   ' <<<"$output")" -eq 7 ]
+  [ "$(grep -c '^OK   ' <<<"$output")" -eq 8 ]
 }
 
 # Business-logic change (Issue #371 reverses Issue #207): a lint/checker
@@ -202,6 +202,81 @@ PY
   run "$SCRIPT_UNDER_TEST" --workflow "$TMP_WF/markdown-lint.yml"
   [ "$status" -ne 0 ]
   [[ "$output" == *"install step missing"* ]]
+}
+
+# Issue #594: a `run:` step that installs a package with no version resolves
+# whatever the registry serves at that moment, so a hijacked release executes on
+# the runner with the workflow token in scope. `uses:` SHA-pinning does not cover
+# a `run:` block, so this rule is the only guard for it.
+@test "reports the exact version the install is pinned to (Issue #594)" {
+  write_markdown_lint_workflow "$TMP_WF/markdown-lint.yml"
+  run "$SCRIPT_UNDER_TEST" --workflow "$TMP_WF/markdown-lint.yml"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"pinned to exact version 0.23.2"* ]]
+}
+
+@test "accepts a pre-release exact version (Issue #594)" {
+  write_markdown_lint_workflow "$TMP_WF/markdown-lint.yml"
+  sed -i.bak 's|markdownlint-cli2@0.23.2|markdownlint-cli2@1.0.0-beta.1|' "$TMP_WF/markdown-lint.yml"
+  run "$SCRIPT_UNDER_TEST" --workflow "$TMP_WF/markdown-lint.yml"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"pinned to exact version 1.0.0-beta.1"* ]]
+}
+
+@test "fails when the markdownlint-cli2 install carries no version (Issue #594)" {
+  write_markdown_lint_workflow "$TMP_WF/markdown-lint.yml"
+  sed -i.bak 's|markdownlint-cli2@0.23.2|markdownlint-cli2|' "$TMP_WF/markdown-lint.yml"
+  run "$SCRIPT_UNDER_TEST" --workflow "$TMP_WF/markdown-lint.yml"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"not pinned to an exact version"* ]]
+}
+
+@test "fails when the markdownlint-cli2 install uses a dist-tag (Issue #594)" {
+  write_markdown_lint_workflow "$TMP_WF/markdown-lint.yml"
+  sed -i.bak 's|markdownlint-cli2@0.23.2|markdownlint-cli2@latest|' "$TMP_WF/markdown-lint.yml"
+  run "$SCRIPT_UNDER_TEST" --workflow "$TMP_WF/markdown-lint.yml"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"not pinned to an exact version"* ]]
+  [[ "$output" == *"latest"* ]]
+}
+
+@test "fails when the markdownlint-cli2 install uses a caret range (Issue #594)" {
+  write_markdown_lint_workflow "$TMP_WF/markdown-lint.yml"
+  sed -i.bak 's|markdownlint-cli2@0.23.2|markdownlint-cli2@^0.23.2|' "$TMP_WF/markdown-lint.yml"
+  run "$SCRIPT_UNDER_TEST" --workflow "$TMP_WF/markdown-lint.yml"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"not pinned to an exact version"* ]]
+}
+
+@test "fails when the markdownlint-cli2 install uses a wildcard minor (Issue #594)" {
+  write_markdown_lint_workflow "$TMP_WF/markdown-lint.yml"
+  sed -i.bak 's|markdownlint-cli2@0.23.2|markdownlint-cli2@0.x|' "$TMP_WF/markdown-lint.yml"
+  run "$SCRIPT_UNDER_TEST" --workflow "$TMP_WF/markdown-lint.yml"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"not pinned to an exact version"* ]]
+}
+
+# A commented mention of the install is prose, not an install step: the real
+# workflow documents its own pinning policy above the step, and the validator
+# must not read that comment as the step (nor as an unpinned install).
+@test "a commented install mention is not counted as the install step (Issue #594)" {
+  write_markdown_lint_workflow "$TMP_WF/markdown-lint.yml"
+  python3 - "$TMP_WF/markdown-lint.yml" <<'PY2'
+import sys
+path = sys.argv[1]
+with open(path) as fh:
+    text = fh.read()
+text = text.replace(
+    "      - name: Install markdownlint-cli2\n        run: npm install -g markdownlint-cli2@0.23.2\n",
+    "# an unpinned npm install -g markdownlint-cli2 would be a supply-chain hazard\n",
+)
+with open(path, "w") as fh:
+    fh.write(text)
+PY2
+  run "$SCRIPT_UNDER_TEST" --workflow "$TMP_WF/markdown-lint.yml"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"install step missing"* ]]
+  [[ "$output" != *"not pinned to an exact version"* ]]
 }
 
 @test "fails when markdownlint-cli2 is not invoked" {

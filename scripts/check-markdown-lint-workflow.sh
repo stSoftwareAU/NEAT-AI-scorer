@@ -9,6 +9,9 @@
 #      (Node 24 policy — see scripts/check-workflow-action-versions.sh).
 #   4. Provision Node via `actions/setup-node` pinned to a numeric major.
 #   5. Install and invoke `markdownlint-cli2` so the lint gate actually runs.
+#   6. Pin that install to an exact `@x.y.z` version — a `run:` block is not
+#      covered by `uses:` SHA-pinning or by the dependency quarantine, so an
+#      unpinned install executes whatever the registry serves (Issue #594).
 #
 # The script takes a single optional `--workflow PATH` argument so BATS tests
 # can exercise it against fixtures. When called with no argument it validates
@@ -108,10 +111,38 @@ fi
 
 # 5. markdownlint-cli2 must be installed AND invoked. Two separate checks so
 #    a missing install or a missing run surfaces as a distinct failure.
-if grep -qE 'npm[[:space:]]+install[[:space:]].*markdownlint-cli2' "$WORKFLOW"; then
+# Comment lines are skipped: the workflow documents its own pinning policy in
+# prose above the step, and a commented mention is not an install step.
+install_line="$(grep -nE 'npm[[:space:]]+install[[:space:]].*markdownlint-cli2' "$WORKFLOW" \
+  | grep -vE '^[0-9]+:[[:space:]]*#' | head -n 1 || true)"
+if [[ -n "$install_line" ]]; then
   ok "markdownlint-cli2 install step present"
 else
   fail "markdownlint-cli2 install step missing — gate cannot run without the binary"
+fi
+
+# 6. That install must pin an EXACT version (Issue #594). `uses:` SHA-pinning
+#    (rules 3 and 4) does not reach inside a `run:` block, and the repository's
+#    dependency quarantine only covers manifests a bump tool can manage — a
+#    `run:` block is neither. An unpinned `npm install -g <pkg>` therefore
+#    resolves whatever the registry serves at that moment, so a hijacked or
+#    malicious release executes on the runner, under the workflow's
+#    GITHUB_TOKEN, the instant it is published and with no embargo.
+#
+#    Accepted:  markdownlint-cli2@0.23.2, markdownlint-cli2@1.0.0-beta.1
+#    Rejected:  bare name, dist-tags (@latest, @next), and every range form
+#               (@^0.23.2, @~0.23, @>=0.23.0, @0.x, @*) — all of them re-resolve
+#               on a later run, which is the exact hazard being closed.
+if [[ -n "$install_line" ]]; then
+  version_spec="$(grep -oE 'markdownlint-cli2@[^[:space:]"'"'"'`]+' <<<"$install_line" | head -n 1 || true)"
+  version="${version_spec#markdownlint-cli2@}"
+  if [[ -z "$version" ]]; then
+    fail "markdownlint-cli2 install is not pinned to an exact version — no '@<version>' on the install; a floating install runs whatever the registry serves at that moment (Issue #594)"
+  elif [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$ ]]; then
+    ok "markdownlint-cli2 install pinned to exact version $version"
+  else
+    fail "markdownlint-cli2 install is not pinned to an exact version — '@$version' is a dist-tag or range that re-resolves on every run; use an exact x.y.z (Issue #594)"
+  fi
 fi
 
 if grep -qE '^[[:space:]]+(- )?run:[[:space:]]*markdownlint-cli2' "$WORKFLOW"; then
@@ -120,7 +151,7 @@ else
   fail "markdownlint-cli2 is not invoked — no 'run: markdownlint-cli2' step found"
 fi
 
-# 6. A lint/checker workflow must gate the PR only — it must NOT trigger on
+# 7. A lint/checker workflow must gate the PR only — it must NOT trigger on
 #    push to the default branch `Develop` (Issue #371, reversing Issue #207).
 #    Once this check is a required status, a post-merge push run only duplicates
 #    the run that already gated the PR: it wastes CI minutes and can leave a red
