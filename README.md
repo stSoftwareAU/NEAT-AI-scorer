@@ -1816,6 +1816,24 @@ regressions out of merged commits without depending on the full CI graph. It is 
 `scripts/check-markdown-lint-workflow.sh` (invoked from `quality.sh`)
 and covered end-to-end by `tests/scripts/markdown_lint_workflow.bats`.
 
+The `markdownlint-cli2` install inside that workflow is pinned to an **exact**
+version — `npm install -g markdownlint-cli2@0.23.2` (Issue #594). SHA-pinning
+`uses:` references does not reach inside a `run:` block, and the repository's
+dependency quarantine only covers manifests a bump tool can manage, which a
+`run:` block is not. An unpinned install would resolve whatever the registry
+served at that moment, so a hijacked or malicious release would execute on the
+runner — under the workflow's `GITHUB_TOKEN` — the instant it was published,
+with no embargo. `scripts/check-markdown-lint-workflow.sh` rejects a bare name,
+a dist-tag (`@latest`, `@next`) and every range form (`@^0.23.2`, `@0.x`, `@*`),
+because each of those re-resolves on a later run.
+
+This repository runs no Renovate or Dependabot — dependency bumps are per-PR
+via `bump-deps.sh` (Issue #105) — so the pin is advanced by hand, the same way
+the Semgrep container digest is: run `npm view markdownlint-cli2 version`,
+confirm the release is older than the quarantine window
+(`$VIBE_BUMP_QUARANTINE_HOURS`, default 24h), update the version in the
+workflow, and re-run `markdownlint-cli2` locally in the same PR.
+
 ### Review governance (CODEOWNERS) — Issue #176
 
 `.github/CODEOWNERS` designates the `@stSoftwareAU/developers` maintainers

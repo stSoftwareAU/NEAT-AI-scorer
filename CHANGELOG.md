@@ -15,6 +15,24 @@ section to the released version with its date.
 
 ## [Unreleased]
 
+### Security
+
+- **The CI install of `markdownlint-cli2` is pinned to an exact version
+  (Issue #594).** `.github/workflows/markdown-lint.yml` ran
+  `npm install -g markdownlint-cli2` with no version, so the job resolved
+  whatever the registry served at that moment: a hijacked or malicious release
+  would have executed on the runner, under the workflow's `GITHUB_TOKEN`, the
+  instant it was published and with no embargo. SHA-pinning `uses:` references
+  does not reach inside a `run:` block, and the dependency quarantine only
+  covers manifests a bump tool can manage, so nothing else was guarding this
+  install. It now names `markdownlint-cli2@0.23.2`, and
+  `scripts/check-markdown-lint-workflow.sh` gained a rule that rejects a bare
+  name, a dist-tag (`@latest`, `@next`) and every range form (`@^0.23.2`,
+  `@0.x`, `@*`) — each of those re-resolves on a later run. The repository runs
+  no Renovate/Dependabot (bumps are per-PR via `bump-deps.sh`), so the pin is
+  advanced by hand under the bump protocol recorded in the workflow header and
+  the README, mirroring the Semgrep container digest.
+
 ### Fixed
 
 - **Builds against neat-core 0.14.2 — the declared observation width is now
