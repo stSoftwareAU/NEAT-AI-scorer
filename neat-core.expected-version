@@ -87,4 +87,41 @@
 # loads with every synapse intact, scores identically to the pre-#577 relay
 # workaround, and scores *differently* from the creature a `(from, to)`-keyed
 # loader is left holding.
-0.10.0
+#
+# 0.10.0 -> 0.13.0: acknowledge neat-core #633 (Issue #625, 0.12.0), which made
+# every `CompiledNetwork` field private behind borrow-only accessors so safe
+# code can no longer edit a validated network into an out-of-bounds SIMD read,
+# and 0.13.0 (#637, the security-scan milestone roll-up, no further API change
+# scorer names). rust_scorer read `num_inputs` / `num_neurons` / `neurons` /
+# `synapses` directly on its GPU upload path (`gpu/forward_mse_batched.rs`) and
+# in fixtures/tests; every read now goes through the `()` accessor, and the
+# tests that used to write into a compiled fixture rebuild it through
+# `CompiledNetwork::from_parts` instead. Unhandled, this bump took the whole
+# GRQ fleet down (GRQ#4724): every host builds rust_scorer from the sibling
+# neat-core at head, so the break was fleet-wide within minutes of merging.
+# Verified by `cargo clippy --all-targets -- -D warnings` and the full scorer
+# test suite against the sibling clone at 0.13.0 (59eb6e6).
+#
+# 0.13.0 -> 0.14.2: acknowledge neat-core #640 (Issue #622, 0.14.0), which bounds
+# the DECLARED observation width. `CreatureExport::input` is a count with no
+# backing data, so `parse_creature_json` / `compile_creature` /
+# `validate_creature_topology` / `cleanup_creature_with` each built one owned
+# String UUID per declared input before anything bounded it — a 40-byte creature
+# saying `"input": 100000000` sized a hundred-million-entry map. The ceiling now
+# lives in neat-core's own `validate_creature_width`: a declared input above
+# MAX_NODE_COUNT is `CreatureError::TooManyNodes`. BREAKING because creature JSON
+# that used to be accepted is now refused; it is a **tightening**, and every
+# creature the fleet actually scores is far below the u16 ceiling. No rust_scorer
+# code change is required — every scorer load path calls `parse_creature_json`
+# first, so the new ceiling arrives ahead of the scorer's own lower-bound guard
+# (`rust_scorer::creature_width`, Issue #571), which keeps owning the `< 1`
+# wording. 0.14.1 (#641) and 0.14.2 are bump-deps.sh / release-tooling changes
+# with no API surface. Verified by `cargo clippy --all-targets -- -D warnings`
+# and the full scorer test suite (560 tests) against the sibling clone at 0.14.2,
+# plus the new `rust_scorer/tests/creature_width_ceiling.rs`, which pins the
+# refusal from the binary's side (CLI exits non-zero before the data directory is
+# touched) and that the ceiling is inclusive at MAX_NODE_COUNT — the oversized
+# case parsed cleanly against 0.13.0, where the only MAX_NODE_COUNT check was on
+# the listed neuron count.
+
+0.14.2

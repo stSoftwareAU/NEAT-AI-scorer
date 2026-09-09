@@ -1,5 +1,5 @@
 #!/usr/bin/env bats
-# Tests for scripts/check-cargo-audit-workflow.sh — Issue #64.
+# Tests for scripts/check-cargo-audit-workflow.sh — Issues #64, #603.
 #
 # Exercises the Cargo Security Audit workflow validator with synthetic
 # workflow YAML in temporary directories so behaviour (exit codes, reported
@@ -51,29 +51,57 @@ jobs:
 EOF
 }
 
+# The Issue #603 end state: the standalone workflow keeps only its weekly cron
+# and the manual trigger, leaving PR-time auditing to a single other workflow.
+write_scheduled_only_audit_workflow() {
+  local file="$1"
+  write_audit_workflow "$file"
+  python3 - "$file" <<'PY'
+import sys
+path = sys.argv[1]
+with open(path) as fh:
+    text = fh.read()
+text = text.replace('  pull_request:\n    branches: ["*", "milestone/**"]\n', "")
+with open(path, "w") as fh:
+    fh.write(text)
+PY
+}
+
+# A second PR-time cargo audit reached through a reusable workflow: `ci.yml`
+# fires on pull_request and calls `security.yml`, which runs the RustSec action.
+write_pr_reachable_audit_pair() {
+  local dir="$1"
+  cat >"$dir/ci.yml" <<'EOF'
+name: CI
+on:
+  pull_request:
+    branches: [Develop, milestone/*]
+jobs:
+  security:
+    uses: ./.github/workflows/security.yml
+EOF
+  cat >"$dir/security.yml" <<'EOF'
+name: Security Reusable Workflow
+on:
+  workflow_call:
+jobs:
+  security:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      # Prose mentioning `cargo audit` must not count as an invocation.
+      - uses: rustsec/audit-check@v2
+EOF
+}
+
 @test "passes on the canonical fixture" {
   write_audit_workflow "$TMP_WF/cargo-audit.yml"
   run "$SCRIPT_UNDER_TEST" --workflow "$TMP_WF/cargo-audit.yml"
   [ "$status" -eq 0 ]
   # Issue #360: prove every rule was individually evaluated and passed via the
   # machine-checkable "OK   " marker rather than pinning informational wording.
-  [ "$(grep -c '^OK   ' <<<"$output")" -eq 7 ]
-}
-
-@test "fails when the workflow is not triggered on pull_request" {
-  write_audit_workflow "$TMP_WF/cargo-audit.yml"
-  python3 - "$TMP_WF/cargo-audit.yml" <<'PY'
-import sys
-path = sys.argv[1]
-with open(path) as fh:
-    text = fh.read()
-text = text.replace("  pull_request:\n    branches: [\"*\", \"milestone/**\"]\n", "")
-with open(path, "w") as fh:
-    fh.write(text)
-PY
-  run "$SCRIPT_UNDER_TEST" --workflow "$TMP_WF/cargo-audit.yml"
-  [ "$status" -ne 0 ]
-  [[ "$output" == *"not triggered on pull_request"* ]]
+  [ "$(grep -c '^OK   ' <<<"$output")" -eq 8 ]
+  [[ "$output" != *"WARN"* ]]
 }
 
 @test "fails when the workflow has no schedule trigger" {
@@ -170,8 +198,65 @@ EOF
   [[ "$output" == *"milestone"* ]]
 }
 
+@test "warns when a second PR-reachable workflow audits the same lockfile (issue #603)" {
+  write_audit_workflow "$TMP_WF/cargo-audit.yml"
+  write_pr_reachable_audit_pair "$TMP_WF"
+  run "$SCRIPT_UNDER_TEST" --workflow "$TMP_WF/cargo-audit.yml"
+  # A duplicate is a deficiency the validator cannot fail on: fixing it means
+  # editing .github/workflows/, which the automation worker cannot push.
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"FAIL"* ]]
+  [[ "$output" == *"WARN"* ]]
+  [[ "$output" == *"Issue #603"* ]]
+  [[ "$output" == *"cargo-audit.yml"* ]]
+  [[ "$output" == *"security.yml"* ]]
+}
+
+@test "passes without a pull_request trigger once another workflow owns the PR audit (issue #603)" {
+  write_scheduled_only_audit_workflow "$TMP_WF/cargo-audit.yml"
+  write_pr_reachable_audit_pair "$TMP_WF"
+  run "$SCRIPT_UNDER_TEST" --workflow "$TMP_WF/cargo-audit.yml"
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"WARN"* ]]
+  [[ "$output" == *"no pull_request trigger"* ]]
+  # The milestone branch-filter rule is pull_request-only, so it is not
+  # evaluated — and must not fail — on a schedule-only workflow.
+  [[ "$output" != *"milestone/* — milestone PRs skip the gate"* ]]
+}
+
+@test "fails when no workflow provides a PR-time cargo audit (issue #603)" {
+  write_scheduled_only_audit_workflow "$TMP_WF/cargo-audit.yml"
+  run "$SCRIPT_UNDER_TEST" --workflow "$TMP_WF/cargo-audit.yml"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"no workflow runs a cargo audit on pull_request"* ]]
+}
+
+@test "prose mentioning cargo audit does not count as a second invocation (issue #603)" {
+  write_audit_workflow "$TMP_WF/cargo-audit.yml"
+  cat >"$TMP_WF/lint.yml" <<'EOF'
+name: Lint
+# This workflow does not run `cargo audit` — cargo-audit.yml owns that.
+on:
+  pull_request:
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - run: cargo fmt --check
+EOF
+  run "$SCRIPT_UNDER_TEST" --workflow "$TMP_WF/cargo-audit.yml"
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"WARN"* ]]
+}
+
 @test "reports an error when the workflow file does not exist" {
   assert_missing_target_rejected "$SCRIPT_UNDER_TEST" --workflow "$TMP_WF/does-not-exist.yml"
+}
+
+@test "reports an error when the workflows directory does not exist" {
+  write_audit_workflow "$TMP_WF/cargo-audit.yml"
+  assert_missing_target_rejected "$SCRIPT_UNDER_TEST" \
+    --workflow "$TMP_WF/cargo-audit.yml" --workflows "$TMP_WF/no-such-dir"
 }
 
 @test "unknown flag prints usage and exits non-zero" {

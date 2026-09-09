@@ -1645,9 +1645,38 @@ reusable `security.yml` scans the same `Cargo.lock` via the `rustsec/audit-check
 action (which annotates the PR check run). A second, direct `cargo audit` run
 in `security.yml` was removed as pure duplication (Issue #399): the action
 already fails the check on any advisory, so a follow-up run in the same job
-could not catch anything it missed. The workflow is validated by
-`scripts/check-cargo-audit-workflow.sh` (invoked from `quality.sh`) and covered
-end-to-end by `tests/scripts/cargo_audit_workflow.bats`.
+could not catch anything it missed.
+
+**One PR-time audit, one home (Issue #603).** The same reasoning applies across
+workflow files: `cargo-audit.yml`'s `pull_request` trigger and `security.yml`'s
+`rustsec/audit-check` read the identical `Cargo.lock` against the identical
+advisory database on the identical `pull_request` event, so on a PR into
+`Develop` or `milestone/**` the second run can only repeat the first verdict at
+double the runner minutes. `check-cargo-audit-workflow.sh` now enforces the
+dedup invariant that `check-shellcheck-dedup.sh` enforces for ShellCheck
+(Issue #157) — exactly one workflow may audit on a pull request, counting an
+audit reached indirectly (`ci.yml` fires on `pull_request` and calls the
+reusable `security.yml`). Missing PR-time coverage is a hard FAIL; a duplicate
+is a loud `WARN`, because removing it means editing `.github/workflows/`, which
+the automation worker has no `workflow` OAuth scope to push
+([CONTRIBUTING → Human escalation](./CONTRIBUTING.md#human-escalation)). The
+`pull_request` trigger is optional here — the weekly cron is the standalone
+workflow's non-redundant value — so once a maintainer drops the three trigger
+lines the validator passes with no WARN.
+
+```mermaid
+flowchart LR
+    PR[pull_request] --> CA["cargo-audit.yml<br/>prebuilt cargo audit"]
+    PR --> CI["ci.yml → security.yml<br/>rustsec/audit-check"]
+    CA --> LOCK[(Cargo.lock<br/>+ RustSec DB)]
+    CI --> LOCK
+    LOCK --> V["one verdict,<br/>paid for twice"]
+    CRON["schedule: 0 6 * * 1"] --> CA
+```
+
+The workflow is validated by `scripts/check-cargo-audit-workflow.sh` (invoked
+from `quality.sh`) and covered end-to-end by
+`tests/scripts/cargo_audit_workflow.bats`.
 
 A standalone SBOM workflow (`.github/workflows/sbom.yml`, Issue #172) exports
 the dependency inventory as a CycloneDX Software Bill of Materials and uploads

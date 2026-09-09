@@ -401,7 +401,7 @@ mod tests {
         assert_eq!(creature.synapses.len(), 7);
         let net = compile_creature(&creature).expect("compile");
         assert_eq!(
-            net.synapses.len(),
+            net.synapses().len(),
             7,
             "compiling must drop no synapse — a (from, to)-keyed loader keeps only 5"
         );
@@ -412,12 +412,12 @@ mod tests {
         let creature = parse_creature_json(&dual_role_if_creature_json(&SPEC)).expect("parse");
         let net = compile_creature(&creature).expect("compile");
         let node = net
-            .neurons
+            .neurons()
             .iter()
             .find(|n| !n.is_constant && n.num_synapses == 6)
             .expect("the IF node reads six synapses");
         let start = node.start_synapse as usize;
-        let roles: Vec<SynapseType> = net.synapses[start..start + 6]
+        let roles: Vec<SynapseType> = net.synapses()[start..start + 6]
             .iter()
             .map(|s| SynapseType::from(s.synapse_type))
             .collect();
