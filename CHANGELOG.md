@@ -38,6 +38,25 @@ section to the released version with its date.
 
 ### Added
 
+- **The PR-time `cargo audit` must live in exactly one workflow (Issue #603).**
+  `cargo-audit.yml`'s `pull_request` trigger and `security.yml`'s
+  `rustsec/audit-check` step (reached from `ci.yml`) read the identical
+  `Cargo.lock` against the identical RustSec advisory database on the identical
+  `pull_request` event, so every PR into `Develop`/`milestone/**` pays for two
+  audits that can only ever agree. `scripts/check-cargo-audit-workflow.sh` now
+  enforces the dedup invariant `check-shellcheck-dedup.sh` enforces for
+  ShellCheck (Issue #157): it resolves which workflows audit on a pull request
+  — following local `uses: ./.github/workflows/…` calls so a reusable
+  workflow's audit is attributed to the PR event that reaches it — and reports
+  a duplicate as a loud `WARN` naming both files. Its `pull_request` trigger is
+  no longer *required*: the weekly cron is the standalone workflow's
+  non-redundant value, and the milestone branch-filter rule (Issue #391) now
+  applies only when a `pull_request` trigger is present, so the validator
+  passes cleanly once the trigger is dropped. Losing PR-time coverage
+  altogether stays a hard `FAIL`. The `.github/workflows/` edit itself needs a
+  maintainer: the automation worker's credentials carry no `workflow` OAuth
+  scope ([CONTRIBUTING → Human escalation](./CONTRIBUTING.md#human-escalation)),
+  so the `WARN` stays until those three trigger lines are removed.
 - **The Semgrep container pin is checked for bump-ability, not just
   immutability (Issue #602).** `.github/workflows/semgrep.yml` pins the scanner
   by bare `@sha256:` digest with no tag beside it. The digest is immutable, but
