@@ -17,6 +17,17 @@ section to the released version with its date.
 
 ### Fixed
 
+- **Builds against neat-core 0.14.2 — the declared observation width is now
+  bounded (neat-core #622 / #640).** neat-core 0.14.0 added a `MAX_NODE_COUNT`
+  ceiling to its own `validate_creature_width`, so creature JSON declaring an
+  `input` past the u16 index space is `CreatureError::TooManyNodes` rather than
+  a hundred-million-entry allocation. It is a BREAKING tightening — JSON that
+  used to parse is now refused — but `rust_scorer` needs no code change: every
+  load path calls `parse_creature_json` first, so the ceiling arrives ahead of
+  the scorer's own lower-bound guard (Issue #571), which keeps owning the `< 1`
+  wording. New `rust_scorer/tests/creature_width_ceiling.rs` pins the refusal
+  from the binary's side, and `neat-core.expected-version` acknowledges 0.14.2.
+
 - **Builds against neat-core 0.13.0 — `CompiledNetwork`'s fields went private
   (neat-core #625 / #633).** neat-core 0.12.0 made every `CompiledNetwork`
   field private behind borrow-only accessors and 0.13.0 followed the same day.
