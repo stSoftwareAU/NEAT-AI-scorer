@@ -87,4 +87,18 @@
 # loads with every synapse intact, scores identically to the pre-#577 relay
 # workaround, and scores *differently* from the creature a `(from, to)`-keyed
 # loader is left holding.
-0.10.0
+#
+# 0.10.0 -> 0.13.0: acknowledge neat-core #633 (Issue #625, 0.12.0), which made
+# every `CompiledNetwork` field private behind borrow-only accessors so safe
+# code can no longer edit a validated network into an out-of-bounds SIMD read,
+# and 0.13.0 (#637, the security-scan milestone roll-up, no further API change
+# scorer names). rust_scorer read `num_inputs` / `num_neurons` / `neurons` /
+# `synapses` directly on its GPU upload path (`gpu/forward_mse_batched.rs`) and
+# in fixtures/tests; every read now goes through the `()` accessor, and the
+# tests that used to write into a compiled fixture rebuild it through
+# `CompiledNetwork::from_parts` instead. Unhandled, this bump took the whole
+# GRQ fleet down (GRQ#4724): every host builds rust_scorer from the sibling
+# neat-core at head, so the break was fleet-wide within minutes of merging.
+# Verified by `cargo clippy --all-targets -- -D warnings` and the full scorer
+# test suite against the sibling clone at 0.13.0 (59eb6e6).
+0.13.0

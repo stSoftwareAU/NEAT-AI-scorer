@@ -146,10 +146,10 @@ fn every_declared_synapse_survives_the_load() {
             declared - creature.synapses.len()
         );
         assert_eq!(
-            net.synapses.len(),
+            net.synapses().len(),
             declared,
             "{label}: compiling dropped {} of {declared} synapses",
-            declared - net.synapses.len()
+            declared - net.synapses().len()
         );
     }
 }
@@ -423,7 +423,7 @@ fn assert_gpu_parity(label: &str, json: &str, records: &[f32]) {
         return;
     };
     let template = compile(json);
-    let num_inputs = template.num_inputs;
+    let num_inputs = template.num_inputs();
     let n_records = records.len() / (num_inputs + 1);
     let mut nets: Vec<CompiledNetwork> = (0..4).map(|_| template.clone()).collect();
 
