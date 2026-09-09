@@ -34,8 +34,8 @@ ceiling.
 
 This PR is that deliberate acknowledgement: a regression suite pinning the new
 refusal from the scorer's side, and the baseline moved to the sibling version
-with the usual header paragraph. No production scorer code changed. Closes
-#609.
+with the usual header paragraph. No production scorer code changed.
+Closes #609.
 
 ## Evidence
 
