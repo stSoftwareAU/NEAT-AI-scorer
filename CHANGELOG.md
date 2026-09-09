@@ -17,6 +17,23 @@ section to the released version with its date.
 
 ### Fixed
 
+- **Builds against neat-core 0.13.0 — `CompiledNetwork`'s fields went private
+  (neat-core #625 / #633; GRQ #4724).** neat-core 0.12.0 made every
+  `CompiledNetwork` field private behind borrow-only accessors (neat-core #625 /
+  #633) and 0.13.0 followed the same day. Every GRQ host builds the Rust
+  consumers from the sibling neat-core at head, so `rust_scorer` failed to
+  compile fleet-wide within minutes and, with no fallback engine, the fleet
+  stopped scoring ([GRQ
+  #4724](https://github.com/stSoftwareAU/GRQ/issues/4724)). `cargo build -p
+  rust_scorer` failed with 11 × `E0616` at `gpu/forward_mse_batched.rs`. The GPU
+  upload path and the fixtures/tests now read `num_inputs()` / `num_neurons()` /
+  `neurons()` / `synapses()` through the accessors; the tests that used to write
+  into a compiled fixture rebuild it through `CompiledNetwork::from_parts`, the
+  above-the-cap case is a real 257-neuron creature, and the now-unconstructible
+  "absurd neuron count" test is replaced by a pin that neat-core's
+  `MAX_NODE_COUNT` sits below `MAX_NEURONS_ABSOLUTE`.
+  `neat-core.expected-version` acknowledges 0.13.0.
+
 - **External termination names itself instead of dying silently (Issue #591).**
   A production sampler run hit its 3-hour per-task wall-clock cap mid-batch; the
   fleet supervisor signalled the process group, `rust_scorer` died on the

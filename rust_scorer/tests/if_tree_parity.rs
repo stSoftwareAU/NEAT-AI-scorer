@@ -340,7 +340,7 @@ fn assert_kernel_parity(
         return;
     };
     let template = compile(json);
-    let num_inputs = template.num_inputs;
+    let num_inputs = template.num_inputs();
     let n_records = records.len() / (num_inputs + 1);
     let mut nets: Vec<CompiledNetwork> = (0..num_creatures).map(|_| template.clone()).collect();
 
