@@ -38,6 +38,22 @@ section to the released version with its date.
 
 ### Added
 
+- **The Semgrep container pin is checked for bump-ability, not just
+  immutability (Issue #602).** `.github/workflows/semgrep.yml` pins the scanner
+  by bare `@sha256:` digest with no tag beside it. The digest is immutable, but
+  Renovate's `docker` manager and Dependabot both resolve a container bump from
+  the **tag** component, so a tagless pin can never be bumped automatically — it
+  silently freezes at whatever the workflow comment records.
+  `scripts/check-semgrep-workflow.sh` now accepts the canonical
+  `semgrep/semgrep:<version>@sha256:<digest>` form (which it previously
+  **rejected** as an unpinned tag), names the tag it found, rejects
+  `:latest@sha256:…`, and reports a tagless digest as a `WARN` line on every
+  gate run. The `.github/workflows/` edit itself needs a maintainer — the
+  automation worker's credentials carry no `workflow` OAuth scope (see
+  [Human escalation](./CONTRIBUTING.md#human-escalation)). New shared `warn`
+  primitive in `scripts/lib/check-harness.sh` for exactly this class of
+  deficiency: visible on stderr, never folded into a silent pass.
+
 - **`--race-stdio`: the Issue #308 early-exit hook, reachable from a
   subprocess caller (NEAT-AI#3928).** `score_from_creature_dir_with_early_exit`
   is a library entrypoint, so the callback that decides which creatures to

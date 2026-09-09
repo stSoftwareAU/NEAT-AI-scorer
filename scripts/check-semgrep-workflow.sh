@@ -2,11 +2,17 @@
 # Validate the Semgrep SAST scanning workflow (Issue #47).
 #
 # Two configurations are accepted as functionally equivalent:
-#   1. The official container approach — `container: image: semgrep/semgrep@sha256:<digest>`
-#      with an explicit `semgrep ci|scan --config <ruleset>` invocation. This
-#      is upstream's recommended PR-scan path. Pin by digest, not tag —
-#      Docker tags are mutable; only the `sha256:<64-hex>` digest is immutable
-#      (Issue #102).
+#   1. The official container approach —
+#      `container: image: semgrep/semgrep:<version>@sha256:<digest>` with an
+#      explicit `semgrep ci|scan --config <ruleset>` invocation. This is
+#      upstream's recommended PR-scan path. The `sha256:<64-hex>` digest is
+#      what pins the build — Docker tags are mutable, so a tag alone is not a
+#      pin (Issue #102) — and the release tag sits beside it so Renovate's
+#      `docker` manager and Dependabot have a version component to resolve a
+#      bump from (Issue #602). A bare digest with no tag is immutable but
+#      un-bumpable: it is reported as a WARN, not a FAIL, because only a
+#      maintainer can edit `.github/workflows/` (CONTRIBUTING "Human
+#      escalation").
 #   2. The `semgrep/semgrep-action@vN` GitHub Action — pinned to a numeric
 #      major version so behaviour is reproducible.
 #
@@ -17,8 +23,9 @@
 #     to the Semgrep app dashboard. The token is consumed by both the
 #     container CLI (`semgrep ci`) and `semgrep/semgrep-action`.
 #   * Pin the entry point. Container images MUST use a `@sha256:<64-hex>`
-#     digest; bare names, `:latest`, and version tags are all rejected.
-#     The action ref must NOT be `master`/`main`.
+#     digest; bare names, `:latest`, and version tags on their own are all
+#     rejected, as is `:latest@sha256:<digest>` (a floating tag gives an
+#     updater nothing to resolve). The action ref must NOT be `master`/`main`.
 #   * Carry a comment block documenting the rationale and why the
 #     container path is equivalent to `semgrep/semgrep-action`.
 #
@@ -78,15 +85,26 @@ action_line="$(grep -nE 'uses:[[:space:]]*semgrep/semgrep-action@' "$WORKFLOW" |
 if [[ -n "$container_line" ]]; then
   # Container path. Image MUST be pinned by an immutable sha256 digest —
   # Docker tags are mutable so `:1.86.0` (or any tag) is not a real pin
-  # (Issue #102). Reject bare names, `:latest`, version tags, and malformed
-  # digests; only `semgrep/semgrep@sha256:<64-lowercase-hex>` passes.
-  if echo "$container_line" | grep -qE 'image:[[:space:]]*semgrep/semgrep@sha256:[0-9a-f]{64}([[:space:]]|$)'; then
+  # (Issue #102) — and SHOULD carry the release tag beside that digest so
+  # automated updaters can resolve a bump (Issue #602). Reject bare names,
+  # `:latest`, tag-only pins and malformed digests.
+  image_tag="$(echo "$container_line" |
+    sed -nE 's|.*image:[[:space:]]*semgrep/semgrep:([A-Za-z0-9._-]+)@sha256:[0-9a-f]{64}([[:space:]].*)?$|\1|p' |
+    head -n 1)"
+  if [[ -n "$image_tag" ]]; then
+    if [[ "$image_tag" == "latest" ]]; then
+      fail "Semgrep container image tag beside the digest is ':latest' — a floating tag gives Renovate/Dependabot nothing to resolve; pin the release version (Issue #602)"
+    else
+      ok "Semgrep container image is pinned by digest and carries the bump-able version tag ':$image_tag' (Issue #602)"
+    fi
+  elif echo "$container_line" | grep -qE 'image:[[:space:]]*semgrep/semgrep@sha256:[0-9a-f]{64}([[:space:]]|$)'; then
     ok "Semgrep container image is pinned by digest (semgrep/semgrep@sha256:<digest>)"
+    warn "Semgrep container image digest carries no version tag — Renovate's docker manager and Dependabot resolve bumps from the tag component, so this pin can never be bumped automatically; use semgrep/semgrep:<version>@sha256:<digest> (Issue #602)"
   elif echo "$container_line" | grep -qE 'image:[[:space:]]*semgrep/semgrep:[A-Za-z0-9._-]+' \
     && ! echo "$container_line" | grep -qE 'image:[[:space:]]*semgrep/semgrep:latest'; then
-    fail "Semgrep container image is not pinned by digest — Docker tags are mutable; use semgrep/semgrep@sha256:<64-hex> (Issue #102)"
+    fail "Semgrep container image is not pinned by digest — Docker tags are mutable; use semgrep/semgrep:<version>@sha256:<64-hex> (Issue #102)"
   else
-    fail "Semgrep container image is not pinned by digest — use semgrep/semgrep@sha256:<64-hex>, not bare or :latest"
+    fail "Semgrep container image is not pinned by digest — use semgrep/semgrep:<version>@sha256:<64-hex>, not bare or :latest"
   fi
 elif [[ -n "$action_line" ]]; then
   # Action path. Ref must be a vN-style pin (numeric major component).
@@ -96,7 +114,7 @@ elif [[ -n "$action_line" ]]; then
     fail "semgrep/semgrep-action ref is not a numeric vN pin — branch refs disallowed"
   fi
 else
-  fail "no Semgrep entry point — expect either 'image: semgrep/semgrep:<tag>' or 'uses: semgrep/semgrep-action@vN'"
+  fail "no Semgrep entry point — expect either 'image: semgrep/semgrep:<version>@sha256:<digest>' or 'uses: semgrep/semgrep-action@vN'"
 fi
 
 # 4. semgrep CLI invocation (container path) must include --config.

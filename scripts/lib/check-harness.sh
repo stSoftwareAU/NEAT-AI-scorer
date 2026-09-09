@@ -15,6 +15,10 @@
 #     it empty when the message names its own subject;
 #   * end with `exit "$EXIT_CODE"`.
 #
+# Reporting primitives: `ok` (satisfied rule, stdout), `fail` (violated rule,
+# stderr, EXIT_CODE=1) and `warn` (deficiency that cannot be failed yet,
+# stderr, EXIT_CODE untouched).
+#
 # Changing the CLI contract — a new flag, machine-readable output, a different
 # exit-code convention — is a single edit here rather than ~30 copy-pasted ones.
 
@@ -111,6 +115,16 @@ ok() {
 fail() {
   echo "FAIL ${CHECK_SUBJECT:+$CHECK_SUBJECT: }$*" >&2
   EXIT_CODE=1
+}
+
+# warn <message...> — record a deficiency the validator cannot fail on yet,
+# on stderr, without touching EXIT_CODE. Reserved for a rule whose fix is
+# blocked outside the repository (e.g. `.github/workflows/` YAML the automation
+# worker has no `workflow` OAuth scope to push, CONTRIBUTING "Human
+# escalation"). The deficiency stays visible on every gate run instead of
+# disappearing into a silent pass.
+warn() {
+  echo "WARN ${CHECK_SUBJECT:+$CHECK_SUBJECT: }$*" >&2
 }
 
 # check_subject <subject> — set the file each subsequent `ok`/`fail` line is

@@ -1762,7 +1762,14 @@ scanner. The workflow is validated by `scripts/check-gitleaks-workflow.sh`
 A standalone Semgrep SAST workflow (`.github/workflows/semgrep.yml`,
 Issue #47) runs the official `semgrep/semgrep` container — pinned by
 `sha256:` digest (Issue #102) — on every pull request against any branch.
-The container path is the functional equivalent of the
+The canonical pin is `semgrep/semgrep:<version>@sha256:<digest>`: the
+digest is what makes the image immutable, and the release tag beside it
+is what Renovate's `docker` manager and Dependabot resolve a bump from
+(Issue #602). A bare `@sha256:` digest with no tag is immutable but
+**un-bumpable** — no updater has a version component to compare against —
+so the validator reports it as a `WARN` line rather than a failure, and
+`:latest@sha256:…` is rejected outright because a floating tag resolves
+to nothing useful. The container path is the functional equivalent of the
 `semgrep/semgrep-action` GitHub Action; both consume
 `SEMGREP_APP_TOKEN` from repo secrets and execute
 `semgrep ci --config p/default`. The workflow is validated by
