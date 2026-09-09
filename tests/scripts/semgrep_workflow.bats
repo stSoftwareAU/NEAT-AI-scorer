@@ -5,6 +5,8 @@
 # temporary directories so behaviour (exit codes, reported failures) is
 # verified end-to-end without mutating the real workflow file.
 
+bats_require_minimum_version 1.5.0
+
 load 'test_helper'
 
 setup() {
@@ -58,6 +60,15 @@ jobs:
         env:
           SEMGREP_APP_TOKEN: \${{ secrets.SEMGREP_APP_TOKEN }}
 EOF
+}
+
+# Container fixture carrying the preferred pin shape: an explicit release tag
+# beside the same immutable digest (Issue #617). Dependency updaters resolve the
+# bump from the tag, then rewrite the digest next to it.
+write_tagged_container_workflow() {
+  local file="$1"
+  write_container_workflow "$file"
+  sed -i.bak "s|semgrep/semgrep@${FIXTURE_DIGEST}|semgrep/semgrep:1.86.0@${FIXTURE_DIGEST}|" "$file"
 }
 
 # Alternative hardened workflow that uses semgrep/semgrep-action directly.
@@ -249,4 +260,39 @@ PY
   run "$SCRIPT_UNDER_TEST"
   [ "$status" -eq 0 ]
   [[ "$output" != *"FAIL"* ]]
+}
+
+@test "passes and names the release tag when the image carries tag + digest (issue #617)" {
+  write_tagged_container_workflow "$TMP_WF/semgrep.yml"
+  run "$SCRIPT_UNDER_TEST" --workflow "$TMP_WF/semgrep.yml"
+  [ "$status" -eq 0 ]
+  [ "$(grep -c '^OK   ' <<<"$output")" -eq 7 ]
+  [[ "$output" == *"release tag 1.86.0"* ]]
+  [[ "$output" != *"WARN"* ]]
+}
+
+@test "warns when the digest pin carries no release tag (issue #617)" {
+  write_container_workflow "$TMP_WF/semgrep.yml"
+  run --separate-stderr "$SCRIPT_UNDER_TEST" --workflow "$TMP_WF/semgrep.yml"
+  [ "$status" -eq 0 ]
+  [ "$(grep -c '^OK   ' <<<"$output")" -eq 7 ]
+  [[ "$stderr" == *"WARN"* ]]
+  [[ "$stderr" == *"no release tag"* ]]
+}
+
+@test "warns when the tag beside the digest is :latest (issue #617)" {
+  write_container_workflow "$TMP_WF/semgrep.yml"
+  sed -i.bak "s|semgrep/semgrep@${FIXTURE_DIGEST}|semgrep/semgrep:latest@${FIXTURE_DIGEST}|" "$TMP_WF/semgrep.yml"
+  run --separate-stderr "$SCRIPT_UNDER_TEST" --workflow "$TMP_WF/semgrep.yml"
+  [ "$status" -eq 0 ]
+  [[ "$stderr" == *"WARN"* ]]
+  [[ "$stderr" == *"latest"* ]]
+}
+
+@test "fails when a tagged image carries a malformed digest (issue #617)" {
+  write_tagged_container_workflow "$TMP_WF/semgrep.yml"
+  sed -i.bak "s|@${FIXTURE_DIGEST}|@sha256:notavalidhex|" "$TMP_WF/semgrep.yml"
+  run "$SCRIPT_UNDER_TEST" --workflow "$TMP_WF/semgrep.yml"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"container image is not pinned by digest"* ]]
 }
