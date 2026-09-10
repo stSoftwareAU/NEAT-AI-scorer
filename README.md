@@ -1500,15 +1500,32 @@ the Cargo dependency graph in four stages and prints a one-line summary:
    `--quarantine-hours` (default `$VIBE_BUMP_QUARANTINE_HOURS` / 24h).
    Versions younger than the quarantine window are deferred; older versions
    are applied with `cargo update -p <crate> --precise <new>` (or
-   `cargo upgrade -p <crate>@<new>`).
+   `cargo upgrade -p <crate>@<new>`). Crates that pin each other with `=`
+   requirements — the wasm-bindgen / js-sys / web-sys family — can never be
+   advanced one crate at a time while the rest of the graph stays locked, so
+   any crate cargo rejects individually gets **one grouped retry**
+   (`cargo update -p a -p b …`, Issue #619) that moves the whole family
+   together. A grouped resolve is more permissive than `--precise`, so the
+   resulting `Cargo.lock` is verified against the vetted candidate list: if
+   it changed any package to a version the quarantine gate did not clear, the
+   lockfile is restored and the crates are reported as failed with cargo's
+   own reason.
 3. **`cargo audit`.** Fails non-zero on any reported advisory, naming the
-   offending crate and advisory ID.
+   offending crate and advisory ID. A cargo-audit that is **not installed** is
+   a tooling gap rather than a bump rejection (Issue #619): the stage prints
+   `audit: SKIPPED` plus a stderr warning and the advisory scan is left to
+   `.github/workflows/cargo-audit.yml`, which runs `cargo audit` on every PR.
+   Pass `--require-audit` (or set `BUMP_DEPS_REQUIRE_AUDIT=1`) to make a
+   missing cargo-audit fatal instead.
 4. **`cargo build --release`.** Confirms the bumped tree compiles.
 
 Exit `0` means the tree is clean (or no-op); non-zero means a bump was
-rejected and the worker reverts. Override flags (`--skip-internal`,
-`--skip-external`, `--skip-audit`, `--skip-build`, `--cargo-upgrade`) and a
-hidden `--check-published` testing helper are documented under
+rejected and the worker reverts. A `cargo update --dry-run` that cannot
+resolve the dependency graph is reported as an error rather than as "no
+updates" (Issue #619), so a broken tree is never mistaken for a clean no-op.
+Override flags (`--skip-internal`, `--skip-external`, `--skip-audit`,
+`--require-audit`, `--skip-build`, `--cargo-upgrade`) and a hidden
+`--check-published` testing helper are documented under
 `./bump-deps.sh --help`. The script is covered by
 `tests/scripts/bump_deps.bats`.
 
@@ -1525,11 +1542,18 @@ flowchart LR
     A --> C[External: cargo update + quarantine]
     A --> D[cargo audit]
     A --> E[cargo build --release]
-    D -->|advisory| X[exit 1: revert]
+    C -->|per-crate reject| R[Grouped retry + lock verify]
+    R -->|unvetted version| RV[restore lock: report failed]
+    C -->|dry-run unresolvable| X[exit 1: revert]
+    D -->|advisory| X
+    D -->|not installed| K[audit: SKIPPED — CI runs it]
     E -->|fail| X
     B --> S[summary]
     C --> S
+    R --> S
+    RV --> S
     D --> S
+    K --> S
     E --> S
 ```
 
