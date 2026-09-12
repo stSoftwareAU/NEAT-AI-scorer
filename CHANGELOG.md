@@ -15,6 +15,17 @@ section to the released version with its date.
 
 ## [Unreleased]
 
+### Added
+
+- **`scripts/runlib.sh` installs `~/.cargo/bin/rust_scorer` only on a version
+  change (Issue #629).** The fleet worker started calling this script and every
+  scoring host died because Develop had no file. The script stamps
+  `.rust_scorer.version`, prints the bin path on stdout, skips `cargo build`
+  when already installed, builds `--bin rust_scorer` (not the bench bins), and
+  removes `target/` after a successful install. Family-sync from NEAT-AI-core
+  still waits on core#680. Hermetic coverage: `scripts/test-runlib.sh` and
+  `tests/scripts/runlib.bats`.
+
 ### Fixed
 
 - **Handles the neat-core 0.14.0 breaking bump — the declared observation width

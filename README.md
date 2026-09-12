@@ -33,7 +33,9 @@ cargo test --workspace --all-features --verbose -- --test-threads=2
 RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
 ```
 
-Requires **shellcheck**, **cargo-deny** (`cargo install cargo-deny --locked`), **codespell** (`pip install --user codespell`, used by `scripts/spell-check.sh`), and optionally **cargo-edit** for the **opt-in** upgrade step in `./quality.sh`
+Requires **shellcheck**, **cargo-deny** (`cargo install cargo-deny --locked`), **codespell** (`pip install --user codespell`, used by `scripts/spell-check.sh`), and optionally **cargo-edit** for the **opt-in** upgrade step in `./quality.sh`.
+
+Fleet hosts do not run `cargo build` on every score. [`scripts/runlib.sh`](./scripts/runlib.sh) (Issue #629) installs `~/.cargo/bin/rust_scorer` and `.rust_scorer.version`, prints that path on stdout, and removes `target/` after a successful install. A second run on the same crate version prints `[rust_scorer] already installed v<x>` and runs no cargo command. It builds `--bin rust_scorer` only — never the bench bins.
 
 By default `./quality.sh` is **read-only** against `Cargo.lock` / `Cargo.toml` — it never bumps dependency versions in your working tree. To bump library dependencies during the gate, opt in with `./quality.sh --upgrade` (or `QUALITY_UPGRADE=1 ./quality.sh`); this requires **cargo-edit**. Routine, quarantine-gated dependency bumps go through [`./bump-deps.sh`](./bump-deps.sh) (Issue #105) instead.
 

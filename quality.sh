@@ -34,6 +34,9 @@ if [[ "$SHELLCHECK_FAILED" -ne 0 ]]; then
 fi
 echo "shellcheck: all scripts passed"
 
+echo "📦 Checking scripts/runlib.sh already-installed contract (Issue #629)..."
+./scripts/test-runlib.sh
+
 echo "🦀 Validating pinned rust-toolchain.toml (Issue #209)..."
 ./scripts/check-rust-toolchain.sh
 
