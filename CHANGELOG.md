@@ -26,6 +26,11 @@ section to the released version with its date.
   still waits on core#680. Hermetic coverage: `scripts/test-runlib.sh` and
   `tests/scripts/runlib.bats`.
 
+- **Acknowledges neat-core 0.16.0 and 0.17.0 (Issue #252).** Both minors are
+  pruning-surface breaks rust_scorer does not name (`PruneResult` fields,
+  `prune_neuron` `IF` rewrite). `neat-core.expected-version` moves to 0.17.0
+  so the breaking-bump gate can pass and this install script can land.
+
 ### Fixed
 
 - **Handles the neat-core 0.14.0 breaking bump — the declared observation width

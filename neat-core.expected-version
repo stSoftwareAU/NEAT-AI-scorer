@@ -163,5 +163,24 @@
 # Verified against the sibling clone at 0.15.4 (ed3165a) by
 # `cargo clippy --all-targets -- -D warnings` (clean) and the full scorer test
 # suite (330 lib tests plus every integration suite and 33 doctests, 0 failed).
+#
+# 0.15.4 -> 0.17.0: acknowledge two breaking neat-core minors, both confined
+# to the pruning surface rust_scorer does not name.
+#   * 0.16.0 (neat-core #675, Ockham #197) adds public fields on `PruneResult`
+#     (`converted_neurons`) and `UncompensatedTarget` (`dropped_mean`) — none
+#     of those types is `#[non_exhaustive]`, so a struct literal or exhaustive
+#     destructure stops compiling — and rewrites a non-`IF` aggregate the cut
+#     leaves with one inward edge to the point-wise squash that computes the
+#     same number.
+#   * 0.17.0 (neat-core #678, Ockham #198) changes documented `prune_neuron`
+#     runtime: an `IF` left short a role is rewritten with `IfRepair::Rewrite`
+#     instead of the TypeScript-parity `Downgrade`, so `downgraded_if_neurons`
+#     is empty on both entry points.
+#
+# rust_scorer never names `PruneResult`, `prune_neuron`, `prune_synapse` or
+# any prune JSON/WASM type — it scores compiled creatures — so no scorer
+# code change is required. Verified by a repo-wide grep of `rust_scorer/`
+# for those symbols (zero hits) and `./scripts/check-neat-core-version.sh`
+# against the sibling clone at 0.17.0 (282bc18).
 
-0.15.4
+0.17.0
