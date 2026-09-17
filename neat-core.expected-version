@@ -182,5 +182,49 @@
 # code change is required. Verified by a repo-wide grep of `rust_scorer/`
 # for those symbols (zero hits) and `./scripts/check-neat-core-version.sh`
 # against the sibling clone at 0.17.0 (282bc18).
+#
+# 0.17.0 -> 0.22.5: acknowledge the five breaking neat-core minors presented
+# since 0.17.0. Only one of them is reachable from a scorer code path.
+#   * 0.18.0 (neat-core #684, Ockham #201) carries every pruning corner case
+#     across the JSON / WASM boundary and grades the new shapes against a
+#     golden record. Confined to `prune_json` / `prune_neuron` /
+#     `prune_synapse`, none of which rust_scorer names.
+#   * 0.19.0 (neat-core #685, Issue #682) is the one that reaches scorer.
+#     `compile_creature` grouped synapses by `toUUID` and read them back per
+#     *listed* neuron, so a destination the creature did not carry was never
+#     looked up: the edge was dropped and `Ok` returned for a network one
+#     synapse smaller than the creature declared. The new
+#     `CreatureError::UnknownTargetUuid(String)` variant refuses it instead.
+#     BREAKING only for an exhaustive `match` on `CreatureError` —
+#     rust_scorer's single use is `matches!(err, CreatureError::TooManyNodes
+#     { .. })` in `rust_scorer/tests/declared_width_ceiling.rs`, which an added
+#     variant cannot break, and no signature scorer names moved. The
+#     behavioural narrowing needs no scorer change either: refusing a creature
+#     whose declared topology cannot be compiled is what the scorer should have
+#     been doing, and the CLI already surfaces a `CreatureError` as a non-zero
+#     exit with the message on stderr.
+#   * 0.20.0 (neat-core #689) and the 0.22.1-0.22.5 patches are canonical
+#     `scripts/runlib.sh` work — repo tooling, no API change.
+#   * 0.21.0 (neat-core #698, the Scan 20260911 milestone) is internal
+#     refactoring: `RecordScanConfig` collapses a packed batch-scan parameter
+#     clump behind unchanged public `loss.rs` signatures, and the new
+#     crate-private `squash_profile` module moves the per-variant range /
+#     safe-zone *data* out of `range.rs` and `safe_zone.rs` without changing
+#     `apply_get_range` / `apply_limit_range`, which the GPU shaders mirror.
+#   * 0.22.0 (neat-core #703, Issue #688) splices IDENTITY pass-throughs out
+#     during prune cleanup, behind a `CleanupOptions::splice_identity` flag
+#     that is off by default. Pruning again — not a scorer surface.
+#
+# Verified against the sibling clone at 0.22.5 (771ad13) by a clean
+# `cargo build --workspace --all-targets`, `cargo clippy --workspace
+# --all-targets --all-features -- -D warnings` and the full scorer test suite
+# (330 lib tests plus every integration suite, 0 failed), plus a repo-wide grep
+# of `rust_scorer/` for the prune symbols (zero hits) and for `CreatureError`
+# (one non-exhaustive `matches!`). `rust_scorer/tests/dangling_target_refusal.rs`
+# pins the 0.19.0 refusal from the binary's side: against 0.18.0 the CLI scored
+# the dangling creature `{"score": 0.99999998, ... "synapseCount": 2}` and
+# exited 0 with the edge silently dropped; against 0.22.5 it exits non-zero
+# naming the unresolved destination. That suite does not compile against
+# neat-core below 0.19.0 — the variant it matches does not exist there.
 
-0.17.0
+0.22.5

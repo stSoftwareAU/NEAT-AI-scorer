@@ -46,6 +46,23 @@ section to the released version with its date.
 
 ### Fixed
 
+- **Acknowledges neat-core 0.18.0 – 0.22.5 — a synapse into an unlisted neuron
+  is now refused instead of silently dropped (neat-core #682 / #685).**
+  `neat-core.expected-version` recorded `0.17.0` while the sibling clone CI
+  checks out had moved to `0.22.5`, so the Issue #252 breaking-bump gate failed
+  `Project Validation` on **every** PR and nothing could merge. Four of the five
+  minors are pruning, tooling or internal refactoring rust_scorer does not name;
+  0.19.0 is the one that reaches a scorer path. `compile_creature` read its
+  grouped synapses back per *listed* neuron, so a `toUUID` naming none of them
+  was never looked up: the edge was dropped and `Ok` returned for a network one
+  synapse smaller than the creature declared — the scorer reported a loss for a
+  creature nobody wrote. `CreatureError::UnknownTargetUuid` refuses it, and
+  scorer needs no code change: its only `CreatureError` use is a non-exhaustive
+  `matches!`, and the CLI already surfaces a compile error as a non-zero exit.
+  New `rust_scorer/tests/dangling_target_refusal.rs` pins the refusal on the
+  compile and CLI paths, including a destination naming an input, and that a
+  fully resolved creature still compiles with every declared synapse.
+
 - **Handles the neat-core 0.14.0 breaking bump — the declared observation width
   is now bounded before it is walked (neat-core #622 / #640, Issue #609).**
   `Develop` recorded `0.13.0` in `neat-core.expected-version` while the sibling
