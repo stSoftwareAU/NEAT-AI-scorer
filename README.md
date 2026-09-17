@@ -35,7 +35,22 @@ RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
 
 Requires **shellcheck**, **cargo-deny** (`cargo install cargo-deny --locked`), **codespell** (`pip install --user codespell`, used by `scripts/spell-check.sh`), and optionally **cargo-edit** for the **opt-in** upgrade step in `./quality.sh`.
 
-Fleet hosts do not run `cargo build` on every score. [`scripts/runlib.sh`](./scripts/runlib.sh) (Issue #629) installs `~/.cargo/bin/rust_scorer` and `.rust_scorer.version`, prints that path on stdout, and removes `target/` after a successful install. A second run on the same crate version prints `[rust_scorer] already installed v<x>` and runs no cargo command. It builds `--bin rust_scorer` only — never the bench bins.
+### Canonical `runlib.sh` and the family sync (Issue #629)
+
+Fleet hosts do not run `cargo build` on every score. [`scripts/runlib.sh`](./scripts/runlib.sh) installs `~/.cargo/bin/rust_scorer` and the stamp `~/.cargo/bin/.rust_scorer.version`, prints that path on stdout, and removes the checkout's `target/` after a successful install — naming the bytes freed on stderr. It builds `--bin rust_scorer` only, never the bench bins, and a failed build keeps `target/` and leaves the previously installed CLI and stamp untouched. A second run on the same crate version prints `[rust_scorer] already installed v<x>` on stderr and runs no `cargo build`.
+
+That file has **one home** — `scripts/runlib.sh` on [NEAT-AI-core](https://github.com/stSoftwareAU/NEAT-AI-core) `Develop` — and every Rust sibling carries a byte-identical copy. It is never edited here: behaviour changes are made in NEAT-AI-core and re-copied outward. [`scripts/family-sync.sh`](./scripts/family-sync.sh) fetches the canonical copy and refreshes the local one when they differ (`--check` reports a stale copy without writing it), failing non-zero rather than installing a fetch it cannot verify. The `family-sync` job in [`.github/workflows/family-sync.yml`](./.github/workflows/family-sync.yml) runs it on every pull request and commits the refreshed copy back onto the PR branch, using the same push identity as [`version-increment.yml`](./.github/workflows/version-increment.yml); [`scripts/check-family-sync-workflow.sh`](./scripts/check-family-sync-workflow.sh) guards that job's shape.
+
+```mermaid
+flowchart LR
+    core["NEAT-AI-core Develop<br/>scripts/runlib.sh"] -->|fetch| sync["family-sync job<br/>scripts/family-sync.sh"]
+    sync -->|differs: commit + push| pr["PR branch<br/>scripts/runlib.sh"]
+    sync -->|matches| noop["no-op"]
+    pr -->|"./scripts/runlib.sh"| install["~/.cargo/bin/rust_scorer<br/>+ .rust_scorer.version"]
+    install --> clean["target/ removed"]
+```
+
+This workspace declares the `rust_scorer` CLI beside four bench binaries, a shape the canonical script's manifest-only fast path declines to read: an already-installed run here still costs one `cargo metadata` call before it prints `already installed` (no build, no install). Removing that last call is a change to the canonical copy in NEAT-AI-core, not to this one.
 
 By default `./quality.sh` is **read-only** against `Cargo.lock` / `Cargo.toml` — it never bumps dependency versions in your working tree. To bump library dependencies during the gate, opt in with `./quality.sh --upgrade` (or `QUALITY_UPGRADE=1 ./quality.sh`); this requires **cargo-edit**. Routine, quarantine-gated dependency bumps go through [`./bump-deps.sh`](./bump-deps.sh) (Issue #105) instead.
 

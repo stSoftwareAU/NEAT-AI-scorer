@@ -22,9 +22,22 @@ section to the released version with its date.
   scoring host died because Develop had no file. The script stamps
   `.rust_scorer.version`, prints the bin path on stdout, skips `cargo build`
   when already installed, builds `--bin rust_scorer` (not the bench bins), and
-  removes `target/` after a successful install. Family-sync from NEAT-AI-core
-  still waits on core#680. Hermetic coverage: `scripts/test-runlib.sh` and
-  `tests/scripts/runlib.bats`.
+  removes `target/` after a successful install. Hermetic coverage:
+  `scripts/test-runlib.sh` and `tests/scripts/runlib.bats`.
+
+- **`scripts/runlib.sh` is now the canonical NEAT-AI-core copy, kept fresh by a
+  `family-sync` CI job (Issue #629, core#680).** The repo-local script is
+  replaced byte-for-byte by `scripts/runlib.sh` from NEAT-AI-core `Develop` —
+  the one home for the family — and is never edited here.
+  `scripts/family-sync.sh` fetches that copy and refreshes the local one when
+  they differ, failing non-zero on a fetch error or on a fetched file that is
+  not a `runlib.sh` rather than installing it over a working script. The
+  `family-sync` job in `.github/workflows/family-sync.yml` runs it on every pull
+  request and commits the refresh back onto the PR branch with
+  `version-increment.yml`'s push identity; `scripts/check-family-sync-workflow.sh`
+  guards the job's shape and the workflow joins the push-hardening,
+  bot-push-token and persist-credentials guard lists. Coverage:
+  `tests/scripts/family_sync.bats` and `tests/scripts/family_sync_workflow.bats`.
 
 - **Acknowledges neat-core 0.16.0 and 0.17.0 (Issue #252).** Both minors are
   pruning-surface breaks rust_scorer does not name (`PruneResult` fields,
