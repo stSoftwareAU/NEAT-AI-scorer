@@ -37,4 +37,7 @@ ignore = []
 unknown-registry = "deny"
 unknown-git = "deny"
 allow-registry = ["https://github.com/rust-lang/crates.io-index"]
-allow-git = []
+# `neat-core` is pinned to a NEAT-AI-core release tag (Issue #630), so this one
+# git source is expected. Everything else stays denied: an unexpected git
+# dependency is exactly what this gate exists to catch.
+allow-git = ["https://github.com/stSoftwareAU/NEAT-AI-core"]
