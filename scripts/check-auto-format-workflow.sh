@@ -8,8 +8,8 @@
 #      nothing beyond what the job needs should be granted (in particular
 #      not `write-all` or scopes the workflow doesn't use).
 #   3. Invoke `cargo fmt --all` to produce the formatting fixes.
-#   4. Invoke `cargo update -p neat-core` so Cargo.lock tracks the checked-
-#      out NEAT-AI-core path dependency (Issue #542).
+#   4. Invoke `cargo update -p neat-core` so Cargo.lock tracks the pinned
+#      NEAT-AI-core release tag (Issues #542, #630).
 #   5. Gate the commit/push step behind a change-detection output so the
 #      job is idempotent — re-running on a clean branch is a no-op.
 #   6. Refuse to push onto a fork's PR branch (the GITHUB_TOKEN cannot
