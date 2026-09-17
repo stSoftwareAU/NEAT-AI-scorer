@@ -1,10 +1,11 @@
 #!/usr/bin/env bats
-# Tests for scripts/family-sync.sh (Issue #629 — canonical runlib.sh sync).
+# Tests for scripts/family-sync.sh (Issues #629, #630 — canonical runlib.sh
+# and family-pins.sh sync).
 #
-# The sync is driven against a local `--source` file so the suite never
-# touches the network; the fetch branch is exercised through its precondition
-# (no curl on PATH), which must fail non-zero rather than leave the copy
-# half-refreshed.
+# The sync is driven against a local `--source` file, or a stub `curl` serving
+# local fixtures, so the suite never touches the network; the real fetch branch
+# is exercised through its precondition (no curl on PATH), which must fail
+# non-zero rather than leave the copy half-refreshed.
 
 load 'test_helper'
 
@@ -117,4 +118,127 @@ teardown() {
   run cmp "$RUNLIB" "$TARGET"
   [ "$status" -eq 0 ]
   [ -x "$TARGET" ]
+}
+
+# --- family-pins.sh, the second canonical script (Issue #630) ---------------
+
+@test "the committed scripts/family-pins.sh passes the guards and syncs byte-for-byte" {
+  PINS="${BATS_TEST_DIRNAME}/../../scripts/family-pins.sh"
+  PINS_TARGET="${TMP_DIR}/family-pins.sh"
+  run "$SYNC" --source "$PINS" --target "$PINS_TARGET"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"refreshed"* ]]
+  run cmp "$PINS" "$PINS_TARGET"
+  [ "$status" -eq 0 ]
+  [ -x "$PINS_TARGET" ]
+}
+
+@test "a bash script that is not family-pins.sh is refused" {
+  printf '#!/usr/bin/env bash\necho hello\n' >"${TMP_DIR}/other.sh"
+  run "$SYNC" --source "${TMP_DIR}/other.sh" --target "${TMP_DIR}/family-pins.sh"
+  [ "$status" -eq 2 ]
+  [[ "$output" == *"declares no family-pins"* ]]
+  [ ! -f "${TMP_DIR}/family-pins.sh" ]
+}
+
+@test "--check reports a stale family-pins.sh without writing it" {
+  PINS_TARGET="${TMP_DIR}/family-pins.sh"
+  printf '#!/usr/bin/env bash\n# stale family-pins\n' >"$PINS_TARGET"
+  run "$SYNC" --check --file family-pins.sh \
+    --source "${BATS_TEST_DIRNAME}/../../scripts/family-pins.sh" --target "$PINS_TARGET"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"differs from NEAT-AI-core Develop"* ]]
+  run grep -q "stale family-pins" "$PINS_TARGET"
+  [ "$status" -eq 0 ]
+}
+
+@test "a script outside the canonical set is refused" {
+  run "$SYNC" --file quality.sh
+  [ "$status" -eq 2 ]
+  [[ "$output" == *"not a canonical family script"* ]]
+  [[ "$output" == *"runlib.sh"* ]]
+  [[ "$output" == *"family-pins.sh"* ]]
+}
+
+@test "--source without a file selection is refused" {
+  run "$SYNC" --source "$CANONICAL"
+  [ "$status" -eq 2 ]
+  [[ "$output" == *"--source needs --file"* ]]
+}
+
+# A default run (no --file/--target) refreshes EVERY canonical script. Driven
+# against a stub `curl` that serves local fixtures from a temporary repo root,
+# so the loop is exercised without the network and without touching this repo.
+@test "a default run refreshes every canonical script" {
+  FIXTURES="${TMP_DIR}/canonical"
+  FAKE_REPO="${TMP_DIR}/repo"
+  mkdir -p "$FIXTURES" "${FAKE_REPO}/scripts" "${TMP_DIR}/bin"
+  printf '#!/usr/bin/env bash\n# canonical runlib\nrunlib_install() { :; }\n' >"${FIXTURES}/runlib.sh"
+  printf '#!/usr/bin/env bash\n# canonical family-pins\n_fp_die() { echo "family-pins: $*"; }\n' >"${FIXTURES}/family-pins.sh"
+  printf '#!/usr/bin/env bash\n# stale runlib\nrunlib_install() { :; }\n' >"${FAKE_REPO}/scripts/runlib.sh"
+  printf '#!/usr/bin/env bash\n# stale family-pins\n_fp_die() { echo "family-pins: $*"; }\n' >"${FAKE_REPO}/scripts/family-pins.sh"
+  cp "$SYNC" "${FAKE_REPO}/scripts/family-sync.sh"
+
+  # Stub curl: copy the fixture named by the URL's last path element.
+  cat >"${TMP_DIR}/bin/curl" <<'STUB'
+#!/usr/bin/env bash
+set -euo pipefail
+out=""
+url=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -o) out="$2"; shift 2 ;;
+    http*) url="$1"; shift ;;
+    *) shift ;;
+  esac
+done
+[ -n "$out" ] && [ -n "$url" ] || exit 22
+cp "${FIXTURE_DIR}/${url##*/}" "$out"
+STUB
+  chmod +x "${TMP_DIR}/bin/curl"
+
+  FIXTURE_DIR="$FIXTURES" PATH="${TMP_DIR}/bin:$PATH" run "${FAKE_REPO}/scripts/family-sync.sh"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"refreshed ${FAKE_REPO}/scripts/runlib.sh"* ]]
+  [[ "$output" == *"refreshed ${FAKE_REPO}/scripts/family-pins.sh"* ]]
+  run cmp "${FIXTURES}/runlib.sh" "${FAKE_REPO}/scripts/runlib.sh"
+  [ "$status" -eq 0 ]
+  run cmp "${FIXTURES}/family-pins.sh" "${FAKE_REPO}/scripts/family-pins.sh"
+  [ "$status" -eq 0 ]
+}
+
+@test "--check on a default run reports every stale copy and exits 1" {
+  FIXTURES="${TMP_DIR}/canonical"
+  FAKE_REPO="${TMP_DIR}/repo"
+  mkdir -p "$FIXTURES" "${FAKE_REPO}/scripts" "${TMP_DIR}/bin"
+  printf '#!/usr/bin/env bash\n# canonical runlib\nrunlib_install() { :; }\n' >"${FIXTURES}/runlib.sh"
+  printf '#!/usr/bin/env bash\n# canonical family-pins\n_fp_die() { echo "family-pins: $*"; }\n' >"${FIXTURES}/family-pins.sh"
+  printf '#!/usr/bin/env bash\n# stale runlib\nrunlib_install() { :; }\n' >"${FAKE_REPO}/scripts/runlib.sh"
+  cp "${FIXTURES}/family-pins.sh" "${FAKE_REPO}/scripts/family-pins.sh"
+  cp "$SYNC" "${FAKE_REPO}/scripts/family-sync.sh"
+
+  cat >"${TMP_DIR}/bin/curl" <<'STUB'
+#!/usr/bin/env bash
+set -euo pipefail
+out=""
+url=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -o) out="$2"; shift 2 ;;
+    http*) url="$1"; shift ;;
+    *) shift ;;
+  esac
+done
+[ -n "$out" ] && [ -n "$url" ] || exit 22
+cp "${FIXTURE_DIR}/${url##*/}" "$out"
+STUB
+  chmod +x "${TMP_DIR}/bin/curl"
+
+  FIXTURE_DIR="$FIXTURES" PATH="${TMP_DIR}/bin:$PATH" run "${FAKE_REPO}/scripts/family-sync.sh" --check
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"scripts/runlib.sh differs from NEAT-AI-core Develop"* ]]
+  # The already-current copy is still visited and reported in the same run.
+  [[ "$output" == *"scripts/family-pins.sh matches NEAT-AI-core Develop"* ]]
+  run grep -q "stale runlib" "${FAKE_REPO}/scripts/runlib.sh"
+  [ "$status" -eq 0 ]
 }

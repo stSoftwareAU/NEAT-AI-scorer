@@ -23,6 +23,10 @@
 #  10. Use strict bash in every multi-line run: block.
 #  11. Verify — not refresh — a fork PR's copy, with `family-sync.sh --check`,
 #      so an unpushable branch cannot report green unverified.
+#  12. Run `scripts/family-pins.sh` (Issue #630) so a `neat-core` pin behind
+#      core's latest release is moved on every PR, not left stale.
+#  13. Stage `rust_scorer/Cargo.toml` and `Cargo.lock` in the commit, so a
+#      moved pin actually reaches the PR branch.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -166,6 +170,31 @@ if grep -qE 'family-sync\.sh[[:space:]]+--check' "$WORKFLOW"; then
   ok "fork PRs verify the copy with family-sync.sh --check"
 else
   fail "no 'family-sync.sh --check' run — a fork PR would report green with an unverified copy"
+fi
+
+# 12. The pin refresh runs on every PR (Issue #630). Comment lines are
+#     stripped first: a comment promising the refresh is not the refresh, and
+#     the `./` prefix keeps a `git add scripts/family-pins.sh` from passing for
+#     an invocation the workflow never makes.
+if grep -vE '^[[:space:]]*#' "$WORKFLOW" | grep -qE '(^|[[:space:]])\./scripts/family-pins\.sh([[:space:]]|$)'; then
+  ok "runs scripts/family-pins.sh — a behind neat-core pin is moved on every PR"
+else
+  fail "no 'scripts/family-pins.sh' run — a PR could carry a neat-core pin behind core's latest release (Issue #630)"
+fi
+
+# 13. The moved pin is staged. `family-pins.sh` rewrites the crate manifest and
+#     `Cargo.lock`; a commit that stages neither pushes the sync and drops the
+#     pin move.
+PIN_STAGED=0
+if grep -vE '^[[:space:]]*#' "$WORKFLOW" | grep -qE 'rust_scorer/Cargo\.toml'; then
+  if grep -vE '^[[:space:]]*#' "$WORKFLOW" | grep -qE '(^|[[:space:]])Cargo\.lock'; then
+    PIN_STAGED=1
+  fi
+fi
+if [[ "$PIN_STAGED" -eq 1 ]]; then
+  ok "the commit stages rust_scorer/Cargo.toml and Cargo.lock — a moved pin reaches the branch"
+else
+  fail "the commit does not stage both rust_scorer/Cargo.toml and Cargo.lock — a moved pin would never be pushed (Issue #630)"
 fi
 
 exit "$EXIT_CODE"

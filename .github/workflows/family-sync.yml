@@ -1,10 +1,19 @@
-# Family sync: refresh the canonical scripts/runlib.sh (Issue #629).
+# Family sync: refresh the canonical family scripts and move the neat-core
+# release pin (Issues #629, #630).
 #
-# `scripts/runlib.sh` has one home — `scripts/runlib.sh` on NEAT-AI-core
-# `Develop` — and every Rust sibling carries a byte-identical copy. This job
-# fetches that copy on every pull request and, when the copy on the branch
-# differs, commits the refreshed file back onto the PR branch. A failed fetch
-# fails the job: a stale copy that CI could not verify is never reported green.
+# `scripts/runlib.sh` and `scripts/family-pins.sh` each have one home — the
+# same path on NEAT-AI-core `Develop` — and every Rust sibling carries a
+# byte-identical copy. This job fetches those copies on every pull request
+# and, when a copy on the branch differs, commits the refreshed file back onto
+# the PR branch. A failed fetch fails the job: a stale copy that CI could not
+# verify is never reported green.
+#
+# It then runs the refreshed `scripts/family-pins.sh`, which moves the
+# `neat-core` git-tag pin in `rust_scorer/Cargo.toml` onto NEAT-AI-core's
+# newest release and updates `Cargo.lock` with it, so every PR carries the
+# current core. A moved pin changes `Cargo.lock`, which `version-increment.yml`
+# then bumps — the pin never moves at an unchanged version. A pin that cannot
+# be resolved exits non-zero and fails this job.
 #
 # The push pattern mirrors `version-increment.yml` (App token → ACTIONS_PUSH →
 # GITHUB_TOKEN, same-repo guard, credential-free checkout, SHA-pinned actions,
@@ -33,7 +42,7 @@ jobs:
   # fork PR would skip the sync entirely and report green carrying a copy
   # nothing had compared against the canonical one.
   family-sync-check:
-    name: Verify canonical runlib.sh (fork PRs)
+    name: Verify canonical family scripts (fork PRs)
     runs-on: ubuntu-latest
     timeout-minutes: 10
     if: github.event.pull_request.head.repo.full_name != github.repository
@@ -48,13 +57,16 @@ jobs:
           # token must not be written to .git/config.
           persist-credentials: false
 
-      - name: Verify scripts/runlib.sh matches NEAT-AI-core Develop
+      # Verifies every canonical copy (runlib.sh, family-pins.sh). A fork PR's
+      # `neat-core` pin is the author's responsibility — moving it needs a push
+      # onto the fork's branch, which this job cannot make.
+      - name: Verify canonical family scripts match NEAT-AI-core Develop
         run: |
           set -euo pipefail
           ./scripts/family-sync.sh --check
 
   family-sync:
-    name: Sync canonical runlib.sh
+    name: Sync canonical family scripts and move the neat-core pin
     runs-on: ubuntu-latest
     timeout-minutes: 10
     # Never attempt to push onto a fork's branch — a fork PR keeps whatever
@@ -77,16 +89,34 @@ jobs:
           # via ACTIONS_PUSH (Issue #435 / NEAT-AI ACTIONS_PUSH pattern).
           persist-credentials: false
 
-      # Fetches NEAT-AI-core Develop's copy and writes it here when it
-      # differs. A fetch error — or a fetched file that is not runlib.sh —
-      # exits non-zero and fails this job rather than leaving a stale copy
-      # looking verified.
-      - name: Refresh scripts/runlib.sh from NEAT-AI-core Develop
-        id: sync
+      # Fetches NEAT-AI-core Develop's copies and writes them here when they
+      # differ. A fetch error — or a fetched file that is not the script it
+      # claims to be — exits non-zero and fails this job rather than leaving a
+      # stale copy looking verified.
+      - name: Refresh canonical family scripts from NEAT-AI-core Develop
         run: |
           set -euo pipefail
           ./scripts/family-sync.sh
-          if git diff --quiet -- scripts/runlib.sh; then
+
+      # `family-pins.sh` runs `cargo update --package neat-core` when it moves
+      # the pin, so the pinned toolchain has to be on PATH before it runs.
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8  # stable, frozen 2026-05-18
+
+      # Moves the `neat-core` pin in `rust_scorer/Cargo.toml` onto
+      # NEAT-AI-core's newest release and updates `Cargo.lock` with it
+      # (Issue #630). Already-current pins are a no-op; a remote that cannot be
+      # listed exits non-zero and fails the job rather than leaving the pin
+      # silently behind.
+      - name: Move the neat-core pin to the newest core release
+        id: sync
+        run: |
+          set -euo pipefail
+          ./scripts/family-pins.sh
+          # Exactly the paths this job may have changed — the same set the
+          # commit step below stages.
+          if git diff --quiet -- scripts/runlib.sh scripts/family-pins.sh \
+            rust_scorer/Cargo.toml Cargo.lock; then
             echo "changed=false" >>"$GITHUB_OUTPUT"
           else
             echo "changed=true" >>"$GITHUB_OUTPUT"
@@ -122,7 +152,7 @@ jobs:
       # repository hooks (a planted `.git/hooks/pre-commit` would otherwise run
       # with $GH_PAT in scope), and no repository script is executed here.
       # Enforced by `scripts/check-push-step-hardening.sh`.
-      - name: Commit and push refreshed runlib.sh
+      - name: Commit and push the refreshed scripts and moved pin
         if: steps.sync.outputs.changed == 'true'
         env:
           PR_HEAD_REF: ${{ github.event.pull_request.head.ref }}
@@ -133,10 +163,13 @@ jobs:
           BASE64=/usr/bin/base64
           "$GIT" -c core.hooksPath=/dev/null config user.name "github-actions[bot]"
           "$GIT" -c core.hooksPath=/dev/null config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          "$GIT" -c core.hooksPath=/dev/null add scripts/runlib.sh
-          "$GIT" -c core.hooksPath=/dev/null commit -m "chore: sync scripts/runlib.sh from NEAT-AI-core Develop
+          "$GIT" -c core.hooksPath=/dev/null add \
+            scripts/runlib.sh scripts/family-pins.sh \
+            rust_scorer/Cargo.toml Cargo.lock
+          "$GIT" -c core.hooksPath=/dev/null commit -m "chore: sync canonical family scripts and move the neat-core pin
 
-          Closes part of #629 — canonical runlib.sh family sync."
+          Closes part of #629, #630 — canonical family-script sync and the
+          neat-core release pin refresh."
           AUTH_HEADER="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GH_PAT" | "$BASE64" -w0)"
           "$GIT" -c core.hooksPath=/dev/null \
             -c http.https://github.com/.extraheader="$AUTH_HEADER" \
