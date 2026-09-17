@@ -57,6 +57,9 @@ else
   WORKFLOWS=(
     "$(check_repo_path ".github/workflows/auto-format.yml")"
     "$(check_repo_path ".github/workflows/version-increment.yml")"
+    # The family-sync job pushes the refreshed canonical runlib.sh back onto
+    # the PR branch, so it carries the same push identity (Issue #629).
+    "$(check_repo_path ".github/workflows/family-sync.yml")"
   )
 fi
 

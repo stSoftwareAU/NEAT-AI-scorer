@@ -206,10 +206,11 @@ EOF
   [[ "$output" == *"not found"* ]]
 }
 
-@test "shipped auto-format and version-increment workflows validate cleanly" {
+@test "shipped auto-format, version-increment and family-sync workflows validate cleanly" {
   run "$CHECK"
   [ "$status" -eq 0 ]
   [[ "$output" == *"auto-format.yml"* ]]
   [[ "$output" == *"version-increment.yml"* ]]
+  [[ "$output" == *"family-sync.yml"* ]]
   [[ "$output" != *"FAIL"* ]]
 }

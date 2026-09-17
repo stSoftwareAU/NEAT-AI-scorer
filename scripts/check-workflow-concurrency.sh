@@ -92,6 +92,9 @@ else
     ci.yml
     auto-format.yml
     version-increment.yml
+    # Pushes the refreshed canonical runlib.sh back to the PR branch, so two
+    # in-flight runs would race on the same ref (Issue #629).
+    family-sync.yml
     gitleaks.yml
     semgrep.yml
   )

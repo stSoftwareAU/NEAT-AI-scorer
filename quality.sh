@@ -37,6 +37,9 @@ echo "shellcheck: all scripts passed"
 echo "📦 Checking scripts/runlib.sh already-installed contract (Issue #629)..."
 ./scripts/test-runlib.sh
 
+echo "🔄 Validating the canonical runlib.sh family-sync workflow (Issue #629)..."
+./scripts/check-family-sync-workflow.sh
+
 echo "🦀 Validating pinned rust-toolchain.toml (Issue #209)..."
 ./scripts/check-rust-toolchain.sh
 

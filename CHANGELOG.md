@@ -22,9 +22,22 @@ section to the released version with its date.
   scoring host died because Develop had no file. The script stamps
   `.rust_scorer.version`, prints the bin path on stdout, skips `cargo build`
   when already installed, builds `--bin rust_scorer` (not the bench bins), and
-  removes `target/` after a successful install. Family-sync from NEAT-AI-core
-  still waits on core#680. Hermetic coverage: `scripts/test-runlib.sh` and
-  `tests/scripts/runlib.bats`.
+  removes `target/` after a successful install. Hermetic coverage:
+  `scripts/test-runlib.sh` and `tests/scripts/runlib.bats`.
+
+- **`scripts/runlib.sh` is now the canonical NEAT-AI-core copy, kept fresh by a
+  `family-sync` CI job (Issue #629, core#680).** The repo-local script is
+  replaced byte-for-byte by `scripts/runlib.sh` from NEAT-AI-core `Develop` —
+  the one home for the family — and is never edited here.
+  `scripts/family-sync.sh` fetches that copy and refreshes the local one when
+  they differ, failing non-zero on a fetch error or on a fetched file that is
+  not a `runlib.sh` rather than installing it over a working script. The
+  `family-sync` job in `.github/workflows/family-sync.yml` runs it on every pull
+  request and commits the refresh back onto the PR branch with
+  `version-increment.yml`'s push identity; `scripts/check-family-sync-workflow.sh`
+  guards the job's shape and the workflow joins the push-hardening,
+  bot-push-token and persist-credentials guard lists. Coverage:
+  `tests/scripts/family_sync.bats` and `tests/scripts/family_sync_workflow.bats`.
 
 - **Acknowledges neat-core 0.16.0 and 0.17.0 (Issue #252).** Both minors are
   pruning-surface breaks rust_scorer does not name (`PruneResult` fields,
@@ -32,6 +45,23 @@ section to the released version with its date.
   so the breaking-bump gate can pass and this install script can land.
 
 ### Fixed
+
+- **Acknowledges neat-core 0.18.0 – 0.22.5 — a synapse into an unlisted neuron
+  is now refused instead of silently dropped (neat-core #682 / #685).**
+  `neat-core.expected-version` recorded `0.17.0` while the sibling clone CI
+  checks out had moved to `0.22.5`, so the Issue #252 breaking-bump gate failed
+  `Project Validation` on **every** PR and nothing could merge. Four of the five
+  minors are pruning, tooling or internal refactoring rust_scorer does not name;
+  0.19.0 is the one that reaches a scorer path. `compile_creature` read its
+  grouped synapses back per *listed* neuron, so a `toUUID` naming none of them
+  was never looked up: the edge was dropped and `Ok` returned for a network one
+  synapse smaller than the creature declared — the scorer reported a loss for a
+  creature nobody wrote. `CreatureError::UnknownTargetUuid` refuses it, and
+  scorer needs no code change: its only `CreatureError` use is a non-exhaustive
+  `matches!`, and the CLI already surfaces a compile error as a non-zero exit.
+  New `rust_scorer/tests/dangling_target_refusal.rs` pins the refusal on the
+  compile and CLI paths, including a destination naming an input, and that a
+  fully resolved creature still compiles with every declared synapse.
 
 - **Handles the neat-core 0.14.0 breaking bump — the declared observation width
   is now bounded before it is walked (neat-core #622 / #640, Issue #609).**

@@ -1,0 +1,146 @@
+# Family sync: refresh the canonical scripts/runlib.sh (Issue #629).
+#
+# `scripts/runlib.sh` has one home — `scripts/runlib.sh` on NEAT-AI-core
+# `Develop` — and every Rust sibling carries a byte-identical copy. This job
+# fetches that copy on every pull request and, when the copy on the branch
+# differs, commits the refreshed file back onto the PR branch. A failed fetch
+# fails the job: a stale copy that CI could not verify is never reported green.
+#
+# The push pattern mirrors `version-increment.yml` (App token → ACTIONS_PUSH →
+# GITHUB_TOKEN, same-repo guard, credential-free checkout, SHA-pinned actions,
+# poison-resistant push step — Issues #435, #497, #498).
+name: Family Sync
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    branches:
+      - Develop
+      - "milestone/**"
+
+permissions:
+  contents: write
+
+# This workflow commits and pushes back to the PR head branch, so a single
+# in-flight run per branch avoids overlapping runs racing on the same ref.
+concurrency:
+  group: family-sync-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # A fork's branch cannot be pushed to, so a fork PR is *verified* instead of
+  # refreshed: `--check` exits non-zero on a stale copy. Without this job a
+  # fork PR would skip the sync entirely and report green carrying a copy
+  # nothing had compared against the canonical one.
+  family-sync-check:
+    name: Verify canonical runlib.sh (fork PRs)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    if: github.event.pull_request.head.repo.full_name != github.repository
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout PR branch
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd  # v5
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          # This job only reads the tree and never pushes, so the workflow
+          # token must not be written to .git/config.
+          persist-credentials: false
+
+      - name: Verify scripts/runlib.sh matches NEAT-AI-core Develop
+        run: |
+          set -euo pipefail
+          ./scripts/family-sync.sh --check
+
+  family-sync:
+    name: Sync canonical runlib.sh
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # Never attempt to push onto a fork's branch — a fork PR keeps whatever
+    # copy it carries and the maintainer resolves it on merge.
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    env:
+      # The `secrets` context is unavailable in a step-level `if:`, so the
+      # push App's configured/not-configured state is hoisted to a job-level
+      # env flag (Issue #498). Until an organisation admin creates the App and
+      # stores its secrets this is 'false': the mint step is skipped and the
+      # push falls back to ACTIONS_PUSH / GITHUB_TOKEN.
+      PUSH_APP_CONFIGURED: ${{ secrets.ACTIONS_PUSH_APP_CLIENT_ID != '' && secrets.ACTIONS_PUSH_APP_PRIVATE_KEY != '' }}
+    steps:
+      - name: Checkout PR branch
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd  # v5
+        with:
+          ref: ${{ github.event.pull_request.head.ref }}
+          fetch-depth: 0
+          # Keep the job token off disk; push auth is injected only below
+          # via ACTIONS_PUSH (Issue #435 / NEAT-AI ACTIONS_PUSH pattern).
+          persist-credentials: false
+
+      # Fetches NEAT-AI-core Develop's copy and writes it here when it
+      # differs. A fetch error — or a fetched file that is not runlib.sh —
+      # exits non-zero and fails this job rather than leaving a stale copy
+      # looking verified.
+      - name: Refresh scripts/runlib.sh from NEAT-AI-core Develop
+        id: sync
+        run: |
+          set -euo pipefail
+          ./scripts/family-sync.sh
+          if git diff --quiet -- scripts/runlib.sh; then
+            echo "changed=false" >>"$GITHUB_OUTPUT"
+          else
+            echo "changed=true" >>"$GITHUB_OUTPUT"
+          fi
+
+      # Mint a short-lived installation token scoped to `contents: write` on
+      # THIS repository only (Issue #498). It expires within the hour and the
+      # action's post step revokes it, so a token that leaks reaches nothing
+      # beyond this repository — unlike the long-lived organisation-level
+      # ACTIONS_PUSH PAT, which carries write access to every org repo.
+      - name: Mint repo-scoped push token
+        id: push-token
+        if: steps.sync.outputs.changed == 'true' && env.PUSH_APP_CONFIGURED == 'true'
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1  # v3
+        with:
+          client-id: ${{ secrets.ACTIONS_PUSH_APP_CLIENT_ID }}
+          private-key: ${{ secrets.ACTIONS_PUSH_APP_PRIVATE_KEY }}
+          repositories: ${{ github.event.repository.name }}
+          permission-contents: write
+
+      # Push with the minted repo-scoped token, falling back to the org-level
+      # ACTIONS_PUSH PAT (then GITHUB_TOKEN) until the App exists, so the
+      # resulting `synchronize` event is attributed to a trusted identity and
+      # PR checks run without the "Awaiting approval / Approve and run" gate
+      # that GITHUB_TOKEN bot pushes create (Issue #435). The branch is rebased
+      # onto its remote head first so a commit pushed while this job ran is
+      # never clobbered.
+      #
+      # Earlier steps in this job run PR-head code, so this step is hardened
+      # against in-job poisoning of the PAT (Issue #497): git and base64 are
+      # pinned to absolute paths (immune to a $GITHUB_ENV PATH override —
+      # base64 is piped $GH_PAT on stdin), every git invocation disables
+      # repository hooks (a planted `.git/hooks/pre-commit` would otherwise run
+      # with $GH_PAT in scope), and no repository script is executed here.
+      # Enforced by `scripts/check-push-step-hardening.sh`.
+      - name: Commit and push refreshed runlib.sh
+        if: steps.sync.outputs.changed == 'true'
+        env:
+          PR_HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          GH_PAT: ${{ steps.push-token.outputs.token || secrets.ACTIONS_PUSH || secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          GIT=/usr/bin/git
+          BASE64=/usr/bin/base64
+          "$GIT" -c core.hooksPath=/dev/null config user.name "github-actions[bot]"
+          "$GIT" -c core.hooksPath=/dev/null config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          "$GIT" -c core.hooksPath=/dev/null add scripts/runlib.sh
+          "$GIT" -c core.hooksPath=/dev/null commit -m "chore: sync scripts/runlib.sh from NEAT-AI-core Develop
+
+          Closes part of #629 — canonical runlib.sh family sync."
+          AUTH_HEADER="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GH_PAT" | "$BASE64" -w0)"
+          "$GIT" -c core.hooksPath=/dev/null \
+            -c http.https://github.com/.extraheader="$AUTH_HEADER" \
+            pull --rebase origin "$PR_HEAD_REF"
+          "$GIT" -c core.hooksPath=/dev/null \
+            -c http.https://github.com/.extraheader="$AUTH_HEADER" \
+            push origin "HEAD:$PR_HEAD_REF"
