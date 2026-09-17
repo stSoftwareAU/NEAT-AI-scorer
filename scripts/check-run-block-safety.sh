@@ -13,8 +13,8 @@
 # guard asserts that convention for the *risk-bearing* block shapes the audit
 # flagged, so a copy-pasted block cannot drift back to the unsafe form:
 #
-#   * the NEAT-AI-core sibling symlink block (`ln -s … NEAT-AI-core`) — five
-#     copies across ci.yml, security.yml and sbom.yml;
+#   * symlink creation (`ln -s …`) — a failed link must not leave the step
+#     green with nothing linked;
 #   * shell-script discovery driven by `find … -name "*.sh"` (bash-syntax and
 #     ShellCheck steps) — a failing `find` must not yield an empty loop and a
 #     green step;
@@ -39,7 +39,7 @@ Options:
                     .github/workflows relative to the repo root).
   -h, --help        Show this message.
 
-Exits 0 when every risk-bearing multi-line `run:` block (NEAT-AI-core symlink,
+Exits 0 when every risk-bearing multi-line `run:` block (symlink creation,
 find-driven shell discovery, or `sudo rm -rf`) opens with `set -euo pipefail`.
 Exits 1 (listing each offender as `file:line`) when any such block does not.
 EOF

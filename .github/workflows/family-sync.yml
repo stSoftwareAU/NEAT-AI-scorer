@@ -114,11 +114,18 @@ jobs:
           set -euo pipefail
           ./scripts/family-pins.sh
           # Exactly the paths this job may have changed — the same set the
-          # commit step below stages.
-          if git diff --quiet -- scripts/runlib.sh scripts/family-pins.sh \
-            rust_scorer/Cargo.toml Cargo.lock; then
+          # commit step below stages. `git status --porcelain` rather than
+          # `git diff`: a canonical script missing from the branch is RECREATED
+          # by family-sync.sh as an untracked file, which `git diff` cannot
+          # see, and reporting that as "changed=false" would drop the sync
+          # while the job stayed green.
+          CHANGED_PATHS="$(git status --porcelain --untracked-files=all -- \
+            scripts/runlib.sh scripts/family-pins.sh \
+            rust_scorer/Cargo.toml Cargo.lock)"
+          if [ -z "$CHANGED_PATHS" ]; then
             echo "changed=false" >>"$GITHUB_OUTPUT"
           else
+            printf '%s\n' "$CHANGED_PATHS"
             echo "changed=true" >>"$GITHUB_OUTPUT"
           fi
 
@@ -163,7 +170,9 @@ jobs:
           BASE64=/usr/bin/base64
           "$GIT" -c core.hooksPath=/dev/null config user.name "github-actions[bot]"
           "$GIT" -c core.hooksPath=/dev/null config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          "$GIT" -c core.hooksPath=/dev/null add \
+          # `-A` so a recreated (untracked) canonical script is staged too, and
+          # explicit paths so nothing else in the tree can ride along.
+          "$GIT" -c core.hooksPath=/dev/null add -A -- \
             scripts/runlib.sh scripts/family-pins.sh \
             rust_scorer/Cargo.toml Cargo.lock
           "$GIT" -c core.hooksPath=/dev/null commit -m "chore: sync canonical family scripts and move the neat-core pin

@@ -184,17 +184,28 @@ fi
 
 # 13. The moved pin is staged. `family-pins.sh` rewrites the crate manifest and
 #     `Cargo.lock`; a commit that stages neither pushes the sync and drops the
-#     pin move.
+#     pin move. The `git add` command is what must name them — a mention
+#     anywhere else in the file (the change-detection `git status`, a comment)
+#     says nothing about what gets committed — so comment lines are stripped
+#     and backslash continuations joined before the add command is inspected.
+ADD_COMMANDS="$(
+  grep -vE '^[[:space:]]*#' "$WORKFLOW" | awk '
+    { line = $0 }
+    joined != "" { line = joined " " line; joined = "" }
+    line ~ /\\[[:space:]]*$/ { sub(/\\[[:space:]]*$/, "", line); joined = line; next }
+    { print line }
+    END { if (joined != "") print joined }
+  ' | grep -E '(^|[[:space:]])add([[:space:]]|$)'
+)"
 PIN_STAGED=0
-if grep -vE '^[[:space:]]*#' "$WORKFLOW" | grep -qE 'rust_scorer/Cargo\.toml'; then
-  if grep -vE '^[[:space:]]*#' "$WORKFLOW" | grep -qE '(^|[[:space:]])Cargo\.lock'; then
-    PIN_STAGED=1
-  fi
+if printf '%s\n' "$ADD_COMMANDS" | grep -qE 'rust_scorer/Cargo\.toml' \
+  && printf '%s\n' "$ADD_COMMANDS" | grep -qE '(^|[[:space:]])Cargo\.lock([[:space:]]|$)'; then
+  PIN_STAGED=1
 fi
 if [[ "$PIN_STAGED" -eq 1 ]]; then
-  ok "the commit stages rust_scorer/Cargo.toml and Cargo.lock — a moved pin reaches the branch"
+  ok "the git add stages rust_scorer/Cargo.toml and Cargo.lock — a moved pin reaches the branch"
 else
-  fail "the commit does not stage both rust_scorer/Cargo.toml and Cargo.lock — a moved pin would never be pushed (Issue #630)"
+  fail "the git add does not stage both rust_scorer/Cargo.toml and Cargo.lock — a moved pin would never be pushed (Issue #630)"
 fi
 
 exit "$EXIT_CODE"

@@ -168,6 +168,27 @@ EOF
   [[ "$output" == *"no 'scripts/family-pins.sh' run"* ]]
 }
 
+@test "naming the pin paths outside the git add does not satisfy the staging rule" {
+  write_valid_workflow
+  # The change-detection step names both paths; the `git add` does not. What is
+  # committed is what matters, so this must still fail.
+  sed -e 's|          ./scripts/family-pins.sh|          ./scripts/family-pins.sh\n          git status --porcelain -- rust_scorer/Cargo.toml Cargo.lock|' \
+    -e 's|"\$GIT" add .*|"$GIT" add scripts/runlib.sh scripts/family-pins.sh|' \
+    "${TMP_DIR}/family-sync.yml" >"${TMP_DIR}/mentioned-only.yml"
+  run "$CHECK" --workflow "${TMP_DIR}/mentioned-only.yml"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"does not stage both"* ]]
+}
+
+@test "a git add spread over continuation lines still satisfies the staging rule" {
+  write_valid_workflow
+  sed 's|"\$GIT" add .*|"$GIT" add \\\n            scripts/runlib.sh scripts/family-pins.sh \\\n            rust_scorer/Cargo.toml Cargo.lock|' \
+    "${TMP_DIR}/family-sync.yml" >"${TMP_DIR}/continued-add.yml"
+  run "$CHECK" --workflow "${TMP_DIR}/continued-add.yml"
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"FAIL"* ]]
+}
+
 @test "a commit that does not stage the moved pin fails" {
   write_valid_workflow
   sed 's|"\$GIT" add .*|"$GIT" add scripts/runlib.sh scripts/family-pins.sh|' \

@@ -5,10 +5,10 @@
 # dependency-bump contract:
 #
 #   1. Internal: NEAT-AI-core pin — bump to upstream Develop HEAD if a
-#      `rev = "..."` pin exists in any workspace member's Cargo.toml. If
-#      neat-core is resolved via a `path = "..."` sibling clone (as in this
-#      repo by default — see AGENTS.md), there is no SHA to advance and the
-#      step is a no-op.
+#      `rev = "..."` pin exists in any workspace member's Cargo.toml. This
+#      repo pins neat-core to a release TAG instead (Issue #630), moved by
+#      `scripts/family-pins.sh` in the family-sync job, so there is no SHA to
+#      advance here and the step is a no-op.
 #   2. External: crates.io — `cargo update`, honouring the quarantine window
 #      (`--quarantine-hours`, default `$VIBE_BUMP_QUARANTINE_HOURS` / 24h)
 #      so versions published less than N hours ago are deferred.

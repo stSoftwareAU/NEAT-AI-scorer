@@ -6,8 +6,11 @@ release-process redesign epic **#248**.
 
 ## Context
 
-`rust_scorer` depends on **`neat-core`** as a **path dependency** at head
-(`../../NEAT-AI-core/neat-core`). When neat-core
+At the time of writing, `rust_scorer` depended on **`neat-core`** as a **path
+dependency** at head (`../../NEAT-AI-core/neat-core`); it now pins a release
+tag (Issue #630 — see the README
+[neat-core release pin](../../README.md#neat-core-release-pin-issue-630)). When
+neat-core
 [#177](https://github.com/stSoftwareAU/NEAT-AI-core/issues/177) narrowed
 `SynapseData::from_index` from `u32` to `u16` — a **breaking** type change — it
 shipped with **no signal**:
@@ -42,7 +45,9 @@ key off neat-core's now-signalled semver — comparing the pinned/observed
 neat-core version and reacting to a major-equivalent (minor pre-1.0) bump as a
 breaking change — instead of discovering breaks at compile/runtime.
 
-No scorer code change is required for #251 itself: the scorer consumes neat-core
-via a **path** dependency, so there is no version pin to bump here. Per the
+No scorer code change was required for #251 itself: the scorer consumed
+neat-core via a **path** dependency, so there was no version pin to bump here.
+Issue #630 later replaced that path dependency with a release-tag pin, which is
+exactly the signal #251 asked neat-core to publish. Per the
 release-gating policy, cutting the `v0.2.0` release is a **human-gated** step
 performed by neat-core's `release` workflow on merge of PR #190.

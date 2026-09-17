@@ -3,9 +3,9 @@
 #
 # The `rust_scorer` crate must declare `repository` so downstream tooling
 # (cargo publish, SBOMs, cargo doc, IDE tooltips) can resolve the source
-# back to GitHub. The workspace pins `neat-core` via a `path:` dep on a
-# sibling clone, so the upstream repository URL is the only canonical
-# pointer to where the code came from.
+# back to GitHub. `neat-core` itself is pinned to a NEAT-AI-core release tag
+# (Issue #630), so this crate's own `repository` URL is the only canonical
+# pointer to where the scorer code came from.
 
 setup() {
   REPO_ROOT="${BATS_TEST_DIRNAME}/../.."
