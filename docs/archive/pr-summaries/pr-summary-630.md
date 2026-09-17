@@ -38,9 +38,8 @@ Backend/CLI change — no web interface to screenshot. The evidence is command
 output and tests.
 
 **Acceptance criterion 1 — release build with no sibling checkout.** This
-container has no `NEAT-AI-core` beside the repo (`ls ..` → `GRQ-AutoTrader`,
-`NEAT-AI-Lamarck`, `NEAT-AI-scorer`), which is why the pre-change tree could not
-build here at all:
+container has no `NEAT-AI-core` beside the repo — only unrelated sibling
+checkouts — which is why the pre-change tree could not build here at all:
 
 ```text
 $ cargo build --release -p rust_scorer
