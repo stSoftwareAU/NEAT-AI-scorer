@@ -1,6 +1,6 @@
 [package]
 name = "rust_scorer"
-version = "1.1.80"
+version = "1.1.81"
 edition = "2024"
 license = "Apache-2.0"
 description = "Native CLI binary for scoring NEAT-AI creatures against training data."
@@ -58,12 +58,13 @@ path = "benches/scoring.rs"
 harness = false
 
 [dependencies]
-# Path relative to this file: `NEAT-AI-scorer/rust_scorer` → sibling `NEAT-AI-core/neat-core`.
-# CI clones NEAT-AI-core INSIDE the workspace at `NEAT-AI-core/` (an
-# out-of-workspace `path:` is rejected by `actions/checkout` — see Issue #18)
-# and then symlinks `$GITHUB_WORKSPACE/../NEAT-AI-core` to that clone so this
-# `../../NEAT-AI-core/neat-core` path still resolves. See `.github/workflows/*.yml`.
-neat-core = { path = "../../NEAT-AI-core/neat-core" }
+# Pinned to a NEAT-AI-core RELEASE TAG (Issue #630) — no sibling checkout is
+# needed to build, here or on a runner. The pin moves only through this repo's
+# own PR: `scripts/family-pins.sh` resolves NEAT-AI-core's newest `v*` release
+# and rewrites the tag, the `family-sync` job runs it on every pull request, and
+# the resulting `Cargo.lock` change drives the patch bump in
+# `version-increment.yml`. See the README "neat-core release pin" section.
+neat-core = { git = "https://github.com/stSoftwareAU/NEAT-AI-core", tag = "v0.22.5" }
 clap = { version = "4", features = ["derive"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

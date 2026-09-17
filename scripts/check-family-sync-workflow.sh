@@ -23,6 +23,10 @@
 #  10. Use strict bash in every multi-line run: block.
 #  11. Verify — not refresh — a fork PR's copy, with `family-sync.sh --check`,
 #      so an unpushable branch cannot report green unverified.
+#  12. Run `scripts/family-pins.sh` (Issue #630) so a `neat-core` pin behind
+#      core's latest release is moved on every PR, not left stale.
+#  13. Stage `rust_scorer/Cargo.toml` and `Cargo.lock` in the commit, so a
+#      moved pin actually reaches the PR branch.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -166,6 +170,42 @@ if grep -qE 'family-sync\.sh[[:space:]]+--check' "$WORKFLOW"; then
   ok "fork PRs verify the copy with family-sync.sh --check"
 else
   fail "no 'family-sync.sh --check' run — a fork PR would report green with an unverified copy"
+fi
+
+# 12. The pin refresh runs on every PR (Issue #630). Comment lines are
+#     stripped first: a comment promising the refresh is not the refresh, and
+#     the `./` prefix keeps a `git add scripts/family-pins.sh` from passing for
+#     an invocation the workflow never makes.
+if grep -vE '^[[:space:]]*#' "$WORKFLOW" | grep -qE '(^|[[:space:]])\./scripts/family-pins\.sh([[:space:]]|$)'; then
+  ok "runs scripts/family-pins.sh — a behind neat-core pin is moved on every PR"
+else
+  fail "no 'scripts/family-pins.sh' run — a PR could carry a neat-core pin behind core's latest release (Issue #630)"
+fi
+
+# 13. The moved pin is staged. `family-pins.sh` rewrites the crate manifest and
+#     `Cargo.lock`; a commit that stages neither pushes the sync and drops the
+#     pin move. The `git add` command is what must name them — a mention
+#     anywhere else in the file (the change-detection `git status`, a comment)
+#     says nothing about what gets committed — so comment lines are stripped
+#     and backslash continuations joined before the add command is inspected.
+ADD_COMMANDS="$(
+  grep -vE '^[[:space:]]*#' "$WORKFLOW" | awk '
+    { line = $0 }
+    joined != "" { line = joined " " line; joined = "" }
+    line ~ /\\[[:space:]]*$/ { sub(/\\[[:space:]]*$/, "", line); joined = line; next }
+    { print line }
+    END { if (joined != "") print joined }
+  ' | grep -E '(^|[[:space:]])add([[:space:]]|$)'
+)"
+PIN_STAGED=0
+if printf '%s\n' "$ADD_COMMANDS" | grep -qE 'rust_scorer/Cargo\.toml' \
+  && printf '%s\n' "$ADD_COMMANDS" | grep -qE '(^|[[:space:]])Cargo\.lock([[:space:]]|$)'; then
+  PIN_STAGED=1
+fi
+if [[ "$PIN_STAGED" -eq 1 ]]; then
+  ok "the git add stages rust_scorer/Cargo.toml and Cargo.lock — a moved pin reaches the branch"
+else
+  fail "the git add does not stage both rust_scorer/Cargo.toml and Cargo.lock — a moved pin would never be pushed (Issue #630)"
 fi
 
 exit "$EXIT_CODE"

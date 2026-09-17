@@ -52,16 +52,20 @@ jobs:
           ./scripts/family-sync.sh --check
 
   family-sync:
-    name: Sync canonical runlib.sh
+    name: Sync canonical family scripts and move the neat-core pin
     runs-on: ubuntu-latest
     timeout-minutes: 10
     if: github.event.pull_request.head.repo.full_name == github.repository
     steps:
       - name: Refresh
-        id: sync
         run: |
           set -euo pipefail
           ./scripts/family-sync.sh
+      - name: Move the pin
+        id: sync
+        run: |
+          set -euo pipefail
+          ./scripts/family-pins.sh
           echo "changed=true" >>"$GITHUB_OUTPUT"
       - name: Commit and push
         if: steps.sync.outputs.changed == 'true'
@@ -70,6 +74,7 @@ jobs:
         run: |
           set -euo pipefail
           GIT=/usr/bin/git
+          "$GIT" add scripts/runlib.sh scripts/family-pins.sh rust_scorer/Cargo.toml Cargo.lock
           "$GIT" pull --rebase origin main
           "$GIT" push origin HEAD
 EOF
@@ -144,6 +149,53 @@ EOF
   run "$CHECK" --workflow "${TMP_DIR}/no-check.yml"
   [ "$status" -ne 0 ]
   [[ "$output" == *"--check"* ]]
+}
+
+@test "dropping the family-pins.sh run fails — a behind pin would stay behind" {
+  write_valid_workflow
+  sed '/family-pins\.sh$/d' "${TMP_DIR}/family-sync.yml" >"${TMP_DIR}/no-pins.yml"
+  run "$CHECK" --workflow "${TMP_DIR}/no-pins.yml"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"no 'scripts/family-pins.sh' run"* ]]
+}
+
+@test "a family-pins.sh run that is only promised in a comment fails" {
+  write_valid_workflow
+  sed 's|          ./scripts/family-pins.sh|          # runs ./scripts/family-pins.sh|' \
+    "${TMP_DIR}/family-sync.yml" >"${TMP_DIR}/commented-pins.yml"
+  run "$CHECK" --workflow "${TMP_DIR}/commented-pins.yml"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"no 'scripts/family-pins.sh' run"* ]]
+}
+
+@test "naming the pin paths outside the git add does not satisfy the staging rule" {
+  write_valid_workflow
+  # The change-detection step names both paths; the `git add` does not. What is
+  # committed is what matters, so this must still fail.
+  sed -e 's|          ./scripts/family-pins.sh|          ./scripts/family-pins.sh\n          git status --porcelain -- rust_scorer/Cargo.toml Cargo.lock|' \
+    -e 's|"\$GIT" add .*|"$GIT" add scripts/runlib.sh scripts/family-pins.sh|' \
+    "${TMP_DIR}/family-sync.yml" >"${TMP_DIR}/mentioned-only.yml"
+  run "$CHECK" --workflow "${TMP_DIR}/mentioned-only.yml"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"does not stage both"* ]]
+}
+
+@test "a git add spread over continuation lines still satisfies the staging rule" {
+  write_valid_workflow
+  sed 's|"\$GIT" add .*|"$GIT" add \\\n            scripts/runlib.sh scripts/family-pins.sh \\\n            rust_scorer/Cargo.toml Cargo.lock|' \
+    "${TMP_DIR}/family-sync.yml" >"${TMP_DIR}/continued-add.yml"
+  run "$CHECK" --workflow "${TMP_DIR}/continued-add.yml"
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"FAIL"* ]]
+}
+
+@test "a commit that does not stage the moved pin fails" {
+  write_valid_workflow
+  sed 's|"\$GIT" add .*|"$GIT" add scripts/runlib.sh scripts/family-pins.sh|' \
+    "${TMP_DIR}/family-sync.yml" >"${TMP_DIR}/unstaged-pin.yml"
+  run "$CHECK" --workflow "${TMP_DIR}/unstaged-pin.yml"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"does not stage both"* ]]
 }
 
 @test "a missing workflow file fails loud" {

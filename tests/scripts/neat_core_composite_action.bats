@@ -1,9 +1,18 @@
 #!/usr/bin/env bats
-# Tests for scripts/check-neat-core-composite-action.sh — Issue #401.
+# Tests for scripts/check-neat-core-composite-action.sh — Issues #401, #630.
 #
-# Exercises the guard end-to-end with synthetic composite-action + workflow
-# fixtures in temporary directories, plus assertions against the real repo so
-# the enforced rule and the shipped files cannot drift apart.
+# TEST MODIFICATION (Issue #630): `neat-core` is now pinned to a NEAT-AI-core
+# release tag, which Cargo fetches itself, so the sibling checkout — and the
+# `setup-neat-core` composite action that owned it — are retired. The guard
+# therefore asserts the *absence* of that action and of any NEAT-AI-core
+# checkout, plus the presence of the pin the retirement rests on. The cases
+# that used to assert a well-formed composite action (`using: composite`, the
+# sibling-link step, its `set -euo pipefail`) are gone with their subject: the
+# file they parsed no longer exists.
+#
+# Exercises the guard end-to-end with synthetic workflow / manifest fixtures in
+# temporary directories, plus assertions against the real repo so the enforced
+# rule and the shipped files cannot drift apart.
 
 load 'test_helper'
 
@@ -14,17 +23,47 @@ setup() {
   TMP="$(mktemp -d)"
   ACTION_DIR="$TMP/.github/actions/setup-neat-core"
   WF_DIR="$TMP/.github/workflows"
-  mkdir -p "$ACTION_DIR" "$WF_DIR"
-  export TMP ACTION_DIR WF_DIR
+  MANIFEST="$TMP/Cargo.toml"
+  mkdir -p "$WF_DIR"
+  export TMP ACTION_DIR WF_DIR MANIFEST
 }
 
 teardown() {
   rm -rf "$TMP"
 }
 
-# A valid composite action: composite runner, NEAT-AI-core checkout, sibling
-# link step whose run block opens with `set -euo pipefail`.
-write_good_action() {
+# A workflow of the post-#630 shape: it checks the repo out and builds, with no
+# sibling clone anywhere.
+write_pinned_workflow() {
+  cat >"$WF_DIR/ci.yml" <<'EOF'
+name: CI
+on: [pull_request]
+jobs:
+  quality:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@abc123  # v5
+        with:
+          persist-credentials: false
+      - run: cargo build --workspace
+EOF
+}
+
+# The crate manifest carrying the release-tag pin.
+write_pinned_manifest() {
+  cat >"$MANIFEST" <<'EOF'
+[package]
+name = "rust_scorer"
+version = "1.0.0"
+
+[dependencies]
+neat-core = { git = "https://github.com/stSoftwareAU/NEAT-AI-core", tag = "v0.22.5" }
+EOF
+}
+
+# The retired composite action, resurrected.
+write_retired_action() {
+  mkdir -p "$ACTION_DIR"
   cat >"$ACTION_DIR/action.yml" <<'EOF'
 name: Set up NEAT-AI-core sibling
 description: Checkout + symlink.
@@ -35,86 +74,66 @@ runs:
       uses: actions/checkout@abc123  # v5
       with:
         repository: stSoftwareAU/NEAT-AI-core
-        ref: Develop
         path: NEAT-AI-core
         persist-credentials: false
-    - name: Link NEAT-AI-core sibling path expected by Cargo
-      shell: bash
-      run: |
-        set -euo pipefail
-        if [ ! -e "$GITHUB_WORKSPACE/../NEAT-AI-core" ]; then
-          ln -s "$GITHUB_WORKSPACE/NEAT-AI-core" "$GITHUB_WORKSPACE/../NEAT-AI-core"
-        fi
-EOF
-}
-
-# A workflow that consumes the composite action.
-write_consumer_workflow() {
-  cat >"$WF_DIR/ci.yml" <<'EOF'
-name: CI
-on: [push]
-jobs:
-  quality:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@abc123  # v5
-      - name: Set up NEAT-AI-core sibling (path dependency for neat-core)
-        uses: ./.github/actions/setup-neat-core
 EOF
 }
 
 run_guard() {
-  run "$SCRIPT_UNDER_TEST" --action "$ACTION_DIR/action.yml" --workflows "$WF_DIR"
+  run "$SCRIPT_UNDER_TEST" --action "$ACTION_DIR/action.yml" \
+    --workflows "$WF_DIR" --manifest "$MANIFEST"
 }
 
-@test "passes when the composite exists and every workflow uses it" {
-  write_good_action
-  write_consumer_workflow
+@test "passes when the composite is retired and the pin is declared" {
+  write_pinned_workflow
+  write_pinned_manifest
   run_guard
   [ "$status" -eq 0 ]
   [[ "$output" != *"FAIL"* ]]
-  [[ "$output" == *"composite action present"* ]]
-  [[ "$output" == *"no workflow inlines a NEAT-AI-core checkout"* ]]
+  [[ "$output" == *"retired composite action absent"* ]]
+  [[ "$output" == *"no workflow checks out stSoftwareAU/NEAT-AI-core"* ]]
+  [[ "$output" == *"pinned to a NEAT-AI-core release tag"* ]]
 }
 
-@test "fails when the composite action file is missing" {
-  write_consumer_workflow
+@test "fails when the retired composite action is resurrected" {
+  write_pinned_workflow
+  write_pinned_manifest
+  write_retired_action
   run_guard
   [ "$status" -ne 0 ]
-  [[ "$output" == *"composite action not found"* ]]
+  [[ "$output" == *"composite action is retired"* ]]
 }
 
-@test "fails when the action is not a composite action" {
-  write_good_action
-  # Break the `using: composite` declaration.
-  sed -i.bak 's|using: composite|using: node20|' "$ACTION_DIR/action.yml"
-  write_consumer_workflow
-  run_guard
-  [ "$status" -ne 0 ]
-  [[ "$output" == *"not a composite action"* ]]
-}
-
-@test "fails when the composite symlink block omits set -euo pipefail" {
-  write_good_action
-  # Drop the safety prefix from the symlink run block.
-  sed -i.bak '/set -euo pipefail/d' "$ACTION_DIR/action.yml"
-  write_consumer_workflow
-  run_guard
-  [ "$status" -ne 0 ]
-  [[ "$output" == *"set -euo pipefail"* ]]
-}
-
-@test "fails when a workflow still inlines a NEAT-AI-core checkout" {
-  write_good_action
-  write_consumer_workflow
+@test "fails when a workflow still references the retired composite" {
+  write_pinned_workflow
+  write_pinned_manifest
   cat >"$WF_DIR/legacy.yml" <<'EOF'
 name: Legacy
-on: [push]
+on: [pull_request]
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout NEAT-AI-core (path dependency for neat-core)
+      - name: Set up NEAT-AI-core sibling (path dependency for neat-core)
+        uses: ./.github/actions/setup-neat-core
+EOF
+  run_guard
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"references the retired"* ]]
+  [[ "$output" == *"legacy.yml"* ]]
+}
+
+@test "fails when a workflow inlines a NEAT-AI-core checkout" {
+  write_pinned_workflow
+  write_pinned_manifest
+  cat >"$WF_DIR/sibling.yml" <<'EOF'
+name: Sibling
+on: [pull_request]
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout NEAT-AI-core
         uses: actions/checkout@abc123  # v5
         with:
           repository: stSoftwareAU/NEAT-AI-core
@@ -122,31 +141,44 @@ jobs:
 EOF
   run_guard
   [ "$status" -ne 0 ]
-  [[ "$output" == *"inlines a NEAT-AI-core checkout"* ]]
-  [[ "$output" == *"legacy.yml"* ]]
+  [[ "$output" == *"checks out stSoftwareAU/NEAT-AI-core"* ]]
+  [[ "$output" == *"sibling.yml"* ]]
 }
 
-@test "fails when no workflow references the composite action" {
-  write_good_action
-  cat >"$WF_DIR/unrelated.yml" <<'EOF'
-name: Unrelated
-on: [push]
-jobs:
-  build:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@abc123  # v5
+@test "fails when the manifest reverts to a path dependency" {
+  write_pinned_workflow
+  cat >"$MANIFEST" <<'EOF'
+[dependencies]
+neat-core = { path = "../../NEAT-AI-core/neat-core" }
 EOF
   run_guard
   [ "$status" -ne 0 ]
-  [[ "$output" == *"no workflow references"* ]]
+  [[ "$output" == *"path dependency again"* ]]
+}
+
+@test "fails when the manifest carries a git dependency with no release tag" {
+  write_pinned_workflow
+  cat >"$MANIFEST" <<'EOF'
+[dependencies]
+neat-core = { git = "https://github.com/stSoftwareAU/NEAT-AI-core", branch = "Develop" }
+EOF
+  run_guard
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"no 'neat-core = { git ="* ]]
+}
+
+@test "a missing manifest fails loud" {
+  write_pinned_workflow
+  assert_missing_target_rejected "$SCRIPT_UNDER_TEST" \
+    --action "$ACTION_DIR/action.yml" --workflows "$WF_DIR" \
+    --manifest "$TMP/absent.toml"
 }
 
 @test "unknown flag prints usage and exits non-zero" {
   assert_unknown_flag_rejected "$SCRIPT_UNDER_TEST"
 }
 
-@test "real repository satisfies the composite-action guard" {
+@test "real repository satisfies the retirement guard" {
   run "$SCRIPT_UNDER_TEST"
   [ "$status" -eq 0 ]
   [[ "$output" != *"FAIL"* ]]

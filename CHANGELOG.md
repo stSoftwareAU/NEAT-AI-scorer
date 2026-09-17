@@ -15,6 +15,31 @@ section to the released version with its date.
 
 ## [Unreleased]
 
+### Changed
+
+- **`neat-core` is pinned to a NEAT-AI-core release tag, and the pin moves on
+  every PR (Issue #630).** `rust_scorer/Cargo.toml` replaces the unpinned
+  `path = "../../NEAT-AI-core/neat-core"` sibling dependency with
+  `{ git = "https://github.com/stSoftwareAU/NEAT-AI-core", tag = "v0.22.5" }`,
+  so `cargo build --release -p rust_scorer` succeeds with no sibling checkout
+  and every host on the same scorer version compiles the same core commit
+  (`Cargo.lock` records it). The canonical `scripts/family-pins.sh` — copied
+  byte-for-byte from NEAT-AI-core `Develop` by `scripts/family-sync.sh`, which
+  now syncs both family scripts — resolves core's newest released `v*` tag,
+  rewrites the pin and runs `cargo update --package neat-core`; the
+  `family-sync` job runs it before pushing, so a behind pin is moved on every
+  PR and the resulting `Cargo.lock` change drives the patch bump. The
+  `setup-neat-core` composite action and its six call sites are retired with
+  the path dependency (`scripts/check-neat-core-composite-action.sh` now guards
+  the retirement, and the redundant `scripts/check-workflow-paths.sh` goes with
+  it), `scripts/check-neat-core-version.sh` reads the pinned tag from
+  `Cargo.lock` instead of a sibling manifest, and `deny.toml` allows that one
+  git source while every other stays denied. Coverage:
+  `tests/scripts/family_pins.bats`, `tests/scripts/family_sync.bats`,
+  `tests/scripts/family_sync_workflow.bats`,
+  `tests/scripts/neat_core_composite_action.bats`,
+  `tests/scripts/neat_core_version_gate.bats`.
+
 ### Added
 
 - **`scripts/runlib.sh` installs `~/.cargo/bin/rust_scorer` only on a version
