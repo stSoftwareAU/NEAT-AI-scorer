@@ -6,7 +6,7 @@
 
 bats_require_minimum_version 1.5.0
 
-@test "runlib already-installed path and missing stamp are hermetic" {
+@test "runlib skip, install, bin selection and failure paths are hermetic" {
   run "${BATS_TEST_DIRNAME}/../../scripts/test-runlib.sh"
   echo "$output"
   [ "$status" -eq 0 ]
