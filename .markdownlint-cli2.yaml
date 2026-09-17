@@ -4,3 +4,7 @@ globs:
 
 ignores:
   - "target/**"
+  # `graft/` holds machine-generated repo-map nodes (see graft/INDEX.md). The
+  # cards quote Rust signatures such as `Vec<f32>` verbatim, which markdownlint
+  # reads as inline HTML. The directory is never committed, so lint it nowhere.
+  - "graft/**"
