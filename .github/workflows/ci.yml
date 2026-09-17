@@ -81,12 +81,6 @@ jobs:
           # back, so keep the GITHUB_TOKEN off disk (Issue #376).
           persist-credentials: false
 
-      # Checkout + sibling symlink for the NEAT-AI-core path dependency
-      # (Issue #18) live in one local composite action (Issue #401) so the
-      # path strategy is defined once, not copy-pasted per job.
-      - name: Set up NEAT-AI-core sibling (path dependency for neat-core)
-        uses: ./.github/actions/setup-neat-core
-
       - name: Free up runner disk space
         run: |
           set -euo pipefail
@@ -199,12 +193,6 @@ jobs:
           # written to .git/config where a later step could read it (Issue #381).
           persist-credentials: false
 
-      # NEAT-AI-core checkout + sibling symlink via the shared composite action
-      # (Issue #401); the composite already sets persist-credentials: false so
-      # this read-only job keeps the token off disk (Issue #381).
-      - name: Set up NEAT-AI-core sibling (path dependency for neat-core)
-        uses: ./.github/actions/setup-neat-core
-
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8  # stable, frozen 2026-05-18
 
@@ -239,13 +227,13 @@ jobs:
       - name: Validate Cargo workspace
         run: cargo metadata --no-deps --format-version 1 > /dev/null
 
-      # Gate against an unhandled breaking neat-core bump (Issue #252). scorer
-      # keeps the unpinned `path` dependency that tracks head, so this step
-      # fails the build when the sibling neat-core's breaking component (major
-      # for >= 1.0, minor for pre-1.0) climbs above the recorded baseline in
-      # neat-core.expected-version — forcing a deliberate upgrade rather than
-      # tracking head blindly. Reuses the neat-core checkout + sibling symlink
-      # above; the default manifest path resolves via that symlink.
+      # Gate against an unhandled breaking neat-core bump (Issues #252, #630).
+      # `scripts/family-pins.sh` moves the pin onto core's newest release on
+      # every PR, so this step fails the build when the PINNED release's
+      # breaking component (major for >= 1.0, minor for pre-1.0) climbs above
+      # the recorded baseline in neat-core.expected-version — forcing a
+      # deliberate migration rather than following core blindly. The pinned
+      # release is read from Cargo.lock; no sibling clone is involved.
       - name: Gate on unhandled breaking neat-core bump
         run: ./scripts/check-neat-core-version.sh
 
@@ -265,13 +253,6 @@ jobs:
           # GITHUB_TOKEN must not be written to .git/config where a later step
           # could read it (Issue #378).
           persist-credentials: false
-
-      # NEAT-AI-core checkout + sibling symlink via the shared composite action
-      # (Issue #401) so `cargo metadata` (invoked by cargo_metadata.bats)
-      # resolves the path dependency; the composite sets persist-credentials:
-      # false, keeping the token off disk for this read-only job (Issue #379).
-      - name: Set up NEAT-AI-core sibling (path dependency for neat-core)
-        uses: ./.github/actions/setup-neat-core
 
       - name: Check bash script syntax
         run: |

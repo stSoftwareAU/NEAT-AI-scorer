@@ -67,11 +67,11 @@ EOF
 parse_check_args --workflows "" "$@"
 WORKFLOWS_DIR="$CHECK_TARGET"
 
-# In default mode also scan local composite actions: the SHA-pinned
-# `actions/checkout` for NEAT-AI-core now lives in
-# `.github/actions/setup-neat-core/action.yml` (Issue #401), so the pinning
-# policy must keep covering it. An explicit --workflows override scans only that
-# directory (keeps test fixtures isolated).
+# In default mode also scan any local composite action under `.github/actions`
+# — its `uses:` references need the same SHA pinning as a workflow's. The
+# directory is optional: the last local action (`setup-neat-core`) was retired
+# when `neat-core` moved to a release-tag pin (Issue #630). An explicit
+# --workflows override scans only that directory (keeps test fixtures isolated).
 ACTIONS_DIR=""
 if [[ -z "$WORKFLOWS_DIR" ]]; then
   WORKFLOWS_DIR="$(check_repo_path ".github/workflows")"
