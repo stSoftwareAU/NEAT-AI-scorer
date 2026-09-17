@@ -20,7 +20,9 @@
 #      the job ran is never clobbered.
 #   9. Authenticate the push with ACTIONS_PUSH (GITHUB_TOKEN fallback), the
 #      Issue #435 pattern shared with version-increment.yml.
-#  10. Use strict bash in its run: blocks.
+#  10. Use strict bash in every multi-line run: block.
+#  11. Verify — not refresh — a fork PR's copy, with `family-sync.sh --check`,
+#      so an unpushable branch cannot report green unverified.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -52,7 +54,7 @@ if grep -qE '^[[:space:]]*pull_request:' "$WORKFLOW"; then
 else
   fail "no pull_request trigger — the sync must run on PRs"
 fi
-if grep -qE '^[[:space:]]{2}push:' "$WORKFLOW"; then
+if grep -qE '^[[:space:]]*push:|on:[[:space:]]*.*\bpush\b' "$WORKFLOW"; then
   fail "push trigger present — a push-triggered sync would commit onto Develop"
 else
   ok "no push trigger"
@@ -74,13 +76,24 @@ else
   fail "no 'family-sync:' job — the audited job name must not drift"
 fi
 
-# 4. Minimal permissions.
-if grep -qE '^[[:space:]]*permissions:[[:space:]]*write-all' "$WORKFLOW"; then
+# 4. Minimal permissions, read from the top-level `permissions:` block itself —
+#    a `contents: write` granted to some other job says nothing about what this
+#    workflow's default token carries.
+TOP_PERMISSIONS="$(
+  awk '
+    /^permissions:/ { print; inside = 1; next }
+    inside && /^[^[:space:]]/ { inside = 0 }
+    inside { print }
+  ' "$WORKFLOW"
+)"
+if [[ -z "$TOP_PERMISSIONS" ]]; then
+  fail "no top-level 'permissions:' block — the workflow inherits the repository default"
+elif printf '%s\n' "$TOP_PERMISSIONS" | grep -qE '^permissions:[[:space:]]*write-all'; then
   fail "'permissions: write-all' grants more than this job needs (use contents: write)"
-elif grep -qE '^[[:space:]]*contents:[[:space:]]*write' "$WORKFLOW"; then
-  ok "minimal write permission (contents: write) present"
+elif printf '%s\n' "$TOP_PERMISSIONS" | grep -qE '^[[:space:]]+contents:[[:space:]]*write[[:space:]]*$'; then
+  ok "minimal write permission (contents: write) present at the workflow level"
 else
-  fail "no 'contents: write' permission — the job cannot push the refreshed copy"
+  fail "the top-level permissions block grants no 'contents: write' — the job cannot push the refreshed copy"
 fi
 
 # 5. The fetch/compare/write contract lives in the script, not in the YAML.
@@ -105,8 +118,9 @@ else
   fail "no head.repo check — pushes onto forks will fail silently"
 fi
 
-# 8. Rebase before push.
-if grep -qE 'pull[[:space:]]+--rebase|rebase[[:space:]]+' "$WORKFLOW"; then
+# 8. Rebase before push. A comment promising a rebase is not a rebase, so
+#    comment lines are stripped before the command is looked for.
+if grep -vE '^[[:space:]]*#' "$WORKFLOW" | grep -qE 'pull[[:space:]]+--rebase|[[:space:]]rebase[[:space:]]'; then
   ok "rebases onto the remote head before pushing"
 else
   fail "no rebase before push — a commit pushed during the run would be clobbered"
@@ -119,11 +133,39 @@ else
   fail "no 'secrets.ACTIONS_PUSH || secrets.GITHUB_TOKEN' — bot pushes will gate PR checks behind Approve and run (Issue #435)"
 fi
 
-# 10. Strict bash.
-if grep -qE 'set[[:space:]]+-euo[[:space:]]+pipefail' "$WORKFLOW"; then
-  ok "strict bash (set -euo pipefail) present"
+# 10. Strict bash in *every* multi-line run: block. One `set -euo pipefail`
+#     anywhere in the file would let a second block swallow a failed command,
+#     so each block is checked on its own: the first non-blank line after
+#     `run: |` must be the strict-mode line.
+LOOSE_BLOCKS="$(
+  awk '
+    /^[[:space:]]*run:[[:space:]]*\|/ { pending = 1; line = NR; next }
+    pending && $0 ~ /^[[:space:]]*$/ { next }
+    pending {
+      if ($0 !~ /set[[:space:]]+-euo[[:space:]]+pipefail/) { print line }
+      pending = 0
+    }
+    END { if (pending) print line }
+  ' "$WORKFLOW"
+)"
+if [[ -z "$LOOSE_BLOCKS" ]]; then
+  ok "every multi-line run: block opens with set -euo pipefail"
 else
-  fail "no 'set -euo pipefail' in run: blocks — failures may be swallowed"
+  while IFS= read -r line; do
+    [[ -n "$line" ]] || continue
+    fail "run: block at line $line does not open with 'set -euo pipefail' — failures may be swallowed"
+  done <<EOF
+$LOOSE_BLOCKS
+EOF
+fi
+
+# 11. Fork PRs are verified rather than refreshed. A fork branch cannot be
+#     pushed to, so without a `--check` run a fork PR would skip the sync
+#     entirely and report green with an unverified copy.
+if grep -qE 'family-sync\.sh[[:space:]]+--check' "$WORKFLOW"; then
+  ok "fork PRs verify the copy with family-sync.sh --check"
+else
+  fail "no 'family-sync.sh --check' run — a fork PR would report green with an unverified copy"
 fi
 
 exit "$EXIT_CODE"

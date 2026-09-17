@@ -38,6 +38,19 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  family-sync-check:
+    name: Verify canonical runlib.sh (fork PRs)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    if: github.event.pull_request.head.repo.full_name != github.repository
+    permissions:
+      contents: read
+    steps:
+      - name: Verify
+        run: |
+          set -euo pipefail
+          ./scripts/family-sync.sh --check
+
   family-sync:
     name: Sync canonical runlib.sh
     runs-on: ubuntu-latest
@@ -125,8 +138,27 @@ EOF
   [[ "$output" == *"push trigger present"* ]]
 }
 
-@test "a missing workflow file fails loud" {
-  run "$CHECK" --workflow "${TMP_DIR}/absent.yml"
+@test "dropping the fork --check job fails" {
+  write_valid_workflow
+  sed '/family-sync.sh --check/d' "${TMP_DIR}/family-sync.yml" >"${TMP_DIR}/no-check.yml"
+  run "$CHECK" --workflow "${TMP_DIR}/no-check.yml"
   [ "$status" -ne 0 ]
-  [[ "$output" == *"not found"* ]]
+  [[ "$output" == *"--check"* ]]
+}
+
+@test "a missing workflow file fails loud" {
+  assert_missing_target_rejected "$CHECK" --workflow "${TMP_DIR}/absent.yml"
+}
+
+@test "an unknown flag prints usage and exits non-zero" {
+  assert_unknown_flag_rejected "$CHECK"
+}
+
+@test "a run: block without strict bash fails" {
+  write_valid_workflow
+  sed '0,/          set -euo pipefail/s/          set -euo pipefail//' \
+    "${TMP_DIR}/family-sync.yml" >"${TMP_DIR}/loose.yml"
+  run "$CHECK" --workflow "${TMP_DIR}/loose.yml"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"set -euo pipefail"* ]]
 }

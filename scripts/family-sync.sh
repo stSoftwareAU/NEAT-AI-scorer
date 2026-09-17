@@ -89,7 +89,7 @@ else
     exit 2
   fi
   if ! curl --proto "=https" --tlsv1.2 -sSfL --retry 3 --retry-delay 2 \
-    --connect-timeout 30 -o "${FETCHED}" "${CANONICAL_URL}" >&2; then
+    --connect-timeout 30 -o "${FETCHED}" "${CANONICAL_URL}"; then
     echo "family-sync: could not fetch ${CANONICAL_URL}" >&2
     exit 2
   fi

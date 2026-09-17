@@ -28,6 +28,31 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # A fork's branch cannot be pushed to, so a fork PR is *verified* instead of
+  # refreshed: `--check` exits non-zero on a stale copy. Without this job a
+  # fork PR would skip the sync entirely and report green carrying a copy
+  # nothing had compared against the canonical one.
+  family-sync-check:
+    name: Verify canonical runlib.sh (fork PRs)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    if: github.event.pull_request.head.repo.full_name != github.repository
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout PR branch
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd  # v5
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          # This job only reads the tree and never pushes, so the workflow
+          # token must not be written to .git/config.
+          persist-credentials: false
+
+      - name: Verify scripts/runlib.sh matches NEAT-AI-core Develop
+        run: |
+          set -euo pipefail
+          ./scripts/family-sync.sh --check
+
   family-sync:
     name: Sync canonical runlib.sh
     runs-on: ubuntu-latest
