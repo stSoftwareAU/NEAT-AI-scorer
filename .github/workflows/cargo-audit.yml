@@ -2,30 +2,30 @@ name: Cargo Audit
 
 # Standalone Cargo Security Audit workflow (Issue #64).
 #
-# Why a dedicated workflow? The reusable `security.yml` workflow already runs
-# `cargo audit` as part of CI on each pull request. This file mirrors that
-# coverage but adds a weekly cron schedule so advisories published *after*
-# the last PR still surface — the lockfile does not change but the RustSec
-# advisory database does, so a freshly published CVE against a pinned
-# dependency would otherwise go unnoticed until the next merge.
+# Why a dedicated workflow? PR-time auditing already happens in CI: `ci.yml`
+# fires on `pull_request` and calls the reusable `security.yml`, whose
+# `rustsec/audit-check` step wraps `cargo audit`. What that path cannot do is
+# notice an advisory published *after* the last merge — the lockfile does not
+# change but the RustSec advisory database does, so a freshly published CVE
+# against a pinned dependency would go unnoticed until the next PR. The weekly
+# cron below is this workflow's non-redundant value.
 #
 # Triggers:
-#   * pull_request   — belt-and-braces alongside security.yml; cargo-audit
-#                      is fast (seconds) so the duplication is negligible
-#                      and keeps the standalone workflow self-contained. The
-#                      filter includes `milestone/**` so the gate also runs on
-#                      milestone/<slug> sub-issue PRs — a bare "*" glob does
-#                      not match refs containing a slash (Issue #391).
 #   * schedule       — Mondays 06:00 UTC; catches new advisories weekly.
 #   * workflow_dispatch — manual trigger for ad-hoc audits.
+#
+# There is deliberately NO `pull_request` trigger (Issue #603). Running one here
+# too meant a PR paid for two audits reading the same `Cargo.lock` against the
+# same advisory database on the same event — two runs that can only ever agree.
+# `scripts/check-cargo-audit-workflow.sh` enforces the invariant: exactly one
+# PR-time `cargo audit` across `.github/workflows`, counting an audit reached
+# indirectly through a reusable workflow.
 #
 # Action versions follow `scripts/check-workflow-action-versions.sh`:
 # `actions/checkout@v5` (Node 24 policy) and `dtolnay/rust-toolchain@stable`
 # (composite/shell action — no Node runtime, ref policy not applicable).
 
 on:
-  pull_request:
-    branches: ["*", "milestone/**"]
   schedule:
     - cron: "0 6 * * 1"
   workflow_dispatch:
@@ -33,8 +33,7 @@ on:
 permissions:
   contents: read
 
-# Avoid duplicate scheduled / dispatch runs piling up; PR runs are deduped
-# per-branch.
+# Avoid duplicate scheduled / dispatch runs piling up.
 concurrency:
   group: cargo-audit-${{ github.ref }}
   cancel-in-progress: true
