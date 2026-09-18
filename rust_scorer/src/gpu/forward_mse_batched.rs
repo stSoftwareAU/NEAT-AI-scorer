@@ -256,23 +256,23 @@ pub(crate) fn build_batched_network_data(
     let mut creatures = Vec::with_capacity(networks.len());
 
     for (creature_idx, net) in networks.iter().enumerate() {
-        if net.num_inputs() != num_inputs {
+        if net.num_inputs != num_inputs {
             return Err(GpuPrepareError::MismatchedShape);
         }
         // Issue #182: creatures above the 256 private-array cap are no longer
         // rejected — they run on the `forward_mse_scratch` kernel. Only an
         // absurd, almost-certainly-corrupt neuron count is refused.
-        if net.num_neurons() > MAX_NEURONS_ABSOLUTE as usize {
+        if net.num_neurons > MAX_NEURONS_ABSOLUTE as usize {
             return Err(GpuPrepareError::TooManyNeurons {
                 creature_idx,
-                num_neurons: net.num_neurons(),
+                num_neurons: net.num_neurons,
             });
         }
         let neuron_offset = neurons.len() as u32;
         let synapse_offset = synapses.len() as u32;
-        let num_non_inputs = net.neurons().len() as u32;
+        let num_non_inputs = net.neurons.len() as u32;
 
-        for n in net.neurons() {
+        for n in &net.neurons {
             // Constant neurons are hosted since Issue #312 (clamped bias,
             // synapses ignored), so they no longer force a CPU fallback. A
             // constant neuron's squash discriminant is irrelevant on the GPU —
@@ -289,7 +289,7 @@ pub(crate) fn build_batched_network_data(
                 is_constant: u32::from(n.is_constant),
             });
         }
-        for s in net.synapses() {
+        for s in &net.synapses {
             synapses.push(SynapseGpu {
                 weight: s.weight,
                 // neat-core #177 narrowed `SynapseData::from_index` to `u16`;
@@ -305,7 +305,7 @@ pub(crate) fn build_batched_network_data(
             neuron_offset,
             num_non_inputs,
             synapse_offset,
-            num_neurons: net.num_neurons() as u32,
+            num_neurons: net.num_neurons as u32,
         });
     }
 
@@ -996,7 +996,7 @@ pub(crate) fn directory_gpu_topology(networks: &[CompiledNetwork]) -> DirectoryG
     let mut has_private = false;
     let mut has_scratch = false;
     for net in networks {
-        if u32::try_from(net.num_neurons()).unwrap_or(u32::MAX) > MAX_NEURONS_PER_CREATURE {
+        if u32::try_from(net.num_neurons).unwrap_or(u32::MAX) > MAX_NEURONS_PER_CREATURE {
             has_scratch = true;
         } else {
             has_private = true;
@@ -1022,7 +1022,7 @@ pub(crate) fn directory_gpu_topology(networks: &[CompiledNetwork]) -> DirectoryG
 pub(crate) fn directory_pool_is_shallow(networks: &[CompiledNetwork]) -> bool {
     !networks.is_empty()
         && networks.iter().all(|net| {
-            let non_input = net.num_neurons().saturating_sub(net.num_inputs());
+            let non_input = net.num_neurons.saturating_sub(net.num_inputs);
             u32::try_from(non_input).unwrap_or(u32::MAX) <= MAX_SHALLOW_NON_INPUT_NEURONS
         })
 }
@@ -1053,7 +1053,7 @@ impl DirectoryGpuRunners {
         let mut scratch_orig: Vec<usize> = Vec::new();
 
         for (i, net) in networks.iter().enumerate() {
-            if u32::try_from(net.num_neurons()).unwrap_or(u32::MAX) > MAX_NEURONS_PER_CREATURE {
+            if u32::try_from(net.num_neurons).unwrap_or(u32::MAX) > MAX_NEURONS_PER_CREATURE {
                 scratch_orig.push(i);
                 scratch_nets.push(net.clone());
             } else {
@@ -1241,21 +1241,6 @@ mod tests {
     };
     use neat_core::creature::compile_creature;
     use neat_core::creature::parse_creature_json;
-    use neat_core::network::{NeuronData, SynapseData};
-
-    /// Issue #625 (neat-core 0.12.0): `CompiledNetwork`'s fields are private,
-    /// so a fixture is edited by rebuilding it from its parts through the one
-    /// validated constructor, not by writing into a compiled value.
-    fn rebuilt_with(
-        net: &CompiledNetwork,
-        edit: impl FnOnce(&mut Vec<NeuronData>, &mut Vec<SynapseData>),
-    ) -> CompiledNetwork {
-        let mut neurons = net.neurons().to_vec();
-        let mut synapses = net.synapses().to_vec();
-        edit(&mut neurons, &mut synapses);
-        CompiledNetwork::from_parts(net.num_inputs(), neurons, synapses)
-            .expect("edited fixture must still satisfy the index invariant")
-    }
 
     fn synthetic_creature(num_inputs: usize, num_outputs: usize, hidden: usize) -> CompiledNetwork {
         let json = dense_mlp_creature_json(num_inputs, num_outputs, hidden, "TANH");
@@ -1299,7 +1284,7 @@ mod tests {
         // of the source network's `u16` `from_index`.
         let net = synthetic_creature(2, 1, 2);
         let expected: Vec<u32> = net
-            .synapses()
+            .synapses
             .iter()
             .map(|s| u32::from(s.from_index))
             .collect();
@@ -1318,9 +1303,10 @@ mod tests {
         // Build a creature with a still-unhosted aggregate squash (MEAN = 37).
         // MINIMUM/MAXIMUM/IF (32..=34) are hosted since Issue #312, so pick one
         // of the remaining aggregates to exercise the rejection path.
-        let net = rebuilt_with(&synthetic_creature(1, 1, 1), |neurons, _| {
-            neurons[0].squash_type = 37; // MEAN — not yet hosted by the shader.
-        });
+        let mut net = synthetic_creature(1, 1, 1);
+        if let Some(n) = net.neurons.first_mut() {
+            n.squash_type = 37; // MEAN — not yet hosted by the shader.
+        }
         let err =
             build_batched_network_data(&[net], 1, 1).expect_err("unsupported squash rejected");
         match err {
@@ -1335,10 +1321,11 @@ mod tests {
     #[test]
     fn build_batched_network_data_accepts_all_pointwise_squashes() {
         for t in 0u8..=MAX_POINTWISE_SQUASH {
-            let net = rebuilt_with(&synthetic_creature(1, 1, 1), |neurons, _| {
-                // Set the hidden neuron's squash to the discriminant under test.
-                neurons[0].squash_type = t;
-            });
+            let mut net = synthetic_creature(1, 1, 1);
+            // Set the hidden neuron's squash to the discriminant under test.
+            if let Some(n) = net.neurons.first_mut() {
+                n.squash_type = t;
+            }
             build_batched_network_data(&[net], 1, 1)
                 .unwrap_or_else(|e| panic!("point-wise squash {t} must be GPU-supported: {e:?}"));
         }
@@ -1350,9 +1337,10 @@ mod tests {
     #[test]
     fn build_batched_network_data_accepts_min_max_if_aggregates() {
         for t in 32u8..=34u8 {
-            let net = rebuilt_with(&synthetic_creature(1, 1, 1), |neurons, _| {
-                neurons[0].squash_type = t;
-            });
+            let mut net = synthetic_creature(1, 1, 1);
+            if let Some(n) = net.neurons.first_mut() {
+                n.squash_type = t;
+            }
             let data = build_batched_network_data(&[net], 1, 1)
                 .unwrap_or_else(|e| panic!("aggregate squash {t} must be GPU-supported: {e:?}"));
             assert_eq!(
@@ -1368,9 +1356,10 @@ mod tests {
     #[test]
     fn build_batched_network_data_rejects_remaining_aggregate_squashes() {
         for t in 35u8..=37u8 {
-            let net = rebuilt_with(&synthetic_creature(1, 1, 1), |neurons, _| {
-                neurons[0].squash_type = t;
-            });
+            let mut net = synthetic_creature(1, 1, 1);
+            if let Some(n) = net.neurons.first_mut() {
+                n.squash_type = t;
+            }
             let err = build_batched_network_data(&[net], 1, 1)
                 .expect_err("remaining aggregate squash must be rejected");
             match err {
@@ -1388,10 +1377,11 @@ mod tests {
     /// aggregate discriminant on a constant neuron must not force a fallback.
     #[test]
     fn build_batched_network_data_accepts_constant_neuron() {
-        let net = rebuilt_with(&synthetic_creature(1, 1, 1), |neurons, _| {
-            neurons[0].is_constant = true;
-            neurons[0].squash_type = 37; // MEAN — unhosted, but ignored for constants.
-        });
+        let mut net = synthetic_creature(1, 1, 1);
+        if let Some(n) = net.neurons.first_mut() {
+            n.is_constant = true;
+            n.squash_type = 37; // MEAN — unhosted, but ignored for constants.
+        }
         let data = build_batched_network_data(&[net], 1, 1)
             .expect("a constant neuron is GPU-hostable since Issue #312");
         assert_eq!(
@@ -1404,15 +1394,14 @@ mod tests {
     /// `SynapseType` discriminant must be widened losslessly into `SynapseGpu`.
     #[test]
     fn build_batched_network_data_populates_synapse_type() {
+        let mut net = synthetic_creature(1, 1, 1);
         // Tag the compiled synapses with distinct types and assert they survive
         // the u8 -> u32 widening at the upload boundary.
-        let net = rebuilt_with(&synthetic_creature(1, 1, 1), |_, synapses| {
-            for (i, s) in synapses.iter_mut().enumerate() {
-                s.synapse_type = (i % 4) as u8;
-            }
-        });
+        for (i, s) in net.synapses.iter_mut().enumerate() {
+            s.synapse_type = (i % 4) as u8;
+        }
         let expected: Vec<u32> = net
-            .synapses()
+            .synapses
             .iter()
             .map(|s| u32::from(s.synapse_type))
             .collect();
@@ -1440,7 +1429,7 @@ mod tests {
         let spec = TreeSpec::new(4, 2, 7);
         let creature = parse_creature_json(&tree_creature_json(&spec)).expect("parse fixture");
         let net = compile_creature(&creature).expect("compile fixture");
-        let num_inputs = net.num_inputs();
+        let num_inputs = net.num_inputs;
         // The constant neuron is the first non-input neuron the fixture emits.
         let constant_index = num_inputs as u32;
         // Fixture node ids are emitted deepest-first, so the compiled IF neurons
@@ -1451,7 +1440,7 @@ mod tests {
             .expect("IF trees are GPU-hostable");
 
         let mut seen_if = 0usize;
-        for (i, neuron) in net.neurons().iter().enumerate() {
+        for (i, neuron) in net.neurons.iter().enumerate() {
             if neuron.is_constant || SquashType::from(neuron.squash_type) != SquashType::If {
                 continue;
             }
@@ -1497,9 +1486,8 @@ mod tests {
     /// the cap; only an absurd count beyond [`MAX_NEURONS_ABSOLUTE`] is refused.
     #[test]
     fn build_batched_network_data_accepts_above_private_cap() {
-        // 1 input + 255 hidden + 1 output = 257 neurons: one past the cap.
-        let net = synthetic_creature(1, 1, 255);
-        assert_eq!(net.num_neurons(), MAX_NEURONS_PER_CREATURE as usize + 1);
+        let mut net = synthetic_creature(1, 1, 1);
+        net.num_neurons = (MAX_NEURONS_PER_CREATURE as usize) + 1;
         let data = build_batched_network_data(&[net], 1, 1)
             .expect("creatures above the 256 cap now route to the scratch kernel");
         assert_eq!(data.creatures.len(), 1);
@@ -1510,22 +1498,13 @@ mod tests {
         );
     }
 
-    /// neat-core 0.12.0 (#625) builds every `CompiledNetwork` through one
-    /// validated constructor, so a compiled value can no longer be edited into
-    /// an absurd neuron count, and neat-core's own node ceiling sits far below
-    /// [`MAX_NEURONS_ABSOLUTE`]. The `TooManyNeurons` guard in
-    /// `build_batched_network_data` stays as belt and braces; this pins the
-    /// ordering that makes it unreachable for any network neat-core will hand us.
     #[test]
-    fn absurd_neuron_count_is_unreachable_for_a_valid_network() {
-        use neat_core::network::{MAX_NODE_COUNT, NetworkError};
-        assert!(MAX_NODE_COUNT <= MAX_NEURONS_ABSOLUTE as usize);
-        let refused =
-            CompiledNetwork::from_parts(MAX_NEURONS_ABSOLUTE as usize + 1, Vec::new(), Vec::new());
-        assert!(
-            matches!(refused, Err(NetworkError::TooManyNodes { .. })),
-            "neat-core must refuse a node count past MAX_NODE_COUNT"
-        );
+    fn build_batched_network_data_rejects_absurd_neuron_count() {
+        let mut net = synthetic_creature(1, 1, 1);
+        net.num_neurons = (MAX_NEURONS_ABSOLUTE as usize) + 1;
+        let err = build_batched_network_data(&[net], 1, 1)
+            .expect_err("an absurd neuron count is rejected");
+        assert!(matches!(err, GpuPrepareError::TooManyNeurons { .. }));
     }
 
     #[test]
@@ -1578,7 +1557,7 @@ mod tests {
     fn directory_pool_is_shallow_accepts_enceladus_shape() {
         let net = sparse_creature(2461, 19);
         assert!(
-            net.num_neurons() > MAX_NEURONS_PER_CREATURE as usize,
+            net.num_neurons > MAX_NEURONS_PER_CREATURE as usize,
             "the Enceladus shape must still route to the scratch kernel"
         );
         assert!(directory_pool_is_shallow(std::slice::from_ref(&net)));
@@ -1603,7 +1582,7 @@ mod tests {
         let hidden = MAX_SHALLOW_NON_INPUT_NEURONS as usize - 1;
         let at_cap = sparse_creature(2461, hidden);
         assert_eq!(
-            at_cap.num_neurons() - at_cap.num_inputs(),
+            at_cap.num_neurons - at_cap.num_inputs,
             MAX_SHALLOW_NON_INPUT_NEURONS as usize
         );
         assert!(directory_pool_is_shallow(&[at_cap]));
