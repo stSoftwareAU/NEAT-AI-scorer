@@ -13,27 +13,27 @@ This is a multi-binary Rust workspace. The sole workspace member is
 [`rust_scorer/Cargo.toml`](./rust_scorer/Cargo.toml) and documented in the
 README [Binaries](./README.md#binaries) section — this guide deliberately keeps
 no copy of that list (Issue #509). The shared scoring logic lives in
-**`neat-core`**, resolved as a **path dependency** on a sibling clone of
-[NEAT-AI-core](https://github.com/stSoftwareAU/NEAT-AI-core).
+**`neat-core`**, pinned to a **release tag** of
+[NEAT-AI-core](https://github.com/stSoftwareAU/NEAT-AI-core) in
+[`rust_scorer/Cargo.toml`](./rust_scorer/Cargo.toml).
 
-Clone both repositories under the same parent directory so the path
-dependency resolves:
+Clone this repository anywhere and build — Cargo fetches the pinned tag, so no
+sibling NEAT-AI-core checkout is needed (Issue #630). The pin moves only
+through this repository's own PR: the `family-sync` job runs
+[`scripts/family-pins.sh`](./scripts/family-pins.sh), which rewrites the tag to
+core's newest release and updates `Cargo.lock` with it. See the README
+[neat-core release pin](./README.md#neat-core-release-pin-issue-630) section.
 
-```text
-parent/
-  NEAT-AI-core/      # clone of stSoftwareAU/NEAT-AI-core
-  NEAT-AI-scorer/    # this repository
-```
-
-The `neat-core` path dependency is **unpinned** and tracks head, so a
-**breaking** neat-core change can reach scorer silently. CI guards against
-this with the **neat-core breaking-bump gate** (`scripts/check-neat-core-version.sh`):
-it fails when neat-core's breaking component (major for `>= 1.0`, minor for
-pre-1.0) climbs above the version recorded in
+Because the pin moves automatically, a **breaking** neat-core change could
+reach scorer without anyone deciding to. CI guards against this with the
+**neat-core breaking-bump gate** (`scripts/check-neat-core-version.sh`): it
+fails when the pinned release's breaking component (major for `>= 1.0`, minor
+for pre-1.0) climbs above the version recorded in
 [`neat-core.expected-version`](./neat-core.expected-version). When the gate
 fails, update `rust_scorer` for the breaking change and bump that baseline
-file in the same PR. See the README "neat-core breaking-bump gate" section
-for the full rationale.
+file in the same PR. See the README
+[neat-core breaking-bump gate](./README.md#neat-core-breaking-bump-gate-issues-252-630)
+section for the full rationale.
 
 ## Prerequisites
 

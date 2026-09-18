@@ -169,7 +169,7 @@ EOF
   [[ "$output" != *"FAIL"* ]]
 }
 
-@test "default run validates every guarded workflow (ci.yml, security.yml, semgrep.yml and cargo-quality.yml)" {
+@test "default run validates every guarded workflow (ci.yml, security.yml, semgrep.yml, cargo-quality.yml and family-sync.yml)" {
   run "$SCRIPT_UNDER_TEST"
   [ "$status" -eq 0 ]
   [[ "$output" != *"FAIL"* ]]
@@ -177,4 +177,5 @@ EOF
   [[ "$output" == *"security.yml"* ]]
   [[ "$output" == *"semgrep.yml"* ]]
   [[ "$output" == *"cargo-quality.yml"* ]]
+  [[ "$output" == *"family-sync.yml"* ]]
 }

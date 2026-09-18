@@ -338,7 +338,7 @@ fn run_parity_json(label: &str, json: &str, num_creatures: usize, n_records: usi
 
     let creature = parse_creature_json(json).expect("parse creature");
     let template = compile_creature(&creature).expect("compile");
-    let num_inputs = template.num_inputs;
+    let num_inputs = template.num_inputs();
     let num_outputs = creature.output;
     let mut nets: Vec<_> = (0..num_creatures).map(|_| template.clone()).collect();
 

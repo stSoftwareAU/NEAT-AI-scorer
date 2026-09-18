@@ -49,7 +49,7 @@ check_require_file "$WORKFLOW"
 check_subject "$WORKFLOW"
 
 # Emit a JSON-ish report of each job's top-level keys (`needs`, `if`) using a
-# minimal Python scanner — same approach as check-workflow-paths.sh.
+# minimal Python scanner, so the parse needs no YAML dependency.
 report="$(
   python3 - "$WORKFLOW" <<'PY'
 import sys

@@ -514,7 +514,7 @@ mod tests {
         let net = compile_creature(&creature).expect("compile");
 
         let if_neurons = net
-            .neurons
+            .neurons()
             .iter()
             .filter(|n| !n.is_constant && SquashType::from(n.squash_type) == SquashType::If)
             .count();
@@ -522,13 +522,13 @@ mod tests {
 
         // Every IF neuron carries two condition edges plus one positive and one
         // negative branch edge.
-        for neuron in &net.neurons {
+        for neuron in net.neurons() {
             if neuron.is_constant || SquashType::from(neuron.squash_type) != SquashType::If {
                 continue;
             }
             let start = neuron.start_synapse as usize;
             let end = start + neuron.num_synapses as usize;
-            let roles: Vec<SynapseType> = net.synapses[start..end]
+            let roles: Vec<SynapseType> = net.synapses()[start..end]
                 .iter()
                 .map(|s| SynapseType::from(s.synapse_type))
                 .collect();
@@ -637,7 +637,7 @@ mod tests {
             let creature = parse_creature_json(&json).expect("parse");
             let net = compile_creature(&creature).expect("a deep spec must still graft cleanly");
             let if_neurons = net
-                .neurons
+                .neurons()
                 .iter()
                 .filter(|n| !n.is_constant && SquashType::from(n.squash_type) == SquashType::If)
                 .count();

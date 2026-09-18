@@ -1,11 +1,12 @@
 # Auto-format / PR housekeeping job (Issues #19, #542).
 #
 # Runs on pull requests targeting Develop or a milestone/* branch. Applies
-# `cargo fmt --all` and refreshes `Cargo.lock` against the checked-out
-# NEAT-AI-core path dependency (`cargo update -p neat-core`) so workers stop
-# reprinting `Updating neat-core vX -> vY` after every fetch. If the working
-# tree changes, the fix is committed and pushed back. Re-running on a clean
-# branch is a no-op, so the job is safe/idempotent.
+# `cargo fmt --all` and refreshes `Cargo.lock` against the pinned `neat-core`
+# release tag (`cargo update -p neat-core`) so workers stop reprinting
+# `Updating neat-core vX -> vY` after every fetch. If the working tree changes,
+# the fix is committed and pushed back. Re-running on a clean branch is a
+# no-op, so the job is safe/idempotent. The pin itself is moved by the
+# `family-sync` job, not here (Issue #630).
 #
 # Deliberately does NOT bump `neat-core.expected-version` — the Issue #252
 # breaking-bump gate stays a human acknowledgement.
@@ -61,12 +62,6 @@ jobs:
           # via ACTIONS_PUSH (Issue #435 / NEAT-AI ACTIONS_PUSH pattern).
           persist-credentials: false
 
-      # NEAT-AI-core is a path dependency required for `cargo fmt --all` to
-      # resolve the workspace. The checkout + sibling symlink live in the
-      # shared composite action (Issue #401).
-      - name: Set up NEAT-AI-core sibling (path dependency for neat-core)
-        uses: ./.github/actions/setup-neat-core
-
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8  # stable, frozen 2026-05-18
         with:
@@ -77,12 +72,12 @@ jobs:
           set -euo pipefail
           cargo fmt --all
 
-      # Refresh Cargo.lock against the sibling neat-core path dependency
+      # Refresh Cargo.lock against the pinned neat-core release tag
       # (Issue #542). Without this, every worker `cargo build` rewrites the
       # lock locally and `model_fetch` hard-resets it on the next run.
       # Scoped to `-p neat-core` so crates.io quarantine / weekly bump policy
-      # is untouched — only the path-dep version (and the workspace member
-      # version Cargo rewrites alongside it) moves.
+      # is untouched — only the pinned tag's resolution (and the workspace
+      # member version Cargo rewrites alongside it) moves.
       - name: Sync Cargo.lock to latest neat-core
         run: |
           set -euo pipefail

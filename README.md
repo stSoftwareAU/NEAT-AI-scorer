@@ -2,14 +2,14 @@
 
 ![NEAT-AI-scorer banner](https://raw.githubusercontent.com/stSoftwareAU/NEAT-AI/Develop/docs/brand/social-previews/neat-ai-scorer.png)
 
-Native **MSE scorer** CLI for NEAT-AI creatures. Shared logic lives in **`neat-core`**, resolved from a **path dependency** on **[NEAT-AI-core](https://github.com/stSoftwareAU/NEAT-AI-core)** (see `rust_scorer/Cargo.toml`). GitHub Actions checks out `NEAT-AI-core` next to this repo so CI can resolve that path
+Native **MSE scorer** CLI for NEAT-AI creatures. Shared logic lives in **`neat-core`**, pinned to a **release tag** of **[NEAT-AI-core](https://github.com/stSoftwareAU/NEAT-AI-core)** (see `rust_scorer/Cargo.toml`). Cargo fetches that tag itself, so no sibling checkout is needed to build — here or on a runner (Issue #630).
 
 ## Source
 
 | Component | Provenance |
 |-----------|----------------|
 | `rust_scorer/` | **`training_bin_stream::for_each_read_chunk`** (pipelined on native, same API on wasm) plus **pending + head + compact** (`stream_score.rs`), fused MSE when `forwardOnly` is true; **`float_scan_bench`** uses the same reader for throughput experiments. |
-| `neat-core` (crate) | **`../../NEAT-AI-core/neat-core`** relative to `rust_scorer/Cargo.toml` — clone **NEAT-AI-core** as a sibling of **NEAT-AI-scorer** (same parent directory). |
+| `neat-core` (crate) | **`git = "https://github.com/stSoftwareAU/NEAT-AI-core", tag = "v<semver>"`** in `rust_scorer/Cargo.toml` — the pin the [neat-core release pin](#neat-core-release-pin-issue-630) section describes. |
 | `LICENSE`, `.gitleaks.toml` | `origin/Develop` of NEAT-AI |
 
 ## Build
@@ -33,7 +33,26 @@ cargo test --workspace --all-features --verbose -- --test-threads=2
 RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
 ```
 
-Requires **shellcheck**, **cargo-deny** (`cargo install cargo-deny --locked`), **codespell** (`pip install --user codespell`, used by `scripts/spell-check.sh`), and optionally **cargo-edit** for the **opt-in** upgrade step in `./quality.sh`
+Requires **shellcheck**, **cargo-deny** (`cargo install cargo-deny --locked`), **codespell** (`pip install --user codespell`, used by `scripts/spell-check.sh`), and optionally **cargo-edit** for the **opt-in** upgrade step in `./quality.sh`.
+
+### Canonical `runlib.sh` and the family sync (Issue #629)
+
+Fleet hosts do not run `cargo build` on every score. [`scripts/runlib.sh`](./scripts/runlib.sh) installs `~/.cargo/bin/rust_scorer` and the stamp `~/.cargo/bin/.rust_scorer.version`, prints that path on stdout, and removes the checkout's `target/` after a successful install — naming the bytes freed on stderr. It builds `--bin rust_scorer` only, never the bench bins, and a failed build keeps `target/` and leaves the previously installed CLI and stamp untouched. A second run on the same crate version prints `[rust_scorer] already installed v<x>` on stderr and runs no `cargo build`.
+
+That file has **one home** — `scripts/runlib.sh` on [NEAT-AI-core](https://github.com/stSoftwareAU/NEAT-AI-core) `Develop` — and every Rust sibling carries a byte-identical copy. So does [`scripts/family-pins.sh`](./scripts/family-pins.sh), the pin mover the [neat-core release pin](#neat-core-release-pin-issue-630) section below describes. Neither is ever edited here: behaviour changes are made in NEAT-AI-core and re-copied outward. [`scripts/family-sync.sh`](./scripts/family-sync.sh) fetches both canonical copies and refreshes the local ones when they differ (`--check` reports a stale copy without writing it; `--file NAME` limits the run to one script), failing non-zero rather than installing a fetch it cannot verify. The `family-sync` job in [`.github/workflows/family-sync.yml`](./.github/workflows/family-sync.yml) runs it on every pull request, then runs the refreshed `family-pins.sh`, and commits both back onto the PR branch, using the same push identity as [`version-increment.yml`](./.github/workflows/version-increment.yml); [`scripts/check-family-sync-workflow.sh`](./scripts/check-family-sync-workflow.sh) guards that job's shape.
+
+```mermaid
+flowchart LR
+    core["NEAT-AI-core Develop<br/>scripts/runlib.sh<br/>scripts/family-pins.sh"] -->|fetch| sync["family-sync job<br/>scripts/family-sync.sh"]
+    sync -->|differs: refresh| pins["./scripts/family-pins.sh<br/>move the neat-core pin"]
+    sync -->|matches| pins
+    pins -->|"changed: commit + push"| pr["PR branch<br/>scripts + Cargo.toml + Cargo.lock"]
+    pins -->|unchanged| noop["no-op"]
+    pr -->|"./scripts/runlib.sh"| install["~/.cargo/bin/rust_scorer<br/>+ .rust_scorer.version"]
+    install --> clean["target/ removed"]
+```
+
+This workspace declares the `rust_scorer` CLI beside four bench binaries, a shape the canonical script's manifest-only fast path declines to read: an already-installed run here still costs one `cargo metadata` call before it prints `already installed` (no build, no install). Removing that last call is a change to the canonical copy in NEAT-AI-core, not to this one.
 
 By default `./quality.sh` is **read-only** against `Cargo.lock` / `Cargo.toml` — it never bumps dependency versions in your working tree. To bump library dependencies during the gate, opt in with `./quality.sh --upgrade` (or `QUALITY_UPGRADE=1 ./quality.sh`); this requires **cargo-edit**. Routine, quarantine-gated dependency bumps go through [`./bump-deps.sh`](./bump-deps.sh) (Issue #105) instead.
 
@@ -1271,19 +1290,51 @@ supersession note in
 
 ## Local layout
 
-Place **NEAT-AI-core** and **NEAT-AI-scorer** as **siblings** (e.g. `…/src/NEAT-AI-core` and `…/src/NEAT-AI-scorer`). The path in `rust_scorer/Cargo.toml` is `../../NEAT-AI-core/neat-core` so `cargo build` resolves `neat-core` from your local **NEAT-AI-core** tree. CI does the same via a second checkout, but indirectly: `actions/checkout` **refuses any `path:` that resolves outside `$GITHUB_WORKSPACE`**, so the [`setup-neat-core`](./.github/actions/setup-neat-core/action.yml) composite action clones into the in-workspace `NEAT-AI-core/` and symlinks `$GITHUB_WORKSPACE/../NEAT-AI-core` at it (Issue #18). `scripts/check-workflow-paths.sh` fails the gate if a workflow reintroduces an out-of-workspace `path:`.
+**No sibling checkout is needed.** `neat-core` is a git dependency pinned to a NEAT-AI-core release tag, so `cargo build` fetches it into `~/.cargo/git` like any other dependency — clone this repository anywhere and build. The `setup-neat-core` composite action that used to clone and symlink the sibling on a runner (Issue #18) is retired with the path dependency; [`scripts/check-neat-core-composite-action.sh`](./scripts/check-neat-core-composite-action.sh) fails the gate if a workflow reintroduces that checkout, or if the manifest reverts to a `path` dependency.
 
-### neat-core breaking-bump gate (Issue #252)
+### neat-core release pin (Issue #630)
 
-The `neat-core` dependency is an **unpinned `path` dependency that always
-tracks head** — there is no version to pin (kept by design). To stop scorer
-from silently tracking a **breaking** neat-core change, CI runs a
-version-baseline gate:
+[`rust_scorer/Cargo.toml`](./rust_scorer/Cargo.toml) pins `neat-core` to a NEAT-AI-core **release tag**:
+
+```toml
+neat-core = { git = "https://github.com/stSoftwareAU/NEAT-AI-core", tag = "v0.22.5" }
+```
+
+`Cargo.lock` records the commit that tag resolves to, so every host on the same scorer version builds against the **same** core commit, and a new core release changes nothing on the fleet until this repository's pin moves and its version bumps.
+
+**How the pin moves** — only through this repository's own PR, and automatically:
+
+1. The `family-sync` job refreshes [`scripts/family-pins.sh`](./scripts/family-pins.sh) from NEAT-AI-core `Develop` (the copy contract above), then runs it.
+2. `family-pins.sh` resolves NEAT-AI-core's newest released `v<major>.<minor>.<patch>` tag with `git ls-remote` (pre-releases are never chosen), rewrites the pin when the remote is ahead, and runs `cargo update --package neat-core` so `Cargo.lock` follows. An already-current pin is a byte-for-byte no-op; a remote it cannot list exits non-zero and fails the job.
+3. The moved pin changes `Cargo.lock`, so [`version-increment.yml`](./.github/workflows/version-increment.yml) bumps the patch version on the same PR — the pin never moves at an unchanged version.
+4. A **breaking** core release then fails this repository's own CI build (and the [breaking-bump gate](#neat-core-breaking-bump-gate-issues-252-630) below) until the code is migrated. That is the intended loud signal.
+
+Run it by hand from the repository root with `./scripts/family-pins.sh`. A **fork** PR's pin is the author's responsibility: the job cannot push onto a fork's branch, so it only verifies the canonical copies there.
+
+```mermaid
+sequenceDiagram
+    participant core as NEAT-AI-core
+    participant job as family-sync job
+    participant pr as scorer PR branch
+    participant vi as version-increment
+    core->>job: newest v* release tag
+    job->>job: ./scripts/family-pins.sh
+    job->>pr: commit moved tag + Cargo.lock
+    pr->>vi: Cargo.lock changed
+    vi->>pr: patch version bump
+```
+
+### neat-core breaking-bump gate (Issues #252, #630)
+
+The pin above moves to core's newest release automatically, so scorer could
+otherwise follow a **breaking** neat-core change without anyone deciding to.
+CI runs a version-baseline gate:
 
 - Scorer records the **last-handled** neat-core version in the checked-in
   [`neat-core.expected-version`](./neat-core.expected-version) file.
-- CI reads neat-core's actual version from the cloned sibling
-  `../NEAT-AI-core/Cargo.toml` (`[workspace.package] version`).
+- CI reads the **pinned** release from [`Cargo.lock`](./Cargo.lock) — the
+  `tag=v<semver>` of the `neat-core` package's git source, which is what the
+  build actually compiles.
 - The **breaking component** follows SemVer: the **major** for `>= 1.0`
   releases, the **minor** for pre-1.0 (`0.x`) releases. The gate **fails**
   when neat-core's breaking component is **greater** than the recorded
@@ -1297,15 +1348,15 @@ This is what would have caught the neat-core breaking type change
 1. Update `rust_scorer` for the breaking neat-core change.
 2. Bump the recorded version in
    [`neat-core.expected-version`](./neat-core.expected-version) to match the
-   new neat-core version.
+   pinned neat-core release.
 
 The gate runs as a step in the CI `validation` job and locally via
-`./quality.sh` (the script is `scripts/check-neat-core-version.sh`; it skips
-locally when no sibling `../NEAT-AI-core` clone is present).
+`./quality.sh` (the script is `scripts/check-neat-core-version.sh`; it needs
+nothing but the checked-in lockfile, so it runs everywhere).
 
 ```mermaid
 flowchart TD
-    A[CI: read neat-core Cargo.toml version] --> B[read neat-core.expected-version baseline]
+    A[read pinned tag from Cargo.lock] --> B[read neat-core.expected-version baseline]
     B --> C{breaking component<br/>greater than baseline?}
     C -->|"yes (major ↑, or pre-1.0 minor ↑)"| D[FAIL: deliberate upgrade required]
     C -->|"no (match / patch drift)"| E[PASS]
@@ -1327,7 +1378,7 @@ The NEAT-AI project is split across several repositories. This repo, **NEAT-AI-s
 | [NEAT-AI-core](https://github.com/stSoftwareAU/NEAT-AI-core) | Shared Rust computation library (`neat-core` crate) with fused batch losses and `training_bin_stream`. |
 | [NEAT-AI-Discovery](https://github.com/stSoftwareAU/NEAT-AI-Discovery) | Rust discovery module invoked by NEAT-AI via Deno FFI. |
 | [NEAT-AI-Snapshot](https://github.com/stSoftwareAU/NEAT-AI-Snapshot) | Snapshot storage for trained creatures. |
-| [NEAT-AI-scorer](https://github.com/stSoftwareAU/NEAT-AI-scorer) | **This repo** — native MSE scorer CLI; depends on `neat-core` via path dependency. |
+| [NEAT-AI-scorer](https://github.com/stSoftwareAU/NEAT-AI-scorer) | **This repo** — native MSE scorer CLI; depends on `neat-core` via a pinned release tag. |
 | [NEAT-AI-Explore](https://github.com/stSoftwareAU/NEAT-AI-Explore) | Visualiser that consumes NEAT-AI-Snapshot data. |
 | [NEAT-AI-Examples](https://github.com/stSoftwareAU/NEAT-AI-Examples) | Usage examples built on NEAT-AI. |
 
@@ -1491,24 +1542,42 @@ the Cargo dependency graph in four stages and prints a one-line summary:
 1. **Internal — NEAT-AI-core pin.** When any workspace member's `Cargo.toml`
    pins `neat-core` to a `git+rev` SHA, the script resolves
    `gh api repos/stSoftwareAU/NEAT-AI-core/commits/Develop --jq .sha` and
-   advances the `rev = "..."` field if it has moved. The default layout in
-   this repo uses a `path = "..."` sibling clone (see AGENTS.md), so this
-   step is a no-op unless someone switches to a `git+rev` pin.
+   advances the `rev = "..."` field if it has moved. This repo pins a release
+   **tag** instead (see [neat-core release pin](#neat-core-release-pin-issue-630)),
+   which the `family-sync` job moves with `scripts/family-pins.sh`, so this
+   step is a no-op here.
 2. **External — crates.io.** Runs `cargo update --dry-run` (or
    `cargo upgrade --dry-run` under `--cargo-upgrade`, see below), then for
    each proposed bump checks the version's publish time against
    `--quarantine-hours` (default `$VIBE_BUMP_QUARANTINE_HOURS` / 24h).
    Versions younger than the quarantine window are deferred; older versions
    are applied with `cargo update -p <crate> --precise <new>` (or
-   `cargo upgrade -p <crate>@<new>`).
+   `cargo upgrade -p <crate>@<new>`). Crates that pin each other with `=`
+   requirements — the wasm-bindgen / js-sys / web-sys family — can never be
+   advanced one crate at a time while the rest of the graph stays locked, so
+   any crate cargo rejects individually gets **one grouped retry**
+   (`cargo update -p a -p b …`, Issue #619) that moves the whole family
+   together. A grouped resolve is more permissive than `--precise`, so the
+   resulting `Cargo.lock` is verified against the vetted candidate list: if
+   it changed any package to a version the quarantine gate did not clear, the
+   lockfile is restored and the crates are reported as failed with cargo's
+   own reason.
 3. **`cargo audit`.** Fails non-zero on any reported advisory, naming the
-   offending crate and advisory ID.
+   offending crate and advisory ID. A cargo-audit that is **not installed** is
+   a tooling gap rather than a bump rejection (Issue #619): the stage prints
+   `audit: SKIPPED` plus a stderr warning and the advisory scan is left to
+   `.github/workflows/cargo-audit.yml`, which runs `cargo audit` on every PR.
+   Pass `--require-audit` (or set `BUMP_DEPS_REQUIRE_AUDIT=1`) to make a
+   missing cargo-audit fatal instead.
 4. **`cargo build --release`.** Confirms the bumped tree compiles.
 
 Exit `0` means the tree is clean (or no-op); non-zero means a bump was
-rejected and the worker reverts. Override flags (`--skip-internal`,
-`--skip-external`, `--skip-audit`, `--skip-build`, `--cargo-upgrade`) and a
-hidden `--check-published` testing helper are documented under
+rejected and the worker reverts. A `cargo update --dry-run` that cannot
+resolve the dependency graph is reported as an error rather than as "no
+updates" (Issue #619), so a broken tree is never mistaken for a clean no-op.
+Override flags (`--skip-internal`, `--skip-external`, `--skip-audit`,
+`--require-audit`, `--skip-build`, `--cargo-upgrade`) and a hidden
+`--check-published` testing helper are documented under
 `./bump-deps.sh --help`. The script is covered by
 `tests/scripts/bump_deps.bats`.
 
@@ -1525,11 +1594,18 @@ flowchart LR
     A --> C[External: cargo update + quarantine]
     A --> D[cargo audit]
     A --> E[cargo build --release]
-    D -->|advisory| X[exit 1: revert]
+    C -->|per-crate reject| R[Grouped retry + lock verify]
+    R -->|unvetted version| RV[restore lock: report failed]
+    C -->|dry-run unresolvable| X[exit 1: revert]
+    D -->|advisory| X
+    D -->|not installed| K[audit: SKIPPED — CI runs it]
     E -->|fail| X
     B --> S[summary]
     C --> S
+    R --> S
+    RV --> S
     D --> S
+    K --> S
     E --> S
 ```
 
@@ -1550,8 +1626,9 @@ checks run without an "Approve and run" gate (Issue #435).
 PRs also run an auto-format / housekeeping job
 (`.github/workflows/auto-format.yml`, Issues #19 and #542). The job runs
 `cargo fmt --all` and then `cargo update -p neat-core` so `Cargo.lock`
-tracks the checked-out NEAT-AI-core path dependency (workers otherwise
-rewrite the lock on every `cargo build` and `model_fetch` resets it). If the
+tracks the pinned NEAT-AI-core release tag (workers otherwise rewrite the lock
+on every `cargo build` and `model_fetch` resets it); the pin itself is moved by
+the `family-sync` job, not here (Issue #630). If the
 working tree changes, the fix is committed with a deterministic message and
 pushed back. When there are no changes the commit step is skipped, so
 re-running on a clean branch is a no-op. The job deliberately does **not**
@@ -1768,6 +1845,18 @@ The container path is the functional equivalent of the
 `semgrep ci --config p/default`. The workflow is validated by
 `scripts/check-semgrep-workflow.sh` (invoked from `quality.sh`) and
 covered end-to-end by `tests/scripts/semgrep_workflow.bats`.
+
+The preferred pin shape carries a **release tag beside that digest** —
+`image: semgrep/semgrep:<version>@sha256:<64-hex>` (Issue #617). The digest
+still decides which bytes run, so the pin is exactly as immutable, but
+Renovate's `github-actions` manager and Dependabot's `docker` ecosystem both
+resolve a bump from the **tag** and then rewrite the digest next to it: a bare
+digest gives them nothing to resolve and is frozen forever. The validator
+therefore accepts a bare `semgrep/semgrep@sha256:<digest>` as a genuine pin but
+emits a non-blocking `WARN` naming the missing tag, and fails a tag-only pin as
+before. Editing the workflow's own `image:` line needs a maintainer — the
+automation worker's credentials carry no `workflow` OAuth scope
+([Human escalation](./CONTRIBUTING.md#human-escalation)).
 
 A standalone Markdown Lint workflow
 (`.github/workflows/markdown-lint.yml`, Issue #63) runs

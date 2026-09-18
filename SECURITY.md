@@ -63,8 +63,11 @@ the 24-hour quarantine window. Use the existing tooling:
    crates.io alone.
 2. **Confirm the tree is clean.** `bump-deps.sh` runs `cargo audit` and a
    release build as part of the bump; make sure both pass (it exits non-zero
-   if the bump produces a non-passing tree). Run `./quality.sh` for the full
-   local gate before opening the PR.
+   if the bump produces a non-passing tree). Add `--require-audit` during an
+   incident so a cargo-audit missing from the local PATH fails the run instead
+   of being skipped (Issue #619) — install it with
+   `cargo install cargo-audit --locked` if the run reports it as absent. Run
+   `./quality.sh` for the full local gate before opening the PR.
 3. **Open an expedited PR.** Reference the advisory and flag it for expedited
    review so a maintainer can merge ahead of the normal queue.
 

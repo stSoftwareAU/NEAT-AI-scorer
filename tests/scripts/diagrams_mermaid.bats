@@ -6,10 +6,34 @@
 # excluded: they capture the state of the repo at the time of merge and are
 # not living documentation.
 
+# Pick a UTF-8 locale the host actually provides, preferring the historical
+# en_US.UTF-8. Empty output means the host has none.
+pick_utf8_locale() {
+  local available preferred
+  available="$(locale -a 2>/dev/null || true)"
+  preferred="$(printf '%s\n' "$available" | grep -ix 'en_US\.utf-\?8' | head -n 1)"
+  if [ -n "$preferred" ]; then
+    printf '%s\n' "$preferred"
+    return 0
+  fi
+  printf '%s\n' "$available" | grep -iE '\.utf-?8$' | head -n 1
+}
+
 setup() {
   REPO_ROOT="${BATS_TEST_DIRNAME}/../.."
   export REPO_ROOT
-  export LC_ALL="${LC_ALL:-en_US.UTF-8}"
+  # The box-drawing grep below needs a UTF-8 locale: under C/POSIX the bracket
+  # expression is matched byte-wise and hits any multi-byte character (an em
+  # dash, an arrow), failing the check for reasons that have nothing to do with
+  # the docs. Hardcoding en_US.UTF-8 did exactly that on unattended hosts that
+  # do not ship it — bash warned and silently fell back to C (Issue #619).
+  local utf8_locale
+  utf8_locale="$(pick_utf8_locale)"
+  if [ -z "$utf8_locale" ]; then
+    echo "No UTF-8 locale available on this host — the box-drawing check cannot run reliably" >&2
+    return 1
+  fi
+  export LC_ALL="$utf8_locale"
 }
 
 # Files we expect to be authored exclusively with Mermaid for diagrams.

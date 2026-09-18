@@ -34,27 +34,25 @@ if [[ "$SHELLCHECK_FAILED" -ne 0 ]]; then
 fi
 echo "shellcheck: all scripts passed"
 
+echo "📦 Checking scripts/runlib.sh already-installed contract (Issue #629)..."
+./scripts/test-runlib.sh
+
+echo "🔄 Validating the canonical runlib.sh family-sync workflow (Issue #629)..."
+./scripts/check-family-sync-workflow.sh
+
 echo "🦀 Validating pinned rust-toolchain.toml (Issue #209)..."
 ./scripts/check-rust-toolchain.sh
 
 echo "🛡️  Validating crate-level rustc lint hardening (Issue #274)..."
 ./scripts/check-rust-lints.sh
 
-echo "🔗 Validating NEAT-AI-core checkout path strategy in workflows..."
-./scripts/check-workflow-paths.sh
-
-echo "🧩 Validating NEAT-AI-core setup is a single composite action (Issue #401)..."
+echo "🧩 Validating the NEAT-AI-core sibling checkout stays retired (Issues #401, #630)..."
 ./scripts/check-neat-core-composite-action.sh
 
-echo "🚧 Gating on unhandled breaking neat-core bump (Issue #252)..."
-# Mirrors the CI `validation` job step. Runs only when the sibling neat-core
-# clone is present (CI always has it; local checkouts may not), so a missing
-# sibling does not block an otherwise valid local gate run.
-if [ -f "./../NEAT-AI-core/Cargo.toml" ]; then
-  ./scripts/check-neat-core-version.sh
-else
-  echo "   ⚠️  sibling ../NEAT-AI-core not found — skipping (CI runs this for real)"
-fi
+echo "🚧 Gating on unhandled breaking neat-core bump (Issues #252, #630)..."
+# Mirrors the CI `validation` job step. Reads the pinned release tag from
+# `Cargo.lock`, so it runs everywhere — no sibling clone is involved.
+./scripts/check-neat-core-version.sh
 
 echo "🔐 Validating Gitleaks workflow hardening (Issue #21)..."
 ./scripts/check-gitleaks-workflow.sh

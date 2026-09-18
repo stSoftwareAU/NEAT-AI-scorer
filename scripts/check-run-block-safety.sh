@@ -13,8 +13,8 @@
 # guard asserts that convention for the *risk-bearing* block shapes the audit
 # flagged, so a copy-pasted block cannot drift back to the unsafe form:
 #
-#   * the NEAT-AI-core sibling symlink block (`ln -s … NEAT-AI-core`) — five
-#     copies across ci.yml, security.yml and sbom.yml;
+#   * symlink creation (`ln -s …`) — a failed link must not leave the step
+#     green with nothing linked;
 #   * shell-script discovery driven by `find … -name "*.sh"` (bash-syntax and
 #     ShellCheck steps) — a failing `find` must not yield an empty loop and a
 #     green step;
@@ -39,7 +39,7 @@ Options:
                     .github/workflows relative to the repo root).
   -h, --help        Show this message.
 
-Exits 0 when every risk-bearing multi-line `run:` block (NEAT-AI-core symlink,
+Exits 0 when every risk-bearing multi-line `run:` block (symlink creation,
 find-driven shell discovery, or `sudo rm -rf`) opens with `set -euo pipefail`.
 Exits 1 (listing each offender as `file:line`) when any such block does not.
 EOF
@@ -48,10 +48,11 @@ EOF
 parse_check_args --workflows "" "$@"
 WORKFLOWS_DIR="$CHECK_TARGET"
 
-# In default mode also scan local composite actions: the NEAT-AI-core sibling
-# symlink block now lives in `.github/actions/setup-neat-core/action.yml`
-# (Issue #401), so the run-block safety guard must cover it too. An explicit
-# --workflows override scans only that directory (keeps test fixtures isolated).
+# In default mode also scan any local composite action under `.github/actions`
+# — a `run:` block there is as risk-bearing as one in a workflow. The directory
+# is optional: the last local action (`setup-neat-core`) was retired when
+# `neat-core` moved to a release-tag pin (Issue #630). An explicit --workflows
+# override scans only that directory (keeps test fixtures isolated).
 ACTIONS_DIR=""
 if [[ -z "$WORKFLOWS_DIR" ]]; then
   WORKFLOWS_DIR="$(check_repo_path ".github/workflows")"

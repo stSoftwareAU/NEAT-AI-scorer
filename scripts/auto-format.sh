@@ -16,7 +16,7 @@ set -euo pipefail
 COMMIT_MESSAGE="chore(fmt): apply rustfmt and sync neat-core lock
 
 Automated by the auto-format PR job (rustfmt via cargo fmt; Cargo.lock
-synced to the checked-out NEAT-AI-core path dependency via
+synced to the pinned NEAT-AI-core release tag via
 \`cargo update -p neat-core\`) — see issues #19 and #542."
 
 usage() {

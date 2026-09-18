@@ -1,35 +1,36 @@
 #!/usr/bin/env bash
-# Gate against an unhandled breaking neat-core bump (Issue #252).
+# Gate against an unhandled breaking neat-core bump (Issues #252, #630).
 #
-# scorer consumes neat-core through an UNPINNED `path` dependency that always
-# tracks head (see `rust_scorer/Cargo.toml`). The path dep is kept by design
-# (Round 2 decision), so the safeguard is this CI gate: it fails when the
-# sibling neat-core presents a breaking bump scorer has not yet acknowledged,
-# forcing a deliberate upgrade instead of tracking head blindly. This is what
-# would have caught the neat-core #177 breaking type change before the build
-# broke.
+# scorer consumes neat-core through a git dependency PINNED to a NEAT-AI-core
+# release tag (see `rust_scorer/Cargo.toml`), and `scripts/family-pins.sh`
+# moves that pin onto core's newest release on every PR. So the pin arrives
+# automatically and the safeguard is this gate: it fails when the pinned
+# release presents a breaking bump scorer has not yet acknowledged, forcing a
+# deliberate migration instead of following core blindly. This is what would
+# have caught the neat-core #177 breaking type change before the build broke.
 #
 # Mechanism — version-baseline check:
 #   * scorer records the last-handled neat-core version in the checked-in
 #     `neat-core.expected-version` file.
-#   * CI reads neat-core's actual version from the cloned sibling
-#     `../NEAT-AI-core/Cargo.toml` ([workspace.package] version).
+#   * The gate reads the version actually pinned from `Cargo.lock` — the
+#     `[[package]] name = "neat-core"` entry, whose `source` is the
+#     `git+…?tag=v<semver>` the manifest pins. The lockfile is the resolved
+#     truth: a pin the lock does not carry is not what the build compiles.
 #   * The "breaking component" is the major for >= 1.0 releases and the minor
-#     for pre-1.0 (0.x) releases, per SemVer. The gate FAILS when neat-core's
-#     breaking component is greater than the recorded baseline; it PASSES on
-#     patch-level drift (policy) and when the two match.
+#     for pre-1.0 (0.x) releases, per SemVer. The gate FAILS when the pinned
+#     release's breaking component is greater than the recorded baseline; it
+#     PASSES on patch-level drift (policy) and when the two match.
 #
 # "Handling" a breaking bump = a deliberate scorer PR that makes the
-# corresponding code change AND bumps the recorded baseline to the new
+# corresponding code change AND bumps the recorded baseline to the pinned
 # neat-core version.
 #
 # Usage:
-#   check-neat-core-version.sh [--baseline PATH] [--core-manifest PATH]
+#   check-neat-core-version.sh [--baseline PATH] [--lockfile PATH]
 #
-# Defaults resolve the same paths Cargo uses: the baseline at the repo root and
-# the neat-core workspace manifest at the sibling `../NEAT-AI-core/Cargo.toml`
-# (the symlink CI creates makes this resolve on the runner too — see
-# `.github/workflows/ci.yml`).
+# Defaults resolve repo-root paths: the baseline at `neat-core.expected-version`
+# and the workspace `Cargo.lock`. No sibling NEAT-AI-core clone is involved —
+# the pin is what the build resolves, here and on a runner.
 #
 # Exit codes:
 #   0  versions are compatible (match, patch drift, or core behind baseline)
@@ -39,22 +40,21 @@ set -euo pipefail
 
 usage() {
   cat <<'EOF'
-Usage: check-neat-core-version.sh [--baseline PATH] [--core-manifest PATH]
+Usage: check-neat-core-version.sh [--baseline PATH] [--lockfile PATH]
 
 Options:
-  --baseline PATH        File recording the last-handled neat-core version
-                         (default: neat-core.expected-version at the repo root).
-  --core-manifest PATH   neat-core workspace Cargo.toml carrying
-                         [workspace.package] version (default: the sibling
-                         ../NEAT-AI-core/Cargo.toml).
-  -h, --help             Show this message.
+  --baseline PATH   File recording the last-handled neat-core version
+                    (default: neat-core.expected-version at the repo root).
+  --lockfile PATH   Cargo.lock carrying the resolved neat-core git-tag pin
+                    (default: Cargo.lock at the repo root).
+  -h, --help        Show this message.
 
 Exits 0 when compatible, 1 on an unhandled breaking bump, 2 on a usage error.
 EOF
 }
 
 BASELINE=""
-CORE_MANIFEST=""
+LOCKFILE=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --baseline)
@@ -62,9 +62,9 @@ while [[ $# -gt 0 ]]; do
       BASELINE="$2"
       shift 2
       ;;
-    --core-manifest)
-      [[ $# -ge 2 ]] || { echo "Missing value for --core-manifest" >&2; usage >&2; exit 2; }
-      CORE_MANIFEST="$2"
+    --lockfile)
+      [[ $# -ge 2 ]] || { echo "Missing value for --lockfile" >&2; usage >&2; exit 2; }
+      LOCKFILE="$2"
       shift 2
       ;;
     -h|--help)
@@ -85,17 +85,17 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 if [[ -z "$BASELINE" ]]; then
   BASELINE="$REPO_ROOT/neat-core.expected-version"
 fi
-if [[ -z "$CORE_MANIFEST" ]]; then
-  CORE_MANIFEST="$REPO_ROOT/../NEAT-AI-core/Cargo.toml"
+if [[ -z "$LOCKFILE" ]]; then
+  LOCKFILE="$REPO_ROOT/Cargo.lock"
 fi
 
 if [[ ! -f "$BASELINE" ]]; then
   echo "FAIL: baseline file not found: $BASELINE" >&2
   exit 2
 fi
-if [[ ! -f "$CORE_MANIFEST" ]]; then
-  echo "FAIL: neat-core manifest not found: $CORE_MANIFEST" >&2
-  echo "      Is the sibling NEAT-AI-core clone present? CI clones + symlinks it." >&2
+if [[ ! -f "$LOCKFILE" ]]; then
+  echo "FAIL: lockfile not found: $LOCKFILE" >&2
+  echo "      Run 'cargo fetch' to resolve the pinned neat-core release." >&2
   exit 2
 fi
 
@@ -108,20 +108,25 @@ read_baseline_version() {
   ' "$BASELINE"
 }
 
-# Extract [workspace.package] version from the neat-core manifest. Only the
-# version key that lives under the [workspace.package] table counts — a bare
-# scan would also match dependency versions.
+# Extract the PINNED neat-core release from the lockfile: the `tag=v<semver>`
+# of the `[[package]] name = "neat-core"` entry's git source. The tag is what
+# the manifest pins and `scripts/family-pins.sh` moves, so it — not the
+# package's own `version` line, which core may bump between releases — is the
+# release this build compiles against. Only the neat-core package block counts;
+# a bare scan would match any other git dependency's tag.
 read_core_version() {
   awk '
-    /^\[/ { in_wp = ($0 ~ /^\[workspace\.package\]/) }
-    in_wp && /^[[:space:]]*version[[:space:]]*=/ {
-      if (match($0, /"[^"]*"/)) {
-        v = substr($0, RSTART + 1, RLENGTH - 2)
-        print v
+    /^\[\[package\]\]/ { in_pkg = 0; next }
+    /^[[:space:]]*name[[:space:]]*=[[:space:]]*"neat-core"[[:space:]]*$/ { in_pkg = 1; next }
+    in_pkg && /^[[:space:]]*source[[:space:]]*=/ {
+      if (match($0, /[?&]tag=v?[0-9][^"#&]*/)) {
+        tag = substr($0, RSTART, RLENGTH)
+        sub(/^[?&]tag=v?/, "", tag)
+        print tag
         exit
       }
     }
-  ' "$CORE_MANIFEST"
+  ' "$LOCKFILE"
 }
 
 # Validate X.Y.Z (optionally with a -prerelease/+build suffix we ignore) and
@@ -146,7 +151,9 @@ fi
 
 core_raw="$(read_core_version)"
 if [[ -z "$core_raw" ]]; then
-  echo "FAIL: no [workspace.package] version found in $CORE_MANIFEST" >&2
+  echo "FAIL: no neat-core git-tag pin found in $LOCKFILE" >&2
+  echo "      Expected a [[package]] name = \"neat-core\" entry whose source is" >&2
+  echo "      git+https://github.com/stSoftwareAU/NEAT-AI-core?tag=v<semver>." >&2
   exit 2
 fi
 
@@ -155,7 +162,7 @@ if ! baseline_parts="$(parse_semver "$baseline_raw")"; then
   exit 2
 fi
 if ! core_parts="$(parse_semver "$core_raw")"; then
-  echo "FAIL: malformed neat-core version '$core_raw' in $CORE_MANIFEST (expected X.Y.Z)" >&2
+  echo "FAIL: malformed pinned neat-core version '$core_raw' in $LOCKFILE (expected vX.Y.Z)" >&2
   exit 2
 fi
 

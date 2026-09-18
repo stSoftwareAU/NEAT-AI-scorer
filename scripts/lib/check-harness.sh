@@ -5,8 +5,9 @@
 # shares — the `--FLAG PATH` / `-h` argument loop, default-target resolution
 # relative to the repo root, the "file not found" guard, and the
 # accumulate-and-report protocol (`OK   `/`FAIL ` prefixes, failures on stderr,
-# `EXIT_CODE=1` without aborting the run). The per-script rule checks — the part
-# that genuinely differs — stay in the individual scripts.
+# `EXIT_CODE=1` without aborting the run, and the non-blocking `WARN ` advisory).
+# The per-script rule checks — the part that genuinely differs — stay in the
+# individual scripts.
 #
 # Contract for a sourcing script:
 #   * define `usage()` before calling `parse_check_args` (the harness prints it
@@ -111,6 +112,13 @@ ok() {
 fail() {
   echo "FAIL ${CHECK_SUBJECT:+$CHECK_SUBJECT: }$*" >&2
   EXIT_CODE=1
+}
+
+# warn <message...> — record an advisory on stderr WITHOUT failing the run.
+# For a rule that is satisfied but could be stronger; anything that must block
+# the gate is a `fail`, never a `warn`.
+warn() {
+  echo "WARN ${CHECK_SUBJECT:+$CHECK_SUBJECT: }$*" >&2
 }
 
 # check_subject <subject> — set the file each subsequent `ok`/`fail` line is

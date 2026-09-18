@@ -56,6 +56,9 @@ else
   WORKFLOWS=(
     "$(check_repo_path ".github/workflows/auto-format.yml")"
     "$(check_repo_path ".github/workflows/version-increment.yml")"
+    # family-sync.yml runs PR-head code (scripts/family-sync.sh) before a
+    # PAT-bearing push step, so it is held to the same hardening (Issue #629).
+    "$(check_repo_path ".github/workflows/family-sync.yml")"
   )
 fi
 

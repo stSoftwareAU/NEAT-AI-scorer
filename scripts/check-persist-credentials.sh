@@ -57,6 +57,9 @@ else
     "$(check_repo_path ".github/workflows/security.yml")"
     "$(check_repo_path ".github/workflows/semgrep.yml")"
     "$(check_repo_path ".github/workflows/cargo-quality.yml")"
+    # family-sync.yml injects push auth per-command, so its checkout must keep
+    # the job token off disk like every other guarded one (Issue #629).
+    "$(check_repo_path ".github/workflows/family-sync.yml")"
   )
 fi
 

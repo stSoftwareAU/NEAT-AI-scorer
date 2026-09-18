@@ -1,10 +1,12 @@
-# Last-handled neat-core version (Issue #252).
+# Last-handled neat-core version (Issues #252, #630).
 #
-# scorer consumes neat-core via an unpinned `path` dependency that tracks head.
-# CI (scripts/check-neat-core-version.sh) fails when the sibling neat-core
-# presents a breaking bump above this baseline — pre-1.0 a higher minor, or any
-# higher major — forcing a deliberate upgrade. Clear the gate by updating
-# rust_scorer for the change and bumping this version to match neat-core.
+# scorer consumes neat-core via a git dependency pinned to a NEAT-AI-core
+# release tag, which `scripts/family-pins.sh` moves onto core's newest release
+# on every PR. CI (scripts/check-neat-core-version.sh) reads that pinned
+# release from `Cargo.lock` and fails when it presents a breaking bump above
+# this baseline — pre-1.0 a higher minor, or any higher major — forcing a
+# deliberate migration. Clear the gate by updating rust_scorer for the change
+# and bumping this version to match the pinned release.
 #
 # 0.1.46 -> 0.2.5: acknowledge the 0.1 -> 0.2 breaking bump. The only breaking
 # boundary crossed is neat-core #177 (SynapseData::from_index u32 -> u16), whose
@@ -87,4 +89,144 @@
 # loads with every synapse intact, scores identically to the pre-#577 relay
 # workaround, and scores *differently* from the creature a `(from, to)`-keyed
 # loader is left holding.
-0.10.0
+#
+# 0.10.0 -> 0.13.0: acknowledge neat-core #633 (Issue #625, 0.12.0), which made
+# every `CompiledNetwork` field private behind borrow-only accessors so safe
+# code can no longer edit a validated network into an out-of-bounds SIMD read,
+# and 0.13.0 (#637, the security-scan milestone roll-up, no further API change
+# scorer names). rust_scorer read `num_inputs` / `num_neurons` / `neurons` /
+# `synapses` directly on its GPU upload path (`gpu/forward_mse_batched.rs`) and
+# in fixtures/tests; every read now goes through the `()` accessor, and the
+# tests that used to write into a compiled fixture rebuild it through
+# `CompiledNetwork::from_parts` instead. Unhandled, this bump took the whole
+# GRQ fleet down (GRQ#4724): every host builds rust_scorer from the sibling
+# neat-core at head, so the break was fleet-wide within minutes of merging.
+# Verified by `cargo clippy --all-targets -- -D warnings` and the full scorer
+# test suite against the sibling clone at 0.13.0 (59eb6e6).
+#
+# 0.13.0 -> 0.14.1: acknowledge neat-core #640 (Issue #622, 0.14.0), which bound
+# the *declared* observation width before it is walked. `CreatureExport::input`
+# is a declared count with no backing data in the JSON, so a sub-100-byte
+# creature saying `"input": 100000000` used to cost one owned String UUID per
+# declared input; `validate_creature_width` now refuses a declared `input` above
+# `MAX_NODE_COUNT` with `CreatureError::TooManyNodes`, and `parse_creature_json`,
+# `compile_creature`, `creature_to_json`, `creature_to_json_pretty`,
+# `validate_creature_topology` and `cleanup_creature_with` all inherit the
+# refusal. 0.14.1 is patch-level within that line (#641, bump-deps quarantine).
+#
+# It is a behavioural narrowing, not a signature change: no public type or
+# function signature rust_scorer names moved, and no scorer-reachable creature
+# can be caught by the new refusal. `compile_creature` has refused a *total*
+# node count (`input` + listed neurons) above `MAX_NODE_COUNT` with the same
+# typed error since neat-core #177, and the total is never below `input`, so
+# every creature the width check now refuses was already refused one step
+# later — 0.14.0 only moves the refusal ahead of the allocation it was sizing.
+# Production width is 2461 inputs (`rust_scorer::prod_fixture`), twenty-six
+# times below the ceiling. Verified by `cargo fmt --check`,
+# `cargo clippy --all-targets -- -D warnings` and the full scorer test suite
+# against the sibling clone at 0.14.1 (255b06e), plus
+# `rust_scorer/tests/declared_width_ceiling.rs`, which pins the typed refusal on
+# the parse, compile and CLI paths, that the ceiling is inclusive, and that the
+# widest creature which has ever compiled still compiles. That suite fails
+# against 0.13.0 (3 of its 6 tests) and passes against the sibling clone; the
+# assertions that distinguish the two versions are the parse-path refusal and
+# the inclusive ceiling, since the *compile*-path refusal itself predates the
+# bump (#177) and only moved ahead of the walk.
+
+#
+# 0.14.1 -> 0.15.4: acknowledge neat-core #653 (Issue #601, 0.15.0), the only
+# breaking bump presented since 0.14.1. `CompiledNetwork::new` computed
+# `num_neurons - num_inputs` on a header read straight from a buffer, so a
+# malformed header declaring more inputs than nodes wrapped that `usize`
+# subtraction (release builds carry Cargo's default `overflow-checks = false`)
+# and aborted the module inside `Vec::with_capacity`. 0.15.0 rejects the header
+# first with a new `NetworkError::InvalidInputCount { num_inputs, num_neurons }`
+# variant.
+#
+# The break is confined to that new enum variant — `NetworkError` is not
+# `#[non_exhaustive]`, so an exhaustive `match` on it stops compiling. No
+# signature rust_scorer names moved. scorer never matches `NetworkError`
+# exhaustively: its single use is a `matches!(refused, Err(NetworkError::
+# TooManyNodes { .. }))` in `rust_scorer/src/gpu/forward_mse_batched.rs`, which
+# is unaffected by an added variant. scorer also never calls
+# `CompiledNetwork::new` — every network is built by `compile_creature`, which
+# sets `num_neurons = num_inputs + creature.neurons.len()`, so `num_inputs >
+# num_neurons` is unreachable from any scorer path and the new refusal cannot
+# fire on a scorer-loaded creature. That unreachability is why this
+# acknowledgement adds no pinning test: the guard sits on a raw-buffer
+# constructor scorer does not use, so any test of it would exercise neat-core,
+# not scorer.
+#
+# 0.15.1 -> 0.15.4 are patch-level within the handled 0.15 line and need no
+# acknowledgement: #654 (Issue #602) bounds the `propagate_codec` size check,
+# #655 (Issue #642) and the two Deno workflow additions (#656, #657) are
+# repo-tooling only, and none changes API scorer names.
+#
+# Verified against the sibling clone at 0.15.4 (ed3165a) by
+# `cargo clippy --all-targets -- -D warnings` (clean) and the full scorer test
+# suite (330 lib tests plus every integration suite and 33 doctests, 0 failed).
+#
+# 0.15.4 -> 0.17.0: acknowledge two breaking neat-core minors, both confined
+# to the pruning surface rust_scorer does not name.
+#   * 0.16.0 (neat-core #675, Ockham #197) adds public fields on `PruneResult`
+#     (`converted_neurons`) and `UncompensatedTarget` (`dropped_mean`) — none
+#     of those types is `#[non_exhaustive]`, so a struct literal or exhaustive
+#     destructure stops compiling — and rewrites a non-`IF` aggregate the cut
+#     leaves with one inward edge to the point-wise squash that computes the
+#     same number.
+#   * 0.17.0 (neat-core #678, Ockham #198) changes documented `prune_neuron`
+#     runtime: an `IF` left short a role is rewritten with `IfRepair::Rewrite`
+#     instead of the TypeScript-parity `Downgrade`, so `downgraded_if_neurons`
+#     is empty on both entry points.
+#
+# rust_scorer never names `PruneResult`, `prune_neuron`, `prune_synapse` or
+# any prune JSON/WASM type — it scores compiled creatures — so no scorer
+# code change is required. Verified by a repo-wide grep of `rust_scorer/`
+# for those symbols (zero hits) and `./scripts/check-neat-core-version.sh`
+# against the sibling clone at 0.17.0 (282bc18).
+#
+# 0.17.0 -> 0.22.5: acknowledge the five breaking neat-core minors presented
+# since 0.17.0. Only one of them is reachable from a scorer code path.
+#   * 0.18.0 (neat-core #684, Ockham #201) carries every pruning corner case
+#     across the JSON / WASM boundary and grades the new shapes against a
+#     golden record. Confined to `prune_json` / `prune_neuron` /
+#     `prune_synapse`, none of which rust_scorer names.
+#   * 0.19.0 (neat-core #685, Issue #682) is the one that reaches scorer.
+#     `compile_creature` grouped synapses by `toUUID` and read them back per
+#     *listed* neuron, so a destination the creature did not carry was never
+#     looked up: the edge was dropped and `Ok` returned for a network one
+#     synapse smaller than the creature declared. The new
+#     `CreatureError::UnknownTargetUuid(String)` variant refuses it instead.
+#     BREAKING only for an exhaustive `match` on `CreatureError` —
+#     rust_scorer's single use is `matches!(err, CreatureError::TooManyNodes
+#     { .. })` in `rust_scorer/tests/declared_width_ceiling.rs`, which an added
+#     variant cannot break, and no signature scorer names moved. The
+#     behavioural narrowing needs no scorer change either: refusing a creature
+#     whose declared topology cannot be compiled is what the scorer should have
+#     been doing, and the CLI already surfaces a `CreatureError` as a non-zero
+#     exit with the message on stderr.
+#   * 0.20.0 (neat-core #689) and the 0.22.1-0.22.5 patches are canonical
+#     `scripts/runlib.sh` work — repo tooling, no API change.
+#   * 0.21.0 (neat-core #698, the Scan 20260911 milestone) is internal
+#     refactoring: `RecordScanConfig` collapses a packed batch-scan parameter
+#     clump behind unchanged public `loss.rs` signatures, and the new
+#     crate-private `squash_profile` module moves the per-variant range /
+#     safe-zone *data* out of `range.rs` and `safe_zone.rs` without changing
+#     `apply_get_range` / `apply_limit_range`, which the GPU shaders mirror.
+#   * 0.22.0 (neat-core #703, Issue #688) splices IDENTITY pass-throughs out
+#     during prune cleanup, behind a `CleanupOptions::splice_identity` flag
+#     that is off by default. Pruning again — not a scorer surface.
+#
+# Verified against the sibling clone at 0.22.5 (771ad13) by a clean
+# `cargo build --workspace --all-targets`, `cargo clippy --workspace
+# --all-targets --all-features -- -D warnings` and the full scorer test suite
+# (330 lib tests plus every integration suite, 0 failed), plus a repo-wide grep
+# of `rust_scorer/` for the prune symbols (zero hits) and for `CreatureError`
+# (one non-exhaustive `matches!`). `rust_scorer/tests/dangling_target_refusal.rs`
+# pins the 0.19.0 refusal from the binary's side: against 0.18.0 the CLI scored
+# the dangling creature `{"score": 0.99999998, ... "synapseCount": 2}` and
+# exited 0 with the edge silently dropped; against 0.22.5 it exits non-zero
+# naming the unresolved destination. That suite does not compile against
+# neat-core below 0.19.0 — the variant it matches does not exist there.
+
+0.22.5

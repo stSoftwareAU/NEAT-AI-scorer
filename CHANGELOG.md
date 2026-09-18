@@ -15,7 +15,108 @@ section to the released version with its date.
 
 ## [Unreleased]
 
+### Changed
+
+- **`neat-core` is pinned to a NEAT-AI-core release tag, and the pin moves on
+  every PR (Issue #630).** `rust_scorer/Cargo.toml` replaces the unpinned
+  `path = "../../NEAT-AI-core/neat-core"` sibling dependency with
+  `{ git = "https://github.com/stSoftwareAU/NEAT-AI-core", tag = "v0.22.5" }`,
+  so `cargo build --release -p rust_scorer` succeeds with no sibling checkout
+  and every host on the same scorer version compiles the same core commit
+  (`Cargo.lock` records it). The canonical `scripts/family-pins.sh` — copied
+  byte-for-byte from NEAT-AI-core `Develop` by `scripts/family-sync.sh`, which
+  now syncs both family scripts — resolves core's newest released `v*` tag,
+  rewrites the pin and runs `cargo update --package neat-core`; the
+  `family-sync` job runs it before pushing, so a behind pin is moved on every
+  PR and the resulting `Cargo.lock` change drives the patch bump. The
+  `setup-neat-core` composite action and its six call sites are retired with
+  the path dependency (`scripts/check-neat-core-composite-action.sh` now guards
+  the retirement, and the redundant `scripts/check-workflow-paths.sh` goes with
+  it), `scripts/check-neat-core-version.sh` reads the pinned tag from
+  `Cargo.lock` instead of a sibling manifest, and `deny.toml` allows that one
+  git source while every other stays denied. Coverage:
+  `tests/scripts/family_pins.bats`, `tests/scripts/family_sync.bats`,
+  `tests/scripts/family_sync_workflow.bats`,
+  `tests/scripts/neat_core_composite_action.bats`,
+  `tests/scripts/neat_core_version_gate.bats`.
+
+### Added
+
+- **`scripts/runlib.sh` installs `~/.cargo/bin/rust_scorer` only on a version
+  change (Issue #629).** The fleet worker started calling this script and every
+  scoring host died because Develop had no file. The script stamps
+  `.rust_scorer.version`, prints the bin path on stdout, skips `cargo build`
+  when already installed, builds `--bin rust_scorer` (not the bench bins), and
+  removes `target/` after a successful install. Hermetic coverage:
+  `scripts/test-runlib.sh` and `tests/scripts/runlib.bats`.
+
+- **`scripts/runlib.sh` is now the canonical NEAT-AI-core copy, kept fresh by a
+  `family-sync` CI job (Issue #629, core#680).** The repo-local script is
+  replaced byte-for-byte by `scripts/runlib.sh` from NEAT-AI-core `Develop` —
+  the one home for the family — and is never edited here.
+  `scripts/family-sync.sh` fetches that copy and refreshes the local one when
+  they differ, failing non-zero on a fetch error or on a fetched file that is
+  not a `runlib.sh` rather than installing it over a working script. The
+  `family-sync` job in `.github/workflows/family-sync.yml` runs it on every pull
+  request and commits the refresh back onto the PR branch with
+  `version-increment.yml`'s push identity; `scripts/check-family-sync-workflow.sh`
+  guards the job's shape and the workflow joins the push-hardening,
+  bot-push-token and persist-credentials guard lists. Coverage:
+  `tests/scripts/family_sync.bats` and `tests/scripts/family_sync_workflow.bats`.
+
+- **Acknowledges neat-core 0.16.0 and 0.17.0 (Issue #252).** Both minors are
+  pruning-surface breaks rust_scorer does not name (`PruneResult` fields,
+  `prune_neuron` `IF` rewrite). `neat-core.expected-version` moves to 0.17.0
+  so the breaking-bump gate can pass and this install script can land.
+
 ### Fixed
+
+- **Acknowledges neat-core 0.18.0 – 0.22.5 — a synapse into an unlisted neuron
+  is now refused instead of silently dropped (neat-core #682 / #685).**
+  `neat-core.expected-version` recorded `0.17.0` while the sibling clone CI
+  checks out had moved to `0.22.5`, so the Issue #252 breaking-bump gate failed
+  `Project Validation` on **every** PR and nothing could merge. Four of the five
+  minors are pruning, tooling or internal refactoring rust_scorer does not name;
+  0.19.0 is the one that reaches a scorer path. `compile_creature` read its
+  grouped synapses back per *listed* neuron, so a `toUUID` naming none of them
+  was never looked up: the edge was dropped and `Ok` returned for a network one
+  synapse smaller than the creature declared — the scorer reported a loss for a
+  creature nobody wrote. `CreatureError::UnknownTargetUuid` refuses it, and
+  scorer needs no code change: its only `CreatureError` use is a non-exhaustive
+  `matches!`, and the CLI already surfaces a compile error as a non-zero exit.
+  New `rust_scorer/tests/dangling_target_refusal.rs` pins the refusal on the
+  compile and CLI paths, including a destination naming an input, and that a
+  fully resolved creature still compiles with every declared synapse.
+
+- **Handles the neat-core 0.14.0 breaking bump — the declared observation width
+  is now bounded before it is walked (neat-core #622 / #640, Issue #609).**
+  `Develop` recorded `0.13.0` in `neat-core.expected-version` while the sibling
+  clone every host builds against had moved to `0.14.x`, so the Issue #252
+  breaking-bump gate failed `Project Validation` on **every** PR and nothing
+  could merge. The bump is a behavioural narrowing, not a signature change:
+  `validate_creature_width` refuses a declared `input` above `MAX_NODE_COUNT`
+  with `CreatureError::TooManyNodes`, so a sub-100-byte creature can no longer
+  cost one owned UUID per declared input. No scorer-reachable creature is
+  affected — `compile_creature` has refused a *total* node count above the same
+  ceiling since neat-core #177, and the total is never below `input`, so the
+  refusal only moves earlier. New `rust_scorer/tests/declared_width_ceiling.rs`
+  pins the typed refusal on the parse, compile and CLI paths, that the ceiling
+  is inclusive, and that the widest creature which has ever compiled still
+  compiles. `neat-core.expected-version` acknowledges 0.14.1.
+
+- **Builds against neat-core 0.13.0 — `CompiledNetwork`'s fields went private
+  (neat-core #625 / #633).** neat-core 0.12.0 made every `CompiledNetwork`
+  field private behind borrow-only accessors and 0.13.0 followed the same day.
+  Every production host builds `rust_scorer` from the sibling neat-core at
+  head, so the build failed fleet-wide with 11 × `E0616` at
+  `gpu/forward_mse_batched.rs` within minutes and, with no fallback engine,
+  the fleet stopped scoring. The GPU upload path and the fixtures/tests now
+  read `num_inputs()` / `num_neurons()` / `neurons()` / `synapses()` through
+  the accessors; the tests that used to write into a compiled fixture rebuild
+  it through `CompiledNetwork::from_parts`, the above-the-cap case is a real
+  257-neuron creature, and the now-unconstructible "absurd neuron count" test
+  is replaced by a pin that neat-core's `MAX_NODE_COUNT` sits below
+  `MAX_NEURONS_ABSOLUTE`. `neat-core.expected-version` acknowledges 0.13.0.
 
 - **External termination names itself instead of dying silently (Issue #591).**
   A production sampler run hit its 3-hour per-task wall-clock cap mid-batch; the
