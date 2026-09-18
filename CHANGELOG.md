@@ -17,6 +17,22 @@ section to the released version with its date.
 
 ### Changed
 
+- **One PR-time `cargo audit`, not two (Issue #603).**
+  `.github/workflows/cargo-audit.yml` no longer triggers on `pull_request`: it
+  keeps the weekly cron (`0 6 * * 1`) and `workflow_dispatch`, which is its
+  non-redundant value — advisories published after the last merge. PR-time
+  auditing is owned solely by `ci.yml` → `security.yml`'s
+  `rustsec/audit-check` step, which read the same `Cargo.lock` against the same
+  advisory database on the same event, so every PR into `Develop` /
+  `milestone/**` was paying for two runs that could only agree.
+  `scripts/check-cargo-audit-workflow.sh` now enforces the invariant the way
+  `check-shellcheck-dedup.sh` does for ShellCheck (Issue #157) — exactly one
+  PR-time `cargo audit` across `.github/workflows`, counting an audit reached
+  indirectly through a reusable workflow — and fails the gate on a duplicate
+  *or* on a total absence of PR-time coverage. Its `pull_request` trigger rule
+  is now conditional (the milestone branch-filter rule of Issue #391 applies
+  only when a `pull_request` trigger is present). Coverage:
+  `tests/scripts/cargo_audit_workflow.bats`.
 - **`neat-core` is pinned to a NEAT-AI-core release tag, and the pin moves on
   every PR (Issue #630).** `rust_scorer/Cargo.toml` replaces the unpinned
   `path = "../../NEAT-AI-core/neat-core"` sibling dependency with
