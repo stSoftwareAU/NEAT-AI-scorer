@@ -189,7 +189,7 @@ EOF
 #
 #   1. `cargo audit` is not installed on the unattended PATH. A missing tool is
 #      a tooling gap, not a bump rejection — the advisory scan is deferred to
-#      the CI job that owns it (`.github/workflows/cargo-audit.yml`).
+#      the CI job that owns it (`ci.yml` → `security.yml`, Issue #603).
 #   2. Interlocked crate families (wasm-bindgen / js-sys / web-sys pin each
 #      other with `=` requirements) can never be bumped one crate at a time, so
 #      every per-crate `--precise` apply is rejected and the real cargo error

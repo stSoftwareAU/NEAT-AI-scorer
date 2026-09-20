@@ -16,7 +16,8 @@
 #      offending crate + advisory ID. A cargo-audit that is not installed is
 #      a tooling gap, not a bump rejection (Issue #619): the stage is skipped
 #      loudly and the advisory scan is left to the CI job that owns it
-#      (`.github/workflows/cargo-audit.yml` runs it on every PR). Pass
+#      (`ci.yml` → `security.yml` audits every PR; `cargo-audit.yml` adds the
+#      weekly cron — Issue #603). Pass
 #      `--require-audit` (or set `BUMP_DEPS_REQUIRE_AUDIT=1`) to demand it.
 #   4. `cargo build --release` — confirms the bumped tree compiles.
 #
@@ -529,14 +530,14 @@ run_audit() {
     # Issue #619: a cargo-audit missing from the unattended PATH is a tooling
     # gap, not a bump rejection. Failing here reverted every bump and left the
     # repo with no dependency updates at all — a worse security outcome than
-    # deferring the scan to `.github/workflows/cargo-audit.yml`, which runs
-    # `cargo audit` on every PR. The skip is loud, never silent.
+    # deferring the scan to CI, where `ci.yml` → `security.yml` audits the same
+    # `Cargo.lock` on every PR (Issue #603). The skip is loud, never silent.
     if [[ "$REQUIRE_AUDIT" -eq 1 ]]; then
       echo "Error: cargo audit not available — install with 'cargo install cargo-audit --locked'" >&2
       audit_msg="error"
       return 1
     fi
-    echo "Warning: cargo audit not available — advisory scan deferred to CI (.github/workflows/cargo-audit.yml runs it on every PR)." >&2
+    echo "Warning: cargo audit not available — advisory scan deferred to CI (ci.yml calls security.yml, which audits every PR)." >&2
     echo "Warning: install locally with 'cargo install cargo-audit --locked'; pass --require-audit to make this fatal." >&2
     audit_msg="skipped (cargo-audit not installed)"
     echo "audit: SKIPPED (cargo-audit not installed)"
