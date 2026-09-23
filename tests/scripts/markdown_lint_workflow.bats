@@ -47,7 +47,7 @@ jobs:
         with:
           node-version: "lts/*"
       - name: Install markdownlint-cli2
-        run: npm install -g markdownlint-cli2
+        run: npm install -g markdownlint-cli2@0.23.3
       - name: Run markdownlint-cli2
         run: markdownlint-cli2
 EOF
@@ -59,7 +59,7 @@ EOF
   [ "$status" -eq 0 ]
   # Issue #360: prove every rule was individually evaluated and passed via the
   # machine-checkable "OK   " marker rather than pinning informational wording.
-  [ "$(grep -c '^OK   ' <<<"$output")" -eq 7 ]
+  [ "$(grep -c '^OK   ' <<<"$output")" -eq 8 ]
 }
 
 # Business-logic change (Issue #371 reverses Issue #207): a lint/checker
@@ -202,6 +202,46 @@ PY
   run "$SCRIPT_UNDER_TEST" --workflow "$TMP_WF/markdown-lint.yml"
   [ "$status" -ne 0 ]
   [[ "$output" == *"install step missing"* ]]
+}
+
+# Issue #639: an unpinned `npm install -g markdownlint-cli2` runs whatever the
+# registry serves at that moment, so a hijacked release executes on the runner
+# with the workflow's GITHUB_TOKEN in scope and no embargo.
+@test "fails when the markdownlint-cli2 install carries no version pin (Issue #639)" {
+  write_markdown_lint_workflow "$TMP_WF/markdown-lint.yml"
+  sed -i.bak 's|markdownlint-cli2@0.23.3|markdownlint-cli2|' "$TMP_WF/markdown-lint.yml"
+  run "$SCRIPT_UNDER_TEST" --workflow "$TMP_WF/markdown-lint.yml"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"not pinned to an exact version"* ]]
+}
+
+# A range or dist-tag resolves at install time exactly like a bare name, so it
+# is rejected too.
+@test "fails when the markdownlint-cli2 install uses a floating spec (Issue #639)" {
+  for spec in "latest" "^0.23.3" "~0.23.3" ">=0.23.3" "*" "0.23"; do
+    write_markdown_lint_workflow "$TMP_WF/markdown-lint.yml"
+    python3 - "$TMP_WF/markdown-lint.yml" "$spec" <<'PY'
+import sys
+path, spec = sys.argv[1], sys.argv[2]
+with open(path) as fh:
+    text = fh.read()
+text = text.replace("markdownlint-cli2@0.23.3", "markdownlint-cli2@" + spec)
+with open(path, "w") as fh:
+    fh.write(text)
+PY
+    run "$SCRIPT_UNDER_TEST" --workflow "$TMP_WF/markdown-lint.yml"
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"not pinned to an exact version"* ]]
+  done
+}
+
+# A pre-release is still an exact, immutable version — accept it.
+@test "accepts an exact pre-release pin (Issue #639)" {
+  write_markdown_lint_workflow "$TMP_WF/markdown-lint.yml"
+  sed -i.bak 's|markdownlint-cli2@0.23.3|markdownlint-cli2@0.24.0-rc.1|' "$TMP_WF/markdown-lint.yml"
+  run "$SCRIPT_UNDER_TEST" --workflow "$TMP_WF/markdown-lint.yml"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"install pinned to an exact version"* ]]
 }
 
 @test "fails when markdownlint-cli2 is not invoked" {

@@ -15,6 +15,21 @@ section to the released version with its date.
 
 ## [Unreleased]
 
+### Security
+
+- **The CI install of `markdownlint-cli2` is pinned to an exact version
+  (Issue #639).** `.github/workflows/markdown-lint.yml` ran
+  `npm install -g markdownlint-cli2` with no version, so the job executed
+  whatever the registry served at that moment — a hijacked release would have
+  run on the runner with the workflow's `GITHUB_TOKEN` in scope, the instant it
+  was published and with no embargo. `uses:` SHA-pinning does not reach inside
+  a `run:` block, so nothing else covered this. The step now installs
+  `markdownlint-cli2@0.23.3`, and
+  `scripts/check-markdown-lint-workflow.sh` gained a rule that fails the gate
+  on a bare name, a dist-tag (`@latest`) or any range (`@^1.2.3`, `@1.2`) while
+  accepting an exact pre-release such as `@0.24.0-rc.1`. Coverage:
+  `tests/scripts/markdown_lint_workflow.bats`.
+
 ### Changed
 
 - **One PR-time `cargo audit`, not two (Issue #603).**
