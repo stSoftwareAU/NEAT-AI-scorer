@@ -58,7 +58,13 @@ jobs:
           node-version: "lts/*"
 
       - name: Install markdownlint-cli2
-        run: npm install -g markdownlint-cli2
+        # Issue #639: pinned to an exact version. `uses:` SHA-pinning does not
+        # reach a `run:` block, so an unpinned install executes whatever the
+        # registry serves at that moment — a hijacked release would run here
+        # with this workflow's GITHUB_TOKEN in scope and no embargo. Bump the
+        # pin deliberately; `scripts/check-markdown-lint-workflow.sh` fails the
+        # gate if it ever floats again.
+        run: npm install -g markdownlint-cli2@0.23.3
 
       - name: Run markdownlint-cli2
         run: markdownlint-cli2

@@ -8,7 +8,8 @@
 #   3. Pin `actions/checkout` to a numeric major version or a 40-char SHA
 #      (Node 24 policy — see scripts/check-workflow-action-versions.sh).
 #   4. Provision Node via `actions/setup-node` pinned to a numeric major.
-#   5. Install and invoke `markdownlint-cli2` so the lint gate actually runs.
+#   5. Install and invoke `markdownlint-cli2` so the lint gate actually runs,
+#      with the install pinned to an exact version (Issue #639).
 #
 # The script takes a single optional `--workflow PATH` argument so BATS tests
 # can exercise it against fixtures. When called with no argument it validates
@@ -108,10 +109,27 @@ fi
 
 # 5. markdownlint-cli2 must be installed AND invoked. Two separate checks so
 #    a missing install or a missing run surfaces as a distinct failure.
-if grep -qE 'npm[[:space:]]+install[[:space:]].*markdownlint-cli2' "$WORKFLOW"; then
+install_line="$(grep -nE 'npm[[:space:]]+install[[:space:]].*markdownlint-cli2' "$WORKFLOW" || true)"
+if [[ -n "$install_line" ]]; then
   ok "markdownlint-cli2 install step present"
 else
   fail "markdownlint-cli2 install step missing — gate cannot run without the binary"
+fi
+
+# 5b. That install must name an exact version (Issue #639). A bare name, a
+#     dist-tag (`@latest`) or a range (`@^1.2.3`, `@1.2`) all resolve at
+#     install time, so whatever the registry serves at that moment executes on
+#     the runner with the workflow's GITHUB_TOKEN in scope — a hijacked release
+#     runs the instant it is published, with no embargo. Only a full
+#     `<major>.<minor>.<patch>` (optionally with a pre-release / build suffix)
+#     is immutable. This is the `run:` counterpart of the `uses:` SHA-pin rule
+#     above, which never inspects `run:` blocks.
+if [[ -n "$install_line" ]]; then
+  if grep -qE 'markdownlint-cli2@[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.-]+)?([[:space:]]|$)' <<<"$install_line"; then
+    ok "markdownlint-cli2 install pinned to an exact version"
+  else
+    fail "markdownlint-cli2 install is not pinned to an exact version — use 'npm install -g markdownlint-cli2@<major>.<minor>.<patch>' so a hijacked release cannot execute on the runner (Issue #639)"
+  fi
 fi
 
 if grep -qE '^[[:space:]]+(- )?run:[[:space:]]*markdownlint-cli2' "$WORKFLOW"; then
