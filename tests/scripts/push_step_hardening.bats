@@ -184,6 +184,54 @@ EOF
   [[ "$output" == *"ACTIONS_PUSH"* ]]
 }
 
+# Issue #641: the mint-and-push block has one home — the shared composite
+# action — so a caller that delegates to it holds no PAT of its own and has
+# nothing to harden locally.
+@test "passes a workflow that delegates its push to the shared hardened action" {
+  cat >"$TMP_WF/wf.yml" <<'EOF'
+name: Example
+jobs:
+  push:
+    steps:
+      - name: Run PR-head code
+        run: |
+          set -euo pipefail
+          ./scripts/auto-format.sh --check-changes
+      - name: Commit and push
+        uses: ./.github/actions/push-with-app-token
+        with:
+          branch: main
+          commit-message: msg
+          fallback-token: ${{ secrets.ACTIONS_PUSH || secrets.GITHUB_TOKEN }}
+EOF
+  run "$CHECK" --workflow "$TMP_WF/wf.yml"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"delegates"* ]]
+  [[ "$output" != *"FAIL"* ]]
+}
+
+# The delegated block still has to be hardened where it now lives: a poisoned
+# `git` inside the shared action reaches all three callers at once.
+@test "fails when the shared action's push step is not hardened" {
+  mkdir -p "$TMP_WF/.github/actions/push-with-app-token"
+  cat >"$TMP_WF/.github/actions/push-with-app-token/action.yml" <<'EOF'
+name: Push with App token
+runs:
+  using: composite
+  steps:
+      - name: Commit and push
+        shell: bash
+        env:
+          GH_PAT: ${{ steps.push-token.outputs.token || inputs.fallback-token }}
+        run: |
+          set -euo pipefail
+          git push origin HEAD:main
+EOF
+  run "$CHECK" --workflow "$TMP_WF/.github/actions/push-with-app-token/action.yml"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"absolute path"* ]]
+}
+
 @test "fails when the PAT-bearing step has no literal run block" {
   cat >"$TMP_WF/wf.yml" <<'EOF'
 name: Example
@@ -206,11 +254,12 @@ EOF
   [[ "$output" == *"not found"* ]]
 }
 
-@test "shipped auto-format, version-increment and family-sync workflows validate cleanly" {
+@test "shipped workflows and the shared push action validate cleanly" {
   run "$CHECK"
   [ "$status" -eq 0 ]
   [[ "$output" == *"auto-format.yml"* ]]
   [[ "$output" == *"version-increment.yml"* ]]
   [[ "$output" == *"family-sync.yml"* ]]
+  [[ "$output" == *"push-with-app-token/action.yml"* ]]
   [[ "$output" != *"FAIL"* ]]
 }

@@ -135,17 +135,77 @@ EOF
   [[ "$output" == *"ACTIONS_PUSH"* ]]
 }
 
+# Issue #641: a workflow may delegate the whole mint-and-push sequence to the
+# shared composite action. It then mints nothing itself, but it still owns the
+# fallback chain it hands the action.
+@test "passes a workflow that delegates the push to the shared action" {
+  cat >"$TMP_WF/wf.yml" <<'EOF'
+name: Example
+jobs:
+  push:
+    steps:
+      - name: Commit and push
+        uses: ./.github/actions/push-with-app-token
+        with:
+          branch: main
+          commit-message: msg
+          app-client-id: ${{ secrets.ACTIONS_PUSH_APP_CLIENT_ID }}
+          app-private-key: ${{ secrets.ACTIONS_PUSH_APP_PRIVATE_KEY }}
+          fallback-token: ${{ secrets.ACTIONS_PUSH || secrets.GITHUB_TOKEN }}
+EOF
+  run "$SCRIPT_UNDER_TEST" --workflow "$TMP_WF/wf.yml"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"OK"* ]]
+  [[ "$output" != *"FAIL"* ]]
+}
+
+@test "fails when a delegating workflow drops the ACTIONS_PUSH fallback chain" {
+  cat >"$TMP_WF/wf.yml" <<'EOF'
+name: Example
+jobs:
+  push:
+    steps:
+      - name: Commit and push
+        uses: ./.github/actions/push-with-app-token
+        with:
+          branch: main
+          commit-message: msg
+          fallback-token: ${{ secrets.GITHUB_TOKEN }}
+EOF
+  run "$SCRIPT_UNDER_TEST" --workflow "$TMP_WF/wf.yml"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"ACTIONS_PUSH"* ]]
+}
+
+@test "fails when a delegating workflow passes no fallback-token at all" {
+  cat >"$TMP_WF/wf.yml" <<'EOF'
+name: Example
+jobs:
+  push:
+    steps:
+      - name: Commit and push
+        uses: ./.github/actions/push-with-app-token
+        with:
+          branch: main
+          commit-message: msg
+EOF
+  run "$SCRIPT_UNDER_TEST" --workflow "$TMP_WF/wf.yml"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"fallback-token"* ]]
+}
+
 @test "reports a missing workflow file instead of passing silently" {
   run "$SCRIPT_UNDER_TEST" --workflow "$TMP_WF/absent.yml"
   [ "$status" -ne 0 ]
   [[ "$output" == *"not found"* ]]
 }
 
-@test "shipped auto-format, version-increment and family-sync workflows validate cleanly" {
+@test "shipped workflows and the shared push action validate cleanly" {
   run "$SCRIPT_UNDER_TEST"
   [ "$status" -eq 0 ]
   [[ "$output" == *"auto-format.yml"* ]]
   [[ "$output" == *"version-increment.yml"* ]]
   [[ "$output" == *"family-sync.yml"* ]]
+  [[ "$output" == *"push-with-app-token/action.yml"* ]]
   [[ "$output" != *"FAIL"* ]]
 }

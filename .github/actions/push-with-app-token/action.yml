@@ -1,0 +1,122 @@
+# Shared bot-push step: mint a repo-scoped push token, then commit and push
+# back onto the pull-request branch (Issues #435, #497, #498, #641).
+#
+# `auto-format.yml`, `family-sync.yml` and `version-increment.yml` each carried
+# their own copy of this sequence. The copies were equivalent but unlinked, so
+# a hardening fix applied to one was easy to miss in the other two. Issue #641
+# gives the sequence one home; the callers pass what genuinely differs (the
+# branch, the commit message, which paths to stage, whether to rebase first).
+#
+# The push step is hardened against in-job poisoning by earlier PR-head code
+# (Issue #497): `git` and `base64` are pinned to absolute paths, so a $GITHUB_ENV
+# PATH override cannot redirect them (`base64` is piped $GH_PAT on stdin when the
+# auth header is built); every git invocation disables repository hooks, so a
+# planted `.git/hooks/pre-commit` never runs with $GH_PAT in scope; and no
+# repository script is executed beside the credential. Enforced by
+# `scripts/check-push-step-hardening.sh`.
+name: Push with App token
+description: >-
+  Mint a short-lived repo-scoped GitHub App installation token and commit and
+  push the working tree back onto a pull-request branch, hardened against
+  in-job poisoning of the credential.
+
+inputs:
+  branch:
+    description: Branch to push HEAD to — the pull request's head ref.
+    required: true
+  commit-message:
+    description: >-
+      Message for the commit. Resolve it in an earlier step: a repository
+      script must never run in the step that holds the credential.
+    required: true
+  paths:
+    description: >-
+      Newline-separated paths to stage (`git add -A -- <paths>`, so a file
+      recreated as untracked is staged too). Empty stages every tracked
+      modification instead (`git commit -am`).
+    required: false
+    default: ""
+  rebase:
+    description: >-
+      'true' rebases onto the remote branch head before pushing, so a commit
+      pushed while this job ran is never clobbered.
+    required: false
+    default: "false"
+  app-client-id:
+    description: >-
+      ACTIONS_PUSH_APP_CLIENT_ID. Empty (the App is not configured yet) skips
+      the mint step and falls back to `fallback-token`.
+    required: false
+    default: ""
+  app-private-key:
+    description: ACTIONS_PUSH_APP_PRIVATE_KEY — the App's PEM private key.
+    required: false
+    default: ""
+  fallback-token:
+    description: >-
+      Credential used until the App exists — pass
+      `secrets.ACTIONS_PUSH || secrets.GITHUB_TOKEN` so the push keeps clearing
+      the Issue #435 "Approve and run" gate.
+    required: true
+
+runs:
+  using: composite
+  steps:
+    # Mint a short-lived installation token scoped to `contents: write` on THIS
+    # repository only (Issue #498). It expires within the hour and this action's
+    # post step revokes it, so a token that leaks reaches nothing beyond this
+    # repository — unlike the long-lived organisation-level ACTIONS_PUSH PAT,
+    # which carries write access to every org repo. The push stays attributed to
+    # a trusted non-GITHUB_TOKEN identity, so Issue #435 behaviour is preserved.
+    - name: Mint repo-scoped push token
+      id: push-token
+      if: inputs.app-client-id != '' && inputs.app-private-key != ''
+      uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1  # v3
+      with:
+        client-id: ${{ inputs.app-client-id }}
+        private-key: ${{ inputs.app-private-key }}
+        repositories: ${{ github.event.repository.name }}
+        permission-contents: write
+
+    # Push with the minted repo-scoped token, falling back to the caller's
+    # `fallback-token` (ACTIONS_PUSH, then GITHUB_TOKEN) until the App exists,
+    # so the resulting `synchronize` event is attributed to a trusted identity
+    # and PR checks run without the "Awaiting approval / Approve and run" gate
+    # that GITHUB_TOKEN bot pushes create (Issue #435). The credential is passed
+    # via env + a per-command extraheader so it never lives in `.git/config`.
+    - name: Commit and push
+      shell: bash
+      env:
+        PR_HEAD_REF: ${{ inputs.branch }}
+        COMMIT_MESSAGE: ${{ inputs.commit-message }}
+        STAGE_PATHS: ${{ inputs.paths }}
+        REBASE: ${{ inputs.rebase }}
+        GH_PAT: ${{ steps.push-token.outputs.token || inputs.fallback-token }}
+      run: |
+        set -euo pipefail
+        GIT=/usr/bin/git
+        BASE64=/usr/bin/base64
+        "$GIT" -c core.hooksPath=/dev/null config user.name "github-actions[bot]"
+        "$GIT" -c core.hooksPath=/dev/null config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+        stage_paths=()
+        while IFS= read -r stage_path; do
+          [ -n "$stage_path" ] || continue
+          stage_paths+=("$stage_path")
+        done <<<"$STAGE_PATHS"
+        if [ "${#stage_paths[@]}" -eq 0 ]; then
+          "$GIT" -c core.hooksPath=/dev/null commit -am "$COMMIT_MESSAGE"
+        else
+          # `-A` so a file recreated as untracked is staged too, and explicit
+          # paths so nothing else in the tree can ride along.
+          "$GIT" -c core.hooksPath=/dev/null add -A -- "${stage_paths[@]}"
+          "$GIT" -c core.hooksPath=/dev/null commit -m "$COMMIT_MESSAGE"
+        fi
+        AUTH_HEADER="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GH_PAT" | "$BASE64" -w0)"
+        if [ "$REBASE" = "true" ]; then
+          "$GIT" -c core.hooksPath=/dev/null \
+            -c http.https://github.com/.extraheader="$AUTH_HEADER" \
+            pull --rebase origin "$PR_HEAD_REF"
+        fi
+        "$GIT" -c core.hooksPath=/dev/null \
+          -c http.https://github.com/.extraheader="$AUTH_HEADER" \
+          push origin "HEAD:$PR_HEAD_REF"

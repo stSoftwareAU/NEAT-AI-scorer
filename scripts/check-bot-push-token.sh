@@ -25,6 +25,14 @@
 #   4. Every `GH_PAT` binding prefers that minted token, falling back to
 #      `secrets.ACTIONS_PUSH || secrets.GITHUB_TOKEN` so pushes keep working
 #      (and keep clearing the Issue #435 approval gate) before the App exists.
+#
+# Issue #641 gave the mint-and-push sequence one home
+# (`.github/actions/push-with-app-token`), which is validated by the rules
+# above. A workflow that delegates to it mints nothing itself, so it is held to
+# the one rule that stays its own: it must hand the action a `fallback-token:`
+# of `secrets.ACTIONS_PUSH || secrets.GITHUB_TOKEN`, the chain that keeps the
+# push clearing the Issue #435 gate before the App exists. Only the `secrets`
+# context can read those, and a composite action cannot.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -36,9 +44,10 @@ usage() {
 Usage: check-bot-push-token.sh [--workflow PATH]
 
 Options:
-  --workflow PATH   Validate a single workflow YAML file. When omitted,
-                    both auto-format.yml and version-increment.yml under
-                    .github/workflows/ are checked.
+  --workflow PATH   Validate a single workflow or composite-action YAML file.
+                    When omitted, auto-format.yml, version-increment.yml and
+                    family-sync.yml under .github/workflows/ plus the shared
+                    .github/actions/push-with-app-token/action.yml are checked.
   -h, --help        Show this message.
 
 Exits 0 when every target workflow pushes with a short-lived repo-scoped
@@ -60,6 +69,9 @@ else
     # The family-sync job pushes the refreshed canonical runlib.sh back onto
     # the PR branch, so it carries the same push identity (Issue #629).
     "$(check_repo_path ".github/workflows/family-sync.yml")"
+    # The shared mint-and-push action is where the mint step lives once a
+    # caller delegates to it (Issue #641).
+    "$(check_repo_path ".github/actions/push-with-app-token/action.yml")"
   )
 fi
 
@@ -99,6 +111,9 @@ OWNER_INPUT = re.compile(r"^\s*owner:\s*\S")
 REPOS_INPUT = re.compile(r"^\s*repositories:\s*(\S.*?)\s*$")
 CONTENTS_WRITE = re.compile(r"^\s*permission-contents:\s*write\s*$")
 GH_PAT_LINE = re.compile(r"^\s*GH_PAT:\s*(\S.*?)\s*$")
+DELEGATES = re.compile(r"uses:\s*\./\.github/actions/push-with-app-token\b")
+FALLBACK_INPUT = re.compile(r"^\s*fallback-token:\s*(\S.*?)\s*$")
+FALLBACK = r"secrets\.ACTIONS_PUSH\s*\|\|\s*secrets\.GITHUB_TOKEN"
 
 results = []
 
@@ -123,6 +138,55 @@ def step_bounds(index):
         end += 1
     return start, end
 
+
+def uncommented(line):
+    return not line.lstrip().startswith("#")
+
+
+# A caller that delegates the whole sequence to the shared composite action
+# (Issue #641) mints nothing of its own. The mint rules are validated where the
+# mint now lives; what stays this file's own responsibility is the fallback
+# chain it hands the action, since only a workflow can read `secrets`.
+delegating = [idx + 1 for idx, line in enumerate(lines)
+              if uncommented(line) and DELEGATES.search(line)]
+mints_here = any(MINT_USES.match(line) for line in lines if uncommented(line))
+
+if delegating and not mints_here:
+    report(
+        "ok",
+        delegating[0],
+        "delegates the mint-and-push sequence to the shared "
+        "./.github/actions/push-with-app-token action",
+    )
+    fallbacks = [(idx + 1, m.group(1)) for idx, m in
+                 ((i, FALLBACK_INPUT.match(line)) for i, line in enumerate(lines)) if m]
+    if not fallbacks:
+        report(
+            "fail",
+            delegating[0],
+            "a delegating step must pass 'fallback-token: "
+            "${{ secrets.ACTIONS_PUSH || secrets.GITHUB_TOKEN }}' — the "
+            "composite action cannot read the secrets context itself, so "
+            "without it the push loses the Issue #435 fallback entirely",
+        )
+    for lineno, value in fallbacks:
+        if re.search(FALLBACK, value):
+            report(
+                "ok",
+                lineno,
+                "hands the action the 'secrets.ACTIONS_PUSH || "
+                "secrets.GITHUB_TOKEN' fallback chain",
+            )
+        else:
+            report(
+                "fail",
+                lineno,
+                "fallback-token must be 'secrets.ACTIONS_PUSH || "
+                "secrets.GITHUB_TOKEN' so pushes keep clearing the "
+                f"Approve-and-run gate before the App exists (Issue #435) — found {value}",
+            )
+    print("\n".join(results))
+    sys.exit(0)
 
 mint_id = None
 mint_line = 0
@@ -225,7 +289,10 @@ if not pat_bindings:
         "so the resulting checks are not gated behind Approve and run (Issue #435)",
     )
 
-FALLBACK = r"secrets\.ACTIONS_PUSH\s*\|\|\s*secrets\.GITHUB_TOKEN"
+# Inside the shared action the chain is supplied by the caller, so
+# `inputs.fallback-token` is the fallback there — the caller's own value is
+# validated by the delegation branch above.
+ACTION_FALLBACK = r"inputs\.fallback-token"
 for lineno, value in pat_bindings:
     token_ref = None
     if mint_id is not None:
@@ -239,7 +306,7 @@ for lineno, value in pat_bindings:
             f"organisation-level PAT — found {value}",
         )
         continue
-    if not re.search(FALLBACK, value):
+    if not re.search(FALLBACK, value) and not re.search(ACTION_FALLBACK, value):
         report(
             "fail",
             lineno,

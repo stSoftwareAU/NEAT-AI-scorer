@@ -15,6 +15,26 @@ section to the released version with its date.
 
 ## [Unreleased]
 
+### Added
+
+- **One home for the bot-push mint-and-push sequence (Issue #641).**
+  `auto-format.yml`, `family-sync.yml` and `version-increment.yml` each carried
+  an equivalent copy of the same security-sensitive block — mint a repo-scoped
+  installation token, fall back through `ACTIONS_PUSH` / `GITHUB_TOKEN`, then
+  commit and push with the hardened absolute-path `git` / `base64` invocation.
+  Nothing tied the three copies together, so a hardening fix applied to one was
+  easy to miss in the other two. The sequence now lives in a single composite
+  action, `.github/actions/push-with-app-token`, with the branch, commit
+  message, staged paths and rebase flag as inputs. `check-push-step-hardening.sh`
+  and `check-bot-push-token.sh` follow the logic to its new home: both validate
+  the action, and both accept a workflow that delegates to it — a delegating
+  workflow still has to hand it the `secrets.ACTIONS_PUSH || secrets.GITHUB_TOKEN`
+  fallback chain, and a workflow that neither hardens its own push step nor
+  delegates still fails the gate. Wiring the three workflows to the action is a
+  maintainer step: the automation worker holds no `workflow` OAuth scope, and
+  the exact call shape is in the README. Coverage:
+  `tests/scripts/push_step_hardening.bats`, `tests/scripts/bot_push_token.bats`.
+
 ### Security
 
 - **The CI install of `markdownlint-cli2` is pinned to an exact version

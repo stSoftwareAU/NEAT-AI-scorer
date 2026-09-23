@@ -1714,6 +1714,72 @@ repositories. The hardening is validated by
 `scripts/check-push-step-hardening.sh` (invoked from `quality.sh` and from the
 CI `bats` suite) and covered by `tests/scripts/push_step_hardening.bats`.
 
+#### One home for the mint-and-push sequence (Issue #641)
+
+`auto-format.yml`, `family-sync.yml` and `version-increment.yml` each carried
+their own copy of the sequence above — mint the installation token, fall back
+through `ACTIONS_PUSH` / `GITHUB_TOKEN`, then commit and push with the
+hardened absolute-path `git` / `base64` invocation. The copies were
+equivalent but unlinked, so a future hardening fix (or regression) applied to
+one was easy to miss in the other two. The sequence now has one home,
+`.github/actions/push-with-app-token/action.yml`, and each caller passes only
+what genuinely differs.
+
+```mermaid
+flowchart LR
+    A[auto-format.yml] --> S
+    B[family-sync.yml] --> S
+    C[version-increment.yml] --> S
+    S["./.github/actions/push-with-app-token<br/>mint → stage → commit → push"]
+    S --> D["Hardened push<br/>absolute git/base64, hooks off"]
+```
+
+| Input             | Purpose                                                     |
+| ----------------- | ----------------------------------------------------------- |
+| `branch`          | PR head ref to push `HEAD` to                                 |
+| `commit-message`  | Commit message, resolved by an earlier step                   |
+| `paths`           | Newline-separated paths to stage; empty means `commit -am`    |
+| `rebase`          | `'true'` rebases onto the remote head before pushing          |
+| `app-client-id`   | `ACTIONS_PUSH_APP_CLIENT_ID`; empty skips the mint step       |
+| `app-private-key` | `ACTIONS_PUSH_APP_PRIVATE_KEY`                                |
+| `fallback-token`  | `secrets.ACTIONS_PUSH \|\| secrets.GITHUB_TOKEN`              |
+
+A composite action cannot read the `secrets` context, so the caller supplies
+the App credentials and the fallback chain; the action decides for itself
+whether the App is configured (both credential inputs non-empty), which
+replaces the job-level `PUSH_APP_CONFIGURED` flag. Both guards follow the
+logic to its new home: `check-push-step-hardening.sh` validates the action's
+push step and accepts a workflow that delegates to it, while
+`check-bot-push-token.sh` validates the mint step there and holds a delegating
+workflow to the one rule that stays its own — handing the action a
+`fallback-token` of `secrets.ACTIONS_PUSH || secrets.GITHUB_TOKEN`. A workflow
+that neither hardens a push step of its own nor delegates still fails the
+gate, so an unvalidated push path is never reported green.
+
+Wiring the three workflows to the action is a maintainer step: the automation
+worker's credentials carry no `workflow` OAuth scope, so it cannot modify
+anything under [`.github/workflows/`](./.github/workflows) (see
+[Human escalation](./CONTRIBUTING.md#human-escalation)). Each call site
+replaces its `Mint repo-scoped push token` and `Commit and push …` steps with:
+
+```yaml
+      - name: Commit and push
+        if: steps.<detect-step>.outputs.changed == 'true'
+        uses: ./.github/actions/push-with-app-token
+        with:
+          branch: ${{ github.event.pull_request.head.ref }}
+          commit-message: <the message this job commits>
+          app-client-id: ${{ secrets.ACTIONS_PUSH_APP_CLIENT_ID }}
+          app-private-key: ${{ secrets.ACTIONS_PUSH_APP_PRIVATE_KEY }}
+          fallback-token: ${{ secrets.ACTIONS_PUSH || secrets.GITHUB_TOKEN }}
+```
+
+`family-sync.yml` additionally passes its four staged `paths` and
+`rebase: "true"`; `version-increment.yml` passes
+`paths: rust_scorer/Cargo.toml`. The action is covered by
+`tests/scripts/push_step_hardening.bats` and
+`tests/scripts/bot_push_token.bats`.
+
 Advisory scanning has exactly two homes, and they do not overlap. **PR time:**
 `ci.yml` fires on `pull_request` and calls the reusable `security.yml`, whose
 `rustsec/audit-check` step wraps `cargo audit` and annotates the check run.
