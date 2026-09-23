@@ -1565,8 +1565,9 @@ the Cargo dependency graph in four stages and prints a one-line summary:
 3. **`cargo audit`.** Fails non-zero on any reported advisory, naming the
    offending crate and advisory ID. A cargo-audit that is **not installed** is
    a tooling gap rather than a bump rejection (Issue #619): the stage prints
-   `audit: SKIPPED` plus a stderr warning and the advisory scan is left to
-   `.github/workflows/cargo-audit.yml`, which runs `cargo audit` on every PR.
+   `audit: SKIPPED` plus a stderr warning and the advisory scan is left to CI,
+   where `ci.yml` calls `security.yml` and audits the same `Cargo.lock` on
+   every PR (Issue #603).
    Pass `--require-audit` (or set `BUMP_DEPS_REQUIRE_AUDIT=1`) to make a
    missing cargo-audit fatal instead.
 4. **`cargo build --release`.** Confirms the bumped tree compiles.
@@ -1713,18 +1714,37 @@ repositories. The hardening is validated by
 `scripts/check-push-step-hardening.sh` (invoked from `quality.sh` and from the
 CI `bats` suite) and covered by `tests/scripts/push_step_hardening.bats`.
 
-A standalone Cargo Security Audit workflow (`.github/workflows/cargo-audit.yml`,
-Issue #64) runs a prebuilt `cargo audit` on every PR (against `*` and
-`milestone/**`) and adds a weekly cron schedule (`0 6 * * 1`) plus
-`workflow_dispatch`. The schedule catches advisories published *after* the last
-PR — the lockfile does not change but the RustSec advisory database does. The
-reusable `security.yml` scans the same `Cargo.lock` via the `rustsec/audit-check`
-action (which annotates the PR check run). A second, direct `cargo audit` run
-in `security.yml` was removed as pure duplication (Issue #399): the action
-already fails the check on any advisory, so a follow-up run in the same job
-could not catch anything it missed. The workflow is validated by
-`scripts/check-cargo-audit-workflow.sh` (invoked from `quality.sh`) and covered
-end-to-end by `tests/scripts/cargo_audit_workflow.bats`.
+Advisory scanning has exactly two homes, and they do not overlap. **PR time:**
+`ci.yml` fires on `pull_request` and calls the reusable `security.yml`, whose
+`rustsec/audit-check` step wraps `cargo audit` and annotates the check run.
+**Between PRs:** the standalone Cargo Security Audit workflow
+(`.github/workflows/cargo-audit.yml`, Issue #64) runs a prebuilt `cargo audit`
+on a weekly cron (`0 6 * * 1`) plus `workflow_dispatch`, catching advisories
+published *after* the last merge — the lockfile does not change but the RustSec
+advisory database does.
+
+The standalone workflow used to carry a `pull_request` trigger as well, so a PR
+paid for two audits reading the same `Cargo.lock` against the same advisory
+database on the same event — two runs that can only ever agree. Issue #603
+dropped that trigger, the same way Issue #399 dropped `security.yml`'s second,
+direct `cargo audit` run. `scripts/check-cargo-audit-workflow.sh` (invoked from
+`quality.sh`) now enforces the invariant the way `check-shellcheck-dedup.sh`
+does for ShellCheck (Issue #157): **exactly one** PR-time `cargo audit` across
+`.github/workflows`, counting an audit reached indirectly through a reusable
+workflow. Both failure modes block the gate — a duplicate burns runner minutes
+on a verdict that can only agree, and losing PR-time auditing altogether is a
+real hole in coverage. The workflow is covered end-to-end by
+`tests/scripts/cargo_audit_workflow.bats`.
+
+```mermaid
+flowchart LR
+    pr[pull_request] --> ci[ci.yml]
+    ci -->|uses| sec[security.yml<br/>rustsec/audit-check]
+    cron[schedule<br/>Mondays 06:00 UTC] --> standalone[cargo-audit.yml<br/>prebuilt cargo audit]
+    dispatch[workflow_dispatch] --> standalone
+    sec --> lock[(Cargo.lock vs<br/>RustSec advisories)]
+    standalone --> lock
+```
 
 A standalone SBOM workflow (`.github/workflows/sbom.yml`, Issue #172) exports
 the dependency inventory as a CycloneDX Software Bill of Materials and uploads
