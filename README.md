@@ -1869,6 +1869,16 @@ regressions out of merged commits without depending on the full CI graph. It is 
 `scripts/check-markdown-lint-workflow.sh` (invoked from `quality.sh`)
 and covered end-to-end by `tests/scripts/markdown_lint_workflow.bats`.
 
+The `npm install -g markdownlint-cli2@<major>.<minor>.<patch>` step is pinned
+to an **exact version** (Issue #639). `uses:` SHA-pinning never reaches inside a
+`run:` block, so an unpinned install resolves whatever the registry serves at
+that moment: a hijacked release would execute on the runner with this
+workflow's `GITHUB_TOKEN` in scope, the instant it is published and with no
+embargo. The validator rejects a bare name, a dist-tag (`@latest`) and any
+range (`@^1.2.3`, `@1.2`) — each of those resolves at install time — while
+accepting an exact pre-release such as `@0.24.0-rc.1`, which is immutable.
+Bumping the pin is a deliberate edit to the workflow YAML.
+
 ### Review governance (CODEOWNERS) — Issue #176
 
 `.github/CODEOWNERS` designates the `@stSoftwareAU/developers` maintainers
