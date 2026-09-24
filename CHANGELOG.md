@@ -37,6 +37,17 @@ section to the released version with its date.
 
 ### Security
 
+- **The Semgrep container pin carries its release tag again (Issue #640).**
+  `.github/workflows/semgrep.yml` pinned the scanner as a bare
+  `semgrep/semgrep@sha256:a9ea2d56…`. The digest is immutable, so the image
+  could not be swapped — but it was also untrackable: Renovate's
+  `github-actions` manager and Dependabot's `docker` ecosystem resolve a bump
+  from the **tag** and then rewrite the digest beside it, so a tagless pin can
+  never be flagged as behind. The pin is now
+  `semgrep/semgrep:1.86.0@sha256:a9ea2d56…` — the same bytes (the tag was
+  confirmed against the upstream registry to resolve to that exact digest),
+  now bumpable. Coverage: `tests/scripts/semgrep_workflow.bats`
+  (`real repository semgrep workflow carries a release tag beside the digest`).
 - **The CI install of `markdownlint-cli2` is pinned to an exact version
   (Issue #639).** `.github/workflows/markdown-lint.yml` ran
   `npm install -g markdownlint-cli2` with no version, so the job executed

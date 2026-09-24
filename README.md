@@ -1940,8 +1940,11 @@ resolve a bump from the **tag** and then rewrite the digest next to it: a bare
 digest gives them nothing to resolve and is frozen forever. The validator
 therefore accepts a bare `semgrep/semgrep@sha256:<digest>` as a genuine pin but
 emits a non-blocking `WARN` naming the missing tag, and fails a tag-only pin as
-before. Editing the workflow's own `image:` line needs a maintainer — the
-automation worker's credentials carry no `workflow` OAuth scope
+before. The shipped workflow carries that preferred shape —
+`semgrep/semgrep:1.86.0@sha256:a9ea2d56…` (Issue #640), the same bytes the
+bare digest always resolved to, now trackable by an updater. Editing the
+workflow's own `image:` line needs a maintainer — the automation worker's
+credentials carry no `workflow` OAuth scope
 ([Human escalation](./CONTRIBUTING.md#human-escalation)).
 
 A standalone Markdown Lint workflow
