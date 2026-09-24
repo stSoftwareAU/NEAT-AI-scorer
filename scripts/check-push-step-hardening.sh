@@ -10,7 +10,14 @@
 # `.git/hooks/pre-commit` that runs with $GH_PAT in scope. Either exfiltrates
 # an organisation-level credential.
 #
-# Rules enforced on every step whose `env:` binds GH_PAT to ACTIONS_PUSH:
+# Issue #641 moved that sequence into one shared composite action
+# (`.github/actions/push-with-app-token`), so this guard validates the action
+# as well and accepts a workflow that delegates its push to it: such a caller
+# holds no credential of its own, and the block it delegates to is checked
+# here in its new home. A workflow that neither hardens a PAT-bearing step nor
+# delegates still fails — an unvalidated push path is never reported green.
+#
+# Rules enforced on every step whose `env:` binds GH_PAT:
 #   1. The run block pins git to an absolute path (`GIT=/usr/bin/git`), so a
 #      $GITHUB_ENV PATH override cannot redirect the invocation.
 #   2. No bare `git` command word remains in the block — every invocation goes
@@ -36,9 +43,10 @@ usage() {
 Usage: check-push-step-hardening.sh [--workflow PATH]
 
 Options:
-  --workflow PATH   Validate a single workflow YAML file. When omitted, both
-                    auto-format.yml and version-increment.yml under
-                    .github/workflows/ are checked.
+  --workflow PATH   Validate a single workflow or composite-action YAML file.
+                    When omitted, auto-format.yml, version-increment.yml and
+                    family-sync.yml under .github/workflows/ plus the shared
+                    .github/actions/push-with-app-token/action.yml are checked.
   -h, --help        Show this message.
 
 Exits 0 when every PAT-bearing push step is hardened against in-job poisoning
@@ -59,6 +67,9 @@ else
     # family-sync.yml runs PR-head code (scripts/family-sync.sh) before a
     # PAT-bearing push step, so it is held to the same hardening (Issue #629).
     "$(check_repo_path ".github/workflows/family-sync.yml")"
+    # The shared mint-and-push action is where the block lives once a caller
+    # delegates to it, so it carries the hardening for all three (Issue #641).
+    "$(check_repo_path ".github/actions/push-with-app-token/action.yml")"
   )
 fi
 
@@ -90,7 +101,11 @@ def indent_of(line):
     return len(line) - len(line.lstrip(" "))
 
 
-PAT_ENV = re.compile(r"GH_PAT:.*secrets\.ACTIONS_PUSH")
+# Any GH_PAT binding is a credential-bearing step, whether the value comes
+# from secrets.ACTIONS_PUSH (a workflow) or from the shared action's
+# `inputs.fallback-token` (Issue #641).
+PAT_ENV = re.compile(r"^\s*GH_PAT:\s*\S")
+DELEGATES = re.compile(r"uses:\s*\./\.github/actions/push-with-app-token\b")
 STEP_START = re.compile(r"^\s*-\s")
 RUN_BLOCK = re.compile(r"^\s*run:\s*\|")
 ABS_GIT = re.compile(r"""^\s*GIT=(["']?)/usr/bin/git\1\s*$""")
@@ -242,7 +257,21 @@ for idx, line in enumerate(lines):
         report("ok", lineno, "executes no repository script with the PAT in scope")
 
 if pat_steps == 0:
-    report("fail", 0, "no step binds GH_PAT to secrets.ACTIONS_PUSH — nothing to validate")
+    if any(DELEGATES.search(line) for line in lines):
+        report(
+            "ok",
+            0,
+            "holds no credential itself — it delegates its push to the shared "
+            "hardened ./.github/actions/push-with-app-token action",
+        )
+    else:
+        report(
+            "fail",
+            0,
+            "no step binds GH_PAT (secrets.ACTIONS_PUSH or the shared action's "
+            "fallback-token) and nothing delegates to "
+            "./.github/actions/push-with-app-token — nothing to validate",
+        )
 
 print("\n".join(results))
 PY
