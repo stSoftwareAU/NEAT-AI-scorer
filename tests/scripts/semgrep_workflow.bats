@@ -262,6 +262,15 @@ PY
   [[ "$output" != *"FAIL"* ]]
 }
 
+@test "real repository semgrep workflow carries a release tag beside the digest (issue #640)" {
+  run --separate-stderr "$SCRIPT_UNDER_TEST"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"carries release tag"* ]]
+  # A bare digest is untrackable by Renovate/Dependabot, so the validator WARNs
+  # about it — the shipped workflow must not earn that warning.
+  [[ "$stderr" != *"no release tag"* ]]
+}
+
 @test "passes and names the release tag when the image carries tag + digest (issue #617)" {
   write_tagged_container_workflow "$TMP_WF/semgrep.yml"
   run "$SCRIPT_UNDER_TEST" --workflow "$TMP_WF/semgrep.yml"

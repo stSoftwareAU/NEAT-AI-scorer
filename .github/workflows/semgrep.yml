@@ -49,8 +49,11 @@ jobs:
       # Pinned Semgrep release. Equivalent to `uses: semgrep/semgrep-action@v1`.
       # Digest pin: semgrep/semgrep v1.86.0 multi-arch manifest, frozen
       # 2026-05-18. Docker tags are mutable; the sha256 digest is not
-      # (Issue #102).
-      image: semgrep/semgrep@sha256:a9ea2d5621c29d815d90c2a3b2f9571da8972ef4ff855c9e4902681730240e35
+      # (Issue #102) — the digest alone decides which bytes run. The release
+      # tag beside it is what a dependency updater resolves a bump from
+      # (Renovate `github-actions`, Dependabot `docker`); a bare digest is
+      # untrackable and frozen forever (Issue #640).
+      image: semgrep/semgrep:1.86.0@sha256:a9ea2d5621c29d815d90c2a3b2f9571da8972ef4ff855c9e4902681730240e35
     steps:
       - name: Checkout code
         uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd  # v5
