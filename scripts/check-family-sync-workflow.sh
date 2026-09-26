@@ -17,7 +17,9 @@
 #      that is already in sync is a no-op.
 #   7. Refuse to push onto a fork's PR branch.
 #   8. Rebase onto the remote head before pushing, so a commit pushed while
-#      the job ran is never clobbered.
+#      the job ran is never clobbered — `pull --rebase` in a run:, or
+#      `rebase: "true"` on a step delegating to the push-with-app-token
+#      composite action (Issue #656).
 #   9. Authenticate the push with ACTIONS_PUSH (GITHUB_TOKEN fallback), the
 #      Issue #435 pattern shared with version-increment.yml.
 #  10. Use strict bash in every multi-line run: block.
@@ -26,7 +28,8 @@
 #  12. Run `scripts/family-pins.sh` (Issue #630) so a `neat-core` pin behind
 #      core's latest release is moved on every PR, not left stale.
 #  13. Stage `rust_scorer/Cargo.toml` and `Cargo.lock` in the commit, so a
-#      moved pin actually reaches the PR branch.
+#      moved pin actually reaches the PR branch — in a `git add`, or in the
+#      `paths:` input of a delegated push-with-app-token step (Issue #656).
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -122,10 +125,36 @@ else
   fail "no head.repo check — pushes onto forks will fail silently"
 fi
 
+# The push step may delegate to the shared composite action instead of
+# spelling out its git commands (Issues #641, #656). DELEGATED_STEP holds that
+# step's non-comment lines — only a key *on the delegating step* counts, so a
+# `rebase:` or `paths:` elsewhere in the file cannot stand in for it.
+DELEGATED_STEP="$(
+  awk '
+    function indent(s) { match(s, /^ */); return RLENGTH }
+    function flush() {
+      if (buf ~ /uses:[ ]*\.\/\.github\/actions\/push-with-app-token([^A-Za-z0-9_-]|$)/) print buf
+      buf = ""; in_step = 0
+    }
+    /^[[:space:]]*#/ { next }
+    /^[[:space:]]*$/ { next }
+    {
+      ind = indent($0)
+      if (in_step && ind <= dash) flush()
+      if (!in_step && $0 ~ /^ *- /) { in_step = 1; dash = ind; buf = $0; next }
+      if (in_step) buf = buf "\n" $0
+    }
+    END { flush() }
+  ' "$WORKFLOW"
+)"
+
 # 8. Rebase before push. A comment promising a rebase is not a rebase, so
-#    comment lines are stripped before the command is looked for.
+#    comment lines are stripped before the command is looked for. A delegated
+#    push rebases only when its step passes `rebase: "true"`.
 if grep -vE '^[[:space:]]*#' "$WORKFLOW" | grep -qE 'pull[[:space:]]+--rebase|[[:space:]]rebase[[:space:]]'; then
   ok "rebases onto the remote head before pushing"
+elif printf '%s\n' "$DELEGATED_STEP" | grep -qE "^[[:space:]]+rebase:[[:space:]]*(true|\"true\"|'true')[[:space:]]*\$"; then
+  ok "rebases onto the remote head before pushing (push-with-app-token rebase: true)"
 else
   fail "no rebase before push — a commit pushed during the run would be clobbered"
 fi
@@ -188,6 +217,8 @@ fi
 #     anywhere else in the file (the change-detection `git status`, a comment)
 #     says nothing about what gets committed — so comment lines are stripped
 #     and backslash continuations joined before the add command is inspected.
+#     A workflow with no `git add` at all must still reach the verdict below,
+#     so an empty match is not allowed to abort the script under pipefail.
 ADD_COMMANDS="$(
   grep -vE '^[[:space:]]*#' "$WORKFLOW" | awk '
     { line = $0 }
@@ -195,11 +226,28 @@ ADD_COMMANDS="$(
     line ~ /\\[[:space:]]*$/ { sub(/\\[[:space:]]*$/, "", line); joined = line; next }
     { print line }
     END { if (joined != "") print joined }
-  ' | grep -E '(^|[[:space:]])add([[:space:]]|$)'
+  ' | grep -E '(^|[[:space:]])add([[:space:]]|$)' || true
+)"
+# A delegated push stages its newline-separated `paths:` input, one path per
+# line (an empty `paths:` means `commit -am`, which never stages a new file).
+DELEGATED_PATHS="$(
+  printf '%s\n' "$DELEGATED_STEP" | awk '
+    function indent(s) { match(s, /^ */); return RLENGTH }
+    inside && indent($0) > key { sub(/^ +/, ""); sub(/ +$/, ""); print; next }
+    inside { inside = 0 }
+    /^ *paths:/ {
+      key = indent($0)
+      value = $0; sub(/^ *paths:[ ]*/, "", value); sub(/ +$/, "", value)
+      if (value ~ /^[|>]/) { inside = 1 } else if (value != "") { print value }
+    }
+  '
 )"
 PIN_STAGED=0
 if printf '%s\n' "$ADD_COMMANDS" | grep -qE 'rust_scorer/Cargo\.toml' \
   && printf '%s\n' "$ADD_COMMANDS" | grep -qE '(^|[[:space:]])Cargo\.lock([[:space:]]|$)'; then
+  PIN_STAGED=1
+elif printf '%s\n' "$DELEGATED_PATHS" | grep -qxF 'rust_scorer/Cargo.toml' \
+  && printf '%s\n' "$DELEGATED_PATHS" | grep -qxF 'Cargo.lock'; then
   PIN_STAGED=1
 fi
 if [[ "$PIN_STAGED" -eq 1 ]]; then

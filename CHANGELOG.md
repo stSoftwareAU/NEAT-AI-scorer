@@ -17,6 +17,16 @@ section to the released version with its date.
 
 ### Added
 
+- **The family-sync guard accepts a push delegated to `push-with-app-token`
+  (Issue #656).** `scripts/check-family-sync-workflow.sh` now passes a
+  `family-sync.yml` whose push step `uses: ./.github/actions/push-with-app-token`:
+  the rebase rule accepts `rebase: "true"` on that step, and the staging rule
+  accepts its `paths:` input listing both `rust_scorer/Cargo.toml` and
+  `Cargo.lock`. A workflow with no `git add` at all now fails the staging rule
+  loudly instead of aborting the guard mid-run. Replacing the three workflows'
+  copied mint-and-push steps with the action is a maintainer step (no
+  `workflow` OAuth scope); the exact diff is in
+  `docs/archive/pr-summaries/pr-summary-656.md`.
 - **One home for the bot-push mint-and-push sequence (Issue #641).**
   `auto-format.yml`, `family-sync.yml` and `version-increment.yml` each carried
   an equivalent copy of the same security-sensitive block — mint a repo-scoped
