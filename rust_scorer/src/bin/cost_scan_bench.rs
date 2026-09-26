@@ -42,6 +42,7 @@ use clap::Parser;
 use neat_core::creature::{compile_creature, parse_creature_json};
 use neat_core::training_data::{TrainingDataConfig, find_bin_files};
 
+use rust_scorer::bench_support::median_ms;
 use rust_scorer::cost::CostKind;
 use rust_scorer::creature_width::validate_creature_width;
 use rust_scorer::stream_score::accumulate_cost_sum_forward_only_fused;
@@ -91,16 +92,6 @@ struct Report {
     runs: usize,
     rows: Vec<CostRow>,
     skipped: Vec<SkippedRow>,
-}
-
-fn median_ms(times: &mut [f64]) -> f64 {
-    times.sort_by(|a, b| a.partial_cmp(b).unwrap());
-    let mid = times.len() / 2;
-    if times.len() % 2 == 1 {
-        times[mid]
-    } else {
-        (times[mid - 1] + times[mid]) / 2.0
-    }
 }
 
 fn run_one_cost(

@@ -63,6 +63,13 @@ section to the released version with its date.
 
 ### Changed
 
+- **One median helper for the bench binaries (Issue #649).** `cost_scan_bench`,
+  `float_scan_bench` and `if_tree_batch_bench` each carried their own median
+  helper, and two of them sorted with `partial_cmp(..).unwrap()`, which panics
+  on a `NaN` timing. All three now call `rust_scorer::bench_support::median_ms`,
+  which sorts with `f64::total_cmp` and fails with a clear message on an empty
+  run list. Coverage: the `bench_support` unit tests.
+
 - **One PR-time `cargo audit`, not two (Issue #603).**
   `.github/workflows/cargo-audit.yml` no longer triggers on `pull_request`: it
   keeps the weekly cron (`0 6 * * 1`) and `workflow_dispatch`, which is its
