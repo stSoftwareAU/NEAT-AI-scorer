@@ -27,12 +27,10 @@ use clap::Parser;
 use neat_core::creature::{compile_creature, parse_creature_json};
 use neat_core::training_data::{TrainingDataConfig, TrainingDataIterator, find_bin_files};
 
-use std::sync::Arc;
-
 use crate::corpus_guard::assert_records_aligned;
 use crate::cost::CostKind;
 use crate::creature_width::validate_creature_width;
-use crate::gpu::{GpuBackendLabel, GpuMode, ScoringPath};
+use crate::gpu::{GpuBackendLabel, GpuMode};
 use crate::host_report::{DEFAULT_REPORT_RECORD_BYTES, HostReport};
 use crate::multi_score::{score_from_creature_dir_gpu_sampled, score_from_creature_dir_sampled};
 use crate::racing_stdio::RacingStdio;
@@ -44,6 +42,8 @@ use crate::scoring::{ScoreResult, calculate_score, compute_score_components};
 use crate::signal_exit;
 use crate::stream_score::AUTO_FILE_READ_WORKERS;
 use crate::{cost, gpu, multi_score, scoring, stream_score};
+
+mod gpu_plan;
 
 /// Matches `DEFAULT_COST_OF_GROWTH` in `src/config/NeatConfig.ts` (CLI is KISS: no flag).
 const GROWTH_COST: f64 = 0.000_000_1;
@@ -271,11 +271,7 @@ fn run(cli: &Cli) -> Result<RunOutput, String> {
         ))));
     }
 
-    // Resolve the GPU backend label up-front. For `--gpu off` this is a
-    // constant `cpu-fallback` and never touches `wgpu`; for `auto` (the
-    // default since Issue #83) and `on` it triggers adapter selection now
-    // so the same label is passed into every scoring path.
-    // Issue #289: `resolve_mode` now returns the typed `GpuModeParseError`;
+    // Issue #289: `resolve_mode` returns the typed `GpuModeParseError`;
     // flatten it to the binary's `String` error contract at the boundary.
     let mode = gpu::resolve_mode(cli.gpu, std::env::var("NEAT_SCORER_GPU").ok().as_deref())
         .map_err(|e| e.to_string())?;
@@ -289,78 +285,16 @@ fn run(cli: &Cli) -> Result<RunOutput, String> {
         None => SampleSpec::full(),
     };
 
-    // NEAT-AI#3928: `--race-stdio` drives the Issue #308 early-exit hook, which
-    // exists only on the CPU directory path. Refuse the combinations that could
-    // not honour it rather than silently full-scoring a caller who asked to
-    // race — a full-corpus sweep is exactly what racing is meant to avoid, and
-    // it would look like a working race that never saved anything.
-    if cli.race_stdio {
-        if cli.creature_stdin {
-            return Err(
-                "--race-stdio scores a creatures directory; it cannot be combined with --creature-stdin"
-                    .to_string(),
-            );
-        }
-        if matches!(mode, GpuMode::On) {
-            return Err(
-                "--race-stdio has no GPU kernel: the early-exit hook is CPU directory mode only (drop --gpu on, or drop --race-stdio)"
-                    .to_string(),
-            );
-        }
-    }
-
-    // Issue #121/#339/#316: `--gpu on` with a cost the kernels cannot serve is a
-    // hard error. The batched/scratch kernels host MSE and RMSE (squared-error
-    // sum, RMSE via a host-side `sqrt`) and MAE (absolute-error sum); every
-    // other cost would be a wrong scoring result if silently downgraded. Check
-    // this before adapter
-    // selection so the error always mentions the unsupported cost, even on
-    // machines without a GPU. `--gpu auto` (the default) falls back to CPU
-    // instead; `--gpu off` never touches the GPU and is fine.
-    if matches!(mode, GpuMode::On) && !cli.cost.gpu_supported() {
-        return Err(format!(
-            "GPU kernel not implemented for cost {}: the batched/scratch kernels host MSE, RMSE \
-             and MAE only (use --gpu auto to silently fall back to CPU, or --gpu off to skip GPU detection)",
-            cli.cost.as_str()
-        ));
-    }
-
-    // Issue #180: under `--gpu auto` adapter selection is *deferred* to the
-    // directory path, where a CPU-only pre-flight first checks that the GPU
-    // kernel can host the creature set. Creating a `wgpu`/Metal device only to
-    // abandon it (the set exceeds the 256-neuron shader cap) risked an abnormal
-    // teardown that truncated stdout and surfaced to batch callers as
-    // `exit 158` / `INVALID_JSON`. `on` still resolves up-front — the user
-    // demanded a GPU, so a missing adapter must hard-error here as before.
-    let (gpu_backend, gpu_ctx) = match mode {
-        GpuMode::Off => (GpuBackendLabel::CpuFallback, None),
-        GpuMode::Auto => (GpuBackendLabel::CpuFallback, None),
-        // Issue #583: adapter selection is a `wgpu` call too, and `wgpu`
-        // reports a dead device fatally — guard it so even a driver that dies
-        // during selection exits with a diagnostic instead of a panic.
-        GpuMode::On => match gpu::device_loss::catch_gpu_panic(gpu::select_adapter) {
-            Ok(Ok(Some(ctx))) => {
-                let backend = ctx.backend;
-                (backend, Some(Arc::new(ctx)))
-            }
-            Ok(Ok(None)) => return Err(
-                "No compatible GPU adapter found and --gpu on was requested (use --gpu auto to fall back to CPU, or --gpu off to skip GPU detection entirely)".to_string(),
-            ),
-            Ok(Err(e)) => return Err(e.to_string()),
-            Err(failure) => return Err(failure.to_string()),
-        },
-    };
-
-    // Issue #83 — codified ship/skip decision under Auto for the single-creature
-    // path only; directory mode uses topology-aware [`auto_should_use_gpu_directory`].
-    // `On` bypasses heuristics; `Off` skipped GPU detection above.
+    // Issue #648: GPU/cost/racing decisions live in `gpu_plan`.
+    gpu_plan::validate_flag_combinations(mode, cli.cost, cli.race_stdio, cli.creature_stdin)?;
+    let up_front_gpu = gpu_plan::select_up_front(mode)?;
 
     if cli.creature_stdin {
         let (creature_json, data_path) = resolve_inputs(cli)?;
         // Issue #83: single-creature path stays on CPU under every mode
         // (#81 closed as a negative result — no GPU kernel ships for this
         // path). The reported `gpuBackend` reflects what actually ran, so
-        // it is `cpu-fallback` here regardless of `gpu_backend` resolution.
+        // it is `cpu-fallback` here regardless of `--gpu`.
         return score_from_json(
             &creature_json,
             &data_path,
@@ -391,119 +325,7 @@ fn run(cli: &Cli) -> Result<RunOutput, String> {
             return run_racing_directory(creature_path, data_path, cli.cost, &sample)
                 .map(RunOutput::Multi);
         }
-        // Issue #205: under `--gpu auto`, a non-MSE cost makes
-        // `auto_should_use_gpu` return false, so the directory path runs on
-        // CPU. That fallback was otherwise silent (only the
-        // `gpuBackend: cpu-fallback` JSON field hinted at it). Emit one
-        // informational stderr note naming the cost as the reason, mirroring
-        // the other `[gpu] auto fallback ...` messages. No-op for MSE and for
-        // explicit `--gpu on|off`.
-        if let Some(note) =
-            gpu::auto_cost_fallback_note(mode, ScoringPath::CreatureDirectory, cli.cost)
-        {
-            eprintln!("{note}");
-        }
-        // Issue #467: the topology probe loads and compiles every creature, so
-        // run it once and share it between the fallback note and the routing
-        // decision below. Only `auto` with a GPU-hosted cost consults it.
-        let dir_probe = if matches!(mode, GpuMode::Auto) && cli.cost.gpu_supported() {
-            multi_score::gpu_directory_probe_for_dir(creature_path.as_ref())
-        } else {
-            None
-        };
-        if let Some(note) = gpu::auto_topology_fallback_note(
-            mode,
-            ScoringPath::CreatureDirectory,
-            cli.cost,
-            dir_probe,
-        ) {
-            eprintln!("{note}");
-        }
-        // Directory mode: per Issue #82+#83 use the GPU multi-creature
-        // batched kernel when (a) an adapter is available and (b) the mode
-        // wants GPU for this path (`Auto` ⇒ topology-aware, `On` ⇒ yes, `Off` ⇒ no).
-        // `inflight_chunks: 2` enables CPU↔GPU pipelining.
-        let want_gpu_for_directory = match mode {
-            GpuMode::Off => false,
-            GpuMode::On => true,
-            GpuMode::Auto => gpu::auto_should_use_gpu_directory(dir_probe, cli.cost),
-        };
-        // CPU directory mode — the destination for every fallback below and for
-        // a mode that never wanted GPU. Reports `cpu-fallback` so `gpuBackend`
-        // reflects what actually ran (Issue #83).
-        let run_cpu_directory = || {
-            score_from_creature_dir_sampled(
-                creature_path,
-                data_path,
-                GpuBackendLabel::CpuFallback,
-                cli.cost,
-                &sample,
-            )
-        };
-        if want_gpu_for_directory {
-            // Resolve the GPU context for this directory. Under `--gpu on` it
-            // was selected up-front. Under `--gpu auto` (Issue #180) selection
-            // is deferred behind a CPU-only pre-flight: a creature set above
-            // the 256-neuron shader cap routes straight to CPU *without* ever
-            // creating a `wgpu`/Metal device, so there is no GPU context to
-            // abort during teardown (the regression batch callers saw as
-            // `exit 158` / `INVALID_JSON`).
-            let resolved_ctx: Option<(GpuBackendLabel, Arc<gpu::GpuContext>)> = match mode {
-                GpuMode::On => gpu_ctx.clone().map(|ctx| (gpu_backend, ctx)),
-                GpuMode::Auto => match multi_score::gpu_directory_compatible(creature_path) {
-                    // GPU-hostable — create the adapter now and run the kernel.
-                    // Guarded since Issue #583: a driver that dies during
-                    // selection must not take the process with it.
-                    Ok(()) => match gpu::device_loss::catch_gpu_panic(gpu::select_adapter) {
-                        Ok(Ok(Some(ctx))) => {
-                            let backend = ctx.backend;
-                            Some((backend, Arc::new(ctx)))
-                        }
-                        // No adapter, a selection error, or a driver abort —
-                        // `auto` must never abort scoring, so fall through to
-                        // CPU silently.
-                        _ => None,
-                    },
-                    // The set exceeds the shader cap (or uses an unsupported
-                    // squash). Log the fallback and run on CPU — no device made.
-                    Err(reason) => {
-                        eprintln!(
-                            "[gpu] auto fallback to CPU directory mode: GPU runner cannot host this creature set ({reason}); rerun with --gpu off"
-                        );
-                        None
-                    }
-                },
-                // `want_gpu_for_path` is false under Off, so this is unreachable.
-                GpuMode::Off => None,
-            };
-
-            if let Some((backend, ctx)) = resolved_ctx {
-                // Issue #583: a `wgpu` device lost mid-run panics inside
-                // `Device::poll`, so no `Result` from the runner can report it.
-                // The guard catches that unwind (and the Issue #273 recoverable
-                // readback errors) and applies one policy: `auto` logs once and
-                // degrades to CPU — valid JSON, exit 0, exactly where a missing
-                // adapter already lands — while `on` returns a diagnostic the
-                // caller exits non-zero with, never a panic and exit 101.
-                return gpu::device_loss::run_with_device_loss_fallback(
-                    mode,
-                    || {
-                        score_from_creature_dir_gpu_sampled(
-                            creature_path,
-                            data_path,
-                            backend,
-                            ctx,
-                            2,
-                            cli.cost,
-                            &sample,
-                        )
-                    },
-                    run_cpu_directory,
-                )
-                .map(RunOutput::Multi);
-            }
-        }
-        run_cpu_directory().map(RunOutput::Multi)
+        run_creature_directory(cli, mode, up_front_gpu, &sample).map(RunOutput::Multi)
     } else {
         let creature_json = fs::read_to_string(creature_path).map_err(|e| {
             format!(
@@ -522,6 +344,62 @@ fn run(cli: &Cli) -> Result<RunOutput, String> {
         )
         .map(|r| RunOutput::Single(Box::new(r)))
     }
+}
+
+/// Score a creatures directory (`cli.args[0]`) on the GPU the plan picks, or
+/// on the CPU pipeline for every fallback (Issues #82, #83, #180, #583).
+fn run_creature_directory(
+    cli: &Cli,
+    mode: GpuMode,
+    up_front_gpu: Option<gpu_plan::GpuSelection>,
+    sample: &SampleSpec,
+) -> Result<BTreeMap<String, ScoreResult>, String> {
+    let creature_path = &cli.args[0];
+    let data_path = &cli.args[1];
+    let plan = gpu_plan::plan_directory(mode, cli.cost, creature_path);
+    for note in &plan.notes {
+        eprintln!("{note}");
+    }
+    // CPU directory mode — the destination for every fallback below and for a
+    // mode that never wanted GPU. Reports `cpu-fallback` so `gpuBackend`
+    // reflects what actually ran (Issue #83).
+    let run_cpu_directory = || {
+        score_from_creature_dir_sampled(
+            creature_path,
+            data_path,
+            GpuBackendLabel::CpuFallback,
+            cli.cost,
+            sample,
+        )
+    };
+    if !plan.want_gpu {
+        return run_cpu_directory();
+    }
+    let Some((backend, ctx)) = gpu_plan::resolve_directory_gpu(mode, up_front_gpu, creature_path)
+    else {
+        return run_cpu_directory();
+    };
+    // Issue #583: a `wgpu` device lost mid-run panics inside `Device::poll`, so
+    // no `Result` from the runner can report it. The guard catches that unwind
+    // (and the Issue #273 recoverable readback errors) and applies one policy:
+    // `auto` logs once and degrades to CPU — valid JSON, exit 0 — while `on`
+    // returns a diagnostic the caller exits non-zero with, never a panic.
+    // `inflight_chunks: 2` enables CPU↔GPU pipelining.
+    gpu::device_loss::run_with_device_loss_fallback(
+        mode,
+        || {
+            score_from_creature_dir_gpu_sampled(
+                creature_path,
+                data_path,
+                backend,
+                ctx,
+                2,
+                cli.cost,
+                sample,
+            )
+        },
+        run_cpu_directory,
+    )
 }
 
 /// Score a creatures directory with the caller's racing policy in the loop
@@ -1537,11 +1415,12 @@ mod tests {
     }
 
     /// Issue #339/#316: `--gpu on --cost {RMSE,MAE}` must clear the up-front
-    /// guard that hard-errors non-GPU-supported costs. The guard at the top of
-    /// `run` fires only when `!cli.cost.gpu_supported()`; MSE, RMSE and MAE are
-    /// GPU-supported (RMSE reuses the MSE squared-error sum, MAE accumulates
-    /// absolute error on the shared forward pass), so they clear the guard while
-    /// the CPU-only costs still trip it.
+    /// guard that hard-errors non-GPU-supported costs. The guard in
+    /// `gpu_plan::validate_flag_combinations` fires only when
+    /// `!cli.cost.gpu_supported()`; MSE, RMSE and MAE are GPU-supported (RMSE
+    /// reuses the MSE squared-error sum, MAE accumulates absolute error on the
+    /// shared forward pass), so they clear the guard while the CPU-only costs
+    /// still trip it.
     #[test]
     fn test_gpu_on_accepts_mse_rmse_and_mae() {
         assert!(CostKind::Mse.gpu_supported());
