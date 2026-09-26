@@ -47,6 +47,16 @@ section to the released version with its date.
 
 ### Security
 
+- **Dependency bumps get their own trigger (Issue #658).** Nothing opened a
+  bump PR on its own. `bump-deps.sh` only ran alongside unrelated worker PRs
+  (#105 removed its schedule), and `cargo-audit.yml` only detects advisories.
+  So a published fix for a vulnerable crate waited for someone to notice it.
+  The new `.github/dependabot.yml` adds a weekly `cargo` version-update channel
+  for the workspace root. It carries a one-day `cooldown` that mirrors the
+  24-hour quarantine. Dependabot security updates bypass that cooldown.
+  `neat-core` is ignored because `scripts/family-pins.sh` owns its pin.
+  `scripts/check-dependabot-config.sh` (wired into `quality.sh`) fails the gate
+  if any of those rules is lost. Coverage: `tests/scripts/dependabot_config.bats`.
 - **The Semgrep container pin carries its release tag again (Issue #640).**
   `.github/workflows/semgrep.yml` pinned the scanner as a bare
   `semgrep/semgrep@sha256:a9ea2d56…`. The digest is immutable, so the image

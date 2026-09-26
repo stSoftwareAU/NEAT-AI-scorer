@@ -50,6 +50,11 @@ before disclosing publicly.
 
 ## Emergency dependency bump
 
+Dependabot (`.github/dependabot.yml`, Issue #658) normally opens the bump PR
+for you: a security update as soon as a fixed crate version exists, plus a
+weekly `cargo` version run. The steps below are the manual fallback when that
+PR has not appeared or cannot be used.
+
 When a dependency advisory needs an urgent, out-of-band fix — a malicious crate
 version, a leaked maintainer token, or an actively-exploited CVE in a transitive
 dependency — you do **not** have to wait for the normal per-PR bump cadence or

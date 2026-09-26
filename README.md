@@ -1610,6 +1610,42 @@ flowchart LR
     E --> S
 ```
 
+### Dependabot update channel (Issue #658)
+
+`bump-deps.sh` only runs when the worker prepares an unrelated PR, and
+`cargo-audit.yml` only *detects* advisories. Without a further trigger, an
+advisory fix would wait for that unrelated work. [`.github/dependabot.yml`](./.github/dependabot.yml)
+gives the repo its own bump trigger:
+
+- **Security updates.** Dependabot opens a PR as soon as a fixed version of
+  a vulnerable crate exists. Security updates bypass the cooldown.
+- **Version updates.** A **weekly** `cargo` run against the workspace root
+  (`directory: "/"`, where `Cargo.lock` lives), with a one-day
+  `cooldown` that mirrors `bump-deps.sh`'s 24-hour quarantine.
+- **`neat-core` is ignored.** `scripts/family-pins.sh` owns that release-tag
+  pin ([neat-core release pin](#neat-core-release-pin-issue-630)).
+
+Security updates also need the repository's *Dependabot security updates*
+setting turned on; that is a maintainer action in the GitHub UI.
+`./bump-deps.sh --quarantine-hours 0` is still the manual emergency path
+(see [SECURITY.md](./SECURITY.md#emergency-dependency-bump)).
+`scripts/check-dependabot-config.sh` (wired into `quality.sh`, covered by
+`tests/scripts/dependabot_config.bats`) fails the gate if the config loses
+the cargo entry, the root directory, a daily/weekly schedule, the cooldown or
+the `neat-core` ignore.
+
+```mermaid
+flowchart LR
+    ADV[RustSec advisory] --> AUD[cargo-audit.yml: detect]
+    ADV --> DSU[Dependabot security update]
+    DSU -->|no cooldown| PR[bump PR runs ci.yml]
+    WK[weekly schedule] --> DVU[Dependabot version update]
+    DVU -->|cooldown 1 day| PR
+    AUD -->|maintainer| EM["bump-deps.sh --quarantine-hours 0"]
+    EM --> PR
+    FP[family-pins.sh] -->|neat-core only| PR
+```
+
 ### Other PR automation
 
 Besides the quality gate (`.github/workflows/ci.yml`), PRs also run a guarded

@@ -1,0 +1,21 @@
+# Dependency update channel (Issue #658).
+#
+# `bump-deps.sh` runs per-PR through the automation worker and
+# `cargo-audit.yml` only detects advisories. This config gives the repo its own
+# trigger, so a crate bump no longer waits for unrelated work to ride along.
+# Validated by `scripts/check-dependabot-config.sh` (run from `quality.sh`).
+version: 2
+updates:
+  - package-ecosystem: "cargo"
+    # The workspace root holds `Cargo.lock` for every member crate.
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    # Mirrors bump-deps.sh's 24-hour quarantine for version updates.
+    # Dependabot security updates bypass cooldown, so advisory fixes land at once.
+    cooldown:
+      default-days: 1
+    ignore:
+      # `scripts/family-pins.sh` (family-sync job) owns this release-tag pin
+      # (Issue #630); a second bumper would race it.
+      - dependency-name: "neat-core"
