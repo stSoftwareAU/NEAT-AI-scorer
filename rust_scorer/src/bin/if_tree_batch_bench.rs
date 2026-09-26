@@ -29,6 +29,7 @@ use std::time::Instant;
 
 use clap::Parser;
 
+use rust_scorer::bench_support::median_ms;
 use rust_scorer::cost::CostKind;
 use rust_scorer::gpu::{GpuBackendLabel, GpuMode, select_adapter};
 use rust_scorer::if_tree_fixture::{
@@ -230,7 +231,8 @@ fn bench(cli: &Cli, fixture: &Fixture) -> Result<BenchReport, String> {
         }
     }
 
-    let median_ms = median(&times_ms);
+    // Sort a copy: the report keeps `times_ms` in run order.
+    let median_ms = median_ms(&mut times_ms.clone());
     if median_ms <= 0.0 || !median_ms.is_finite() {
         return Err(format!("unusable median run time: {median_ms} ms"));
     }
@@ -254,15 +256,4 @@ fn bench(cli: &Cli, fixture: &Fixture) -> Result<BenchReport, String> {
         best_candidate: best.0,
         best_error: best.1,
     })
-}
-
-fn median(times_ms: &[f64]) -> f64 {
-    let mut sorted = times_ms.to_vec();
-    sorted.sort_by(f64::total_cmp);
-    let mid = sorted.len() / 2;
-    if sorted.len() % 2 == 0 {
-        (sorted[mid - 1] + sorted[mid]) / 2.0
-    } else {
-        sorted[mid]
-    }
 }

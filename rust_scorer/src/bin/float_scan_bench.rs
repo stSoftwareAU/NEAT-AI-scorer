@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 use clap::Parser;
 use neat_core::training_bin_stream::for_each_read_chunk;
 use neat_core::training_data::find_bin_files;
+use rust_scorer::bench_support::median_ms;
 use rust_scorer::read_tuning::{training_read_backend_label, training_read_target_bytes_from_env};
 
 const PENDING_COMPACT_HEAD_BYTES: usize = 512 * 1024;
@@ -103,16 +104,6 @@ fn scan_bin_files(bin_files: &[PathBuf], record_bytes: usize) -> Result<f64, Str
         ));
     }
     Ok(sum)
-}
-
-fn median_ms(times: &mut [f64]) -> f64 {
-    times.sort_by(|a, b| a.partial_cmp(b).unwrap());
-    let mid = times.len() / 2;
-    if times.len() % 2 == 1 {
-        times[mid]
-    } else {
-        (times[mid - 1] + times[mid]) / 2.0
-    }
 }
 
 fn main() {
