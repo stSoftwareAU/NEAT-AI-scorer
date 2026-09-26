@@ -1780,6 +1780,16 @@ replaces its `Mint repo-scoped push token` and `Commit and push …` steps with:
 `tests/scripts/push_step_hardening.bats` and
 `tests/scripts/bot_push_token.bats`.
 
+Issue #656 readies the last guard for that wiring:
+`scripts/check-family-sync-workflow.sh` now accepts a delegated push. Its
+rebase rule is satisfied by `rebase: "true"` on the step that `uses` the
+action, and its staging rule by that step's `paths:` listing both
+`rust_scorer/Cargo.toml` and `Cargo.lock`. A key on any other step does not
+count, and a `paths:` that drops a file — or an empty one, which falls back to
+`commit -am` — still fails. The exact per-workflow replacement is recorded in
+[`docs/archive/pr-summaries/pr-summary-656.md`](./docs/archive/pr-summaries/pr-summary-656.md)
+for the maintainer to apply.
+
 Advisory scanning has exactly two homes, and they do not overlap. **PR time:**
 `ci.yml` fires on `pull_request` and calls the reusable `security.yml`, whose
 `rustsec/audit-check` step wraps `cargo audit` and annotates the check run.

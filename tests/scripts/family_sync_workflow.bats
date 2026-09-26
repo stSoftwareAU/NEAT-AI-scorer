@@ -214,3 +214,96 @@ EOF
   [ "$status" -ne 0 ]
   [[ "$output" == *"set -euo pipefail"* ]]
 }
+
+# The Issue #656 shape: the push step delegates to the shared composite action
+# (Issue #641) instead of spelling out `git add` / `pull --rebase` in a run:.
+write_delegated_workflow() {
+  write_valid_workflow
+  awk '/^      - name: Commit and push$/ { exit } { print }' \
+    "${TMP_DIR}/family-sync.yml" >"${TMP_DIR}/delegated.yml"
+  cat >>"${TMP_DIR}/delegated.yml" <<'YAML'
+      - name: Commit and push
+        if: steps.sync.outputs.changed == 'true'
+        uses: ./.github/actions/push-with-app-token
+        with:
+          branch: ${{ github.event.pull_request.head.ref }}
+          commit-message: |-
+            chore: sync canonical family scripts and move the neat-core pin
+          paths: |
+            scripts/runlib.sh
+            scripts/family-pins.sh
+            rust_scorer/Cargo.toml
+            Cargo.lock
+          rebase: "true"
+          app-client-id: ${{ secrets.ACTIONS_PUSH_APP_CLIENT_ID }}
+          app-private-key: ${{ secrets.ACTIONS_PUSH_APP_PRIVATE_KEY }}
+          fallback-token: ${{ secrets.ACTIONS_PUSH || secrets.GITHUB_TOKEN }}
+YAML
+}
+
+@test "a push delegated to push-with-app-token passes every rule (Issue #656)" {
+  write_delegated_workflow
+  run "$CHECK" --workflow "${TMP_DIR}/delegated.yml"
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"FAIL"* ]]
+}
+
+@test "a delegated push without rebase: true fails the rebase rule" {
+  write_delegated_workflow
+  sed '/rebase: "true"/d' "${TMP_DIR}/delegated.yml" >"${TMP_DIR}/delegated-no-rebase.yml"
+  run "$CHECK" --workflow "${TMP_DIR}/delegated-no-rebase.yml"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"no rebase before push"* ]]
+}
+
+@test "a delegated push with rebase: false fails the rebase rule" {
+  write_delegated_workflow
+  sed 's/rebase: "true"/rebase: "false"/' "${TMP_DIR}/delegated.yml" >"${TMP_DIR}/delegated-false.yml"
+  run "$CHECK" --workflow "${TMP_DIR}/delegated-false.yml"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"no rebase before push"* ]]
+}
+
+@test "a delegated rebase that is only promised in a comment fails" {
+  write_delegated_workflow
+  sed 's/          rebase: "true"/          # rebase: "true"/' \
+    "${TMP_DIR}/delegated.yml" >"${TMP_DIR}/delegated-commented.yml"
+  run "$CHECK" --workflow "${TMP_DIR}/delegated-commented.yml"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"no rebase before push"* ]]
+}
+
+@test "a rebase: true on some other step does not satisfy the rebase rule" {
+  write_delegated_workflow
+  sed '/rebase: "true"/d' "${TMP_DIR}/delegated.yml" >"${TMP_DIR}/elsewhere.yml"
+  sed -i 's|^      - name: Refresh$|      - name: Refresh\n        with:\n          rebase: "true"|' \
+    "${TMP_DIR}/elsewhere.yml"
+  run "$CHECK" --workflow "${TMP_DIR}/elsewhere.yml"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"no rebase before push"* ]]
+}
+
+@test "delegated paths missing Cargo.lock fail the staging rule" {
+  write_delegated_workflow
+  sed '/^            Cargo\.lock$/d' "${TMP_DIR}/delegated.yml" >"${TMP_DIR}/delegated-no-lock.yml"
+  run "$CHECK" --workflow "${TMP_DIR}/delegated-no-lock.yml"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"does not stage both"* ]]
+}
+
+@test "delegation with no paths (commit -am) fails the staging rule" {
+  write_delegated_workflow
+  sed -e '/^          paths: |$/d' -e '/^            [A-Za-z_./]*$/d' \
+    "${TMP_DIR}/delegated.yml" >"${TMP_DIR}/delegated-no-paths.yml"
+  run "$CHECK" --workflow "${TMP_DIR}/delegated-no-paths.yml"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"does not stage both"* ]]
+}
+
+@test "a workflow with no git add at all fails loud on the staging rule" {
+  write_valid_workflow
+  sed '/"\$GIT" add /d' "${TMP_DIR}/family-sync.yml" >"${TMP_DIR}/no-add.yml"
+  run "$CHECK" --workflow "${TMP_DIR}/no-add.yml"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"does not stage both"* ]]
+}
