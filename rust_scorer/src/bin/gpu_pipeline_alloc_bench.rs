@@ -25,6 +25,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Instant;
 
 use rust_scorer::cost::CostKind;
+use rust_scorer::env_tuning::NEAT_SCORER_READ_BYTES;
 use rust_scorer::fixture_json::dense_mlp_creature_json;
 use rust_scorer::gpu::{GpuBackendLabel, select_adapter};
 use rust_scorer::multi_score::score_from_creature_dir_gpu;
@@ -113,7 +114,7 @@ fn main() {
     // Force many streamed chunks so the per-chunk allocation dominates the delta.
     // SAFETY: single-threaded setup before any worker threads are spawned.
     unsafe {
-        std::env::set_var("NEAT_SCORER_READ_BYTES", READ_BYTES.to_string());
+        std::env::set_var(NEAT_SCORER_READ_BYTES, READ_BYTES.to_string());
     }
 
     // Start counting only around the scored run, excluding fixture + adapter setup.

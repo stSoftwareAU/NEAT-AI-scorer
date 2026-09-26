@@ -83,11 +83,14 @@ section to the released version with its date.
 
 ### Changed
 
-- **`cli::run()` no longer inlines GPU, cost and racing decisions (Issue #648).**
-  The `--race-stdio` / `--gpu on` + CPU-only cost guards, up-front adapter
-  selection and the directory GPU routing moved into `rust_scorer/src/cli/gpu_plan.rs`,
-  where unit tests reach them without a GPU; `run()` now only sequences the
-  dispatch. Behaviour and error messages are unchanged.
+- **One constant per `NEAT_SCORER_*` tuning env var (Issue #650).**
+  `NEAT_SCORER_READ_BYTES`, `NEAT_SCORER_GPU_SCRATCH_BYTES`,
+  `NEAT_SCORER_ACTIVATION_THREADS` and `NEAT_SCORER_FILE_THREADS` are now
+  `pub const`s in `rust_scorer::env_tuning`, referenced by every resolver
+  (`read_tuning`, `stream_score`, `forward_mse_batched`), by `--host-report`
+  and by `gpu_pipeline_alloc_bench`. A knob's `env_var` and the variable its
+  resolver reads can no longer drift apart. The variable names are unchanged.
+  Coverage: `env_tuning` and `host_report` unit tests.
 
 - **One median helper for the bench binaries (Issue #649).** `cost_scan_bench`,
   `float_scan_bench` and `if_tree_batch_bench` each carried their own median
