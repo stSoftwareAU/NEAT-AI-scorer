@@ -50,9 +50,9 @@ pub(crate) fn activation_worker_count_for(host: &HostResources) -> usize {
     // Unset/blank/malformed all resolve to the host default; a malformed
     // value additionally warns instead of falling back silently (Issue #204).
     let default = host_resources::default_worker_count(host);
-    let env = std::env::var("NEAT_SCORER_ACTIVATION_THREADS").ok();
+    let env = std::env::var(crate::env_tuning::NEAT_SCORER_ACTIVATION_THREADS).ok();
     let (parsed, warning) = crate::env_tuning::parse_tuning_var(
-        "NEAT_SCORER_ACTIVATION_THREADS",
+        crate::env_tuning::NEAT_SCORER_ACTIVATION_THREADS,
         env.as_deref(),
         default,
         |s| s.parse::<usize>().ok(),
@@ -125,9 +125,9 @@ pub(crate) fn file_read_worker_count_for(num_files: usize, host: &HostResources)
         return 1;
     }
     let default = host_resources::default_worker_count(host).min(num_files);
-    let env = std::env::var("NEAT_SCORER_FILE_THREADS").ok();
+    let env = std::env::var(crate::env_tuning::NEAT_SCORER_FILE_THREADS).ok();
     let (parsed, warning) = crate::env_tuning::parse_tuning_var(
-        "NEAT_SCORER_FILE_THREADS",
+        crate::env_tuning::NEAT_SCORER_FILE_THREADS,
         env.as_deref(),
         default,
         |s| s.parse::<usize>().ok(),

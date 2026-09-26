@@ -200,11 +200,11 @@ pub fn training_read_target_bytes_from_env_for_readers(
     readers: usize,
 ) -> usize {
     let rb = record_bytes.max(1);
-    let env = std::env::var("NEAT_SCORER_READ_BYTES").ok();
+    let env = std::env::var(crate::env_tuning::NEAT_SCORER_READ_BYTES).ok();
     let host = host_resources::host();
     let default = default_training_read_bytes_for_readers(rb, &host, readers);
     let (parsed, warning) = crate::env_tuning::parse_tuning_var(
-        "NEAT_SCORER_READ_BYTES",
+        crate::env_tuning::NEAT_SCORER_READ_BYTES,
         env.as_deref(),
         default,
         |s| s.parse::<usize>().ok(),
