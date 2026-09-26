@@ -6,6 +6,18 @@
 //! from *set-but-malformed* (one stderr diagnostic + default), matching the
 //! behaviour of `NEAT_SCORER_GPU` which already rejects invalid values
 //! (Issue #204).
+//!
+//! The env-var names live here as constants (Issue #650) so a resolver and the
+//! `--host-report` knob that describes it can never name different variables.
+
+/// Per-reader training read-chunk size override, in bytes.
+pub const NEAT_SCORER_READ_BYTES: &str = "NEAT_SCORER_READ_BYTES";
+/// GPU scratch-kernel memory budget override, in bytes (must be positive).
+pub const NEAT_SCORER_GPU_SCRATCH_BYTES: &str = "NEAT_SCORER_GPU_SCRATCH_BYTES";
+/// Activation worker-thread count override.
+pub const NEAT_SCORER_ACTIVATION_THREADS: &str = "NEAT_SCORER_ACTIVATION_THREADS";
+/// Concurrent `.bin` file-reader count override (Issue #529).
+pub const NEAT_SCORER_FILE_THREADS: &str = "NEAT_SCORER_FILE_THREADS";
 
 /// Parse a raw env-var value into `T`, reporting malformed input.
 ///
@@ -21,15 +33,15 @@
 /// # Examples
 ///
 /// ```
-/// use rust_scorer::env_tuning::parse_tuning_var;
+/// use rust_scorer::env_tuning::{parse_tuning_var, NEAT_SCORER_READ_BYTES};
 ///
 /// let parse = |s: &str| s.parse::<usize>().ok();
 /// // An unset knob falls back to the default silently.
-/// let (value, warning) = parse_tuning_var("NEAT_SCORER_READ_BYTES", None, 42, parse);
+/// let (value, warning) = parse_tuning_var(NEAT_SCORER_READ_BYTES, None, 42, parse);
 /// assert_eq!(value, 42);
 /// assert!(warning.is_none());
 /// // A set-but-malformed value returns the default plus a diagnostic.
-/// let (value, warning) = parse_tuning_var("NEAT_SCORER_READ_BYTES", Some("2MB"), 42, parse);
+/// let (value, warning) = parse_tuning_var(NEAT_SCORER_READ_BYTES, Some("2MB"), 42, parse);
 /// assert_eq!(value, 42);
 /// assert!(warning.is_some());
 /// ```
@@ -70,8 +82,7 @@ mod tests {
 
     #[test]
     fn unset_value_uses_default_silently() {
-        let (value, warning) =
-            parse_tuning_var("NEAT_SCORER_READ_BYTES", None, 42usize, parse_usize);
+        let (value, warning) = parse_tuning_var(NEAT_SCORER_READ_BYTES, None, 42usize, parse_usize);
         assert_eq!(value, 42);
         assert!(warning.is_none(), "unset must not warn");
     }
@@ -80,7 +91,7 @@ mod tests {
     fn blank_value_uses_default_silently() {
         for raw in ["", "   ", "\t\n"] {
             let (value, warning) =
-                parse_tuning_var("NEAT_SCORER_READ_BYTES", Some(raw), 42usize, parse_usize);
+                parse_tuning_var(NEAT_SCORER_READ_BYTES, Some(raw), 42usize, parse_usize);
             assert_eq!(value, 42);
             assert!(warning.is_none(), "blank {raw:?} must not warn");
         }
@@ -89,7 +100,7 @@ mod tests {
     #[test]
     fn valid_value_is_honoured_silently() {
         let (value, warning) =
-            parse_tuning_var("NEAT_SCORER_READ_BYTES", Some("4096"), 42usize, parse_usize);
+            parse_tuning_var(NEAT_SCORER_READ_BYTES, Some("4096"), 42usize, parse_usize);
         assert_eq!(value, 4096);
         assert!(warning.is_none(), "valid value must not warn");
     }
@@ -109,7 +120,7 @@ mod tests {
     #[test]
     fn malformed_value_warns_and_falls_back() {
         let (value, warning) =
-            parse_tuning_var("NEAT_SCORER_READ_BYTES", Some("2MB"), 42usize, parse_usize);
+            parse_tuning_var(NEAT_SCORER_READ_BYTES, Some("2MB"), 42usize, parse_usize);
         assert_eq!(value, 42, "must fall back to the default");
         let warning = warning.expect("malformed value must warn");
         assert!(warning.contains("NEAT_SCORER_READ_BYTES"));
@@ -146,5 +157,21 @@ mod tests {
         assert_eq!(value, 99);
         let warning = warning.expect("zero must warn");
         assert!(warning.contains("='0'"));
+    }
+
+    #[test]
+    fn env_var_name_constants_match_the_documented_names() {
+        // The constants are the single source of truth for the env-var names
+        // (Issue #650); a rename here is a breaking change for every operator.
+        assert_eq!(NEAT_SCORER_READ_BYTES, "NEAT_SCORER_READ_BYTES");
+        assert_eq!(
+            NEAT_SCORER_GPU_SCRATCH_BYTES,
+            "NEAT_SCORER_GPU_SCRATCH_BYTES"
+        );
+        assert_eq!(
+            NEAT_SCORER_ACTIVATION_THREADS,
+            "NEAT_SCORER_ACTIVATION_THREADS"
+        );
+        assert_eq!(NEAT_SCORER_FILE_THREADS, "NEAT_SCORER_FILE_THREADS");
     }
 }
