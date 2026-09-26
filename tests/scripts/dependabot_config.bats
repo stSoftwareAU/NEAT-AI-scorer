@@ -30,7 +30,7 @@ updates:
     schedule:
       interval: "weekly"
     cooldown:
-      default-days: 1
+      default-days: 7
     ignore:
       - dependency-name: "neat-core"
 EOF
@@ -68,7 +68,7 @@ updates:
     schedule:
       interval: 'daily'
     cooldown:
-      default-days: 3
+      default-days: 10
     ignore:
       - dependency-name: 'serde'
       - dependency-name: 'neat-core'
@@ -133,9 +133,9 @@ EOF
   [[ "$output" == *"FAIL"*"cooldown"* ]]
 }
 
-@test "fails when the cooldown is zero days" {
+@test "fails when the cooldown is shorter than seven days" {
   write_config
-  sed -i 's/default-days: 1/default-days: 0/' "$CONFIG"
+  sed -i 's/default-days: 7/default-days: 6/' "$CONFIG"
   run_check
   [ "$status" -ne 0 ]
   [[ "$output" == *"FAIL"*"cooldown"* ]]

@@ -1620,8 +1620,9 @@ gives the repo its own bump trigger:
 - **Security updates.** Dependabot opens a PR as soon as a fixed version of
   a vulnerable crate exists. Security updates bypass the cooldown.
 - **Version updates.** A **weekly** `cargo` run against the workspace root
-  (`directory: "/"`, where `Cargo.lock` lives), with a one-day
-  `cooldown` that mirrors `bump-deps.sh`'s 24-hour quarantine.
+  (`directory: "/"`, where `Cargo.lock` lives), with a seven-day
+  `cooldown` (Semgrep's `dependabot-missing-cooldown` floor, longer than
+  `bump-deps.sh`'s 24-hour quarantine).
 - **`neat-core` is ignored.** `scripts/family-pins.sh` owns that release-tag
   pin ([neat-core release pin](#neat-core-release-pin-issue-630)).
 
@@ -1640,7 +1641,7 @@ flowchart LR
     ADV --> DSU[Dependabot security update]
     DSU -->|no cooldown| PR[bump PR runs ci.yml]
     WK[weekly schedule] --> DVU[Dependabot version update]
-    DVU -->|cooldown 1 day| PR
+    DVU -->|cooldown 7 days| PR
     AUD -->|maintainer| EM["bump-deps.sh --quarantine-hours 0"]
     EM --> PR
     FP[family-pins.sh] -->|neat-core only| PR

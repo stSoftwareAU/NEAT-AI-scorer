@@ -52,8 +52,8 @@ section to the released version with its date.
   (#105 removed its schedule), and `cargo-audit.yml` only detects advisories.
   So a published fix for a vulnerable crate waited for someone to notice it.
   The new `.github/dependabot.yml` adds a weekly `cargo` version-update channel
-  for the workspace root. It carries a one-day `cooldown` that mirrors the
-  24-hour quarantine. Dependabot security updates bypass that cooldown.
+  for the workspace root. It carries a seven-day `cooldown` (Semgrep's
+  `dependabot-missing-cooldown` floor). Dependabot security updates bypass that cooldown.
   `neat-core` is ignored because `scripts/family-pins.sh` owns its pin.
   `scripts/check-dependabot-config.sh` (wired into `quality.sh`) fails the gate
   if any of those rules is lost. Coverage: `tests/scripts/dependabot_config.bats`.

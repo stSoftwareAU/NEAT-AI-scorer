@@ -17,8 +17,9 @@ This PR takes the issue's cheaper option: a minimal `.github/dependabot.yml`.
 
 - **One `cargo` entry for the workspace root** (`directory: "/"`, where
   `Cargo.lock` lives), on a **weekly** schedule.
-- **`cooldown.default-days: 1`** for version updates, which mirrors
-  `bump-deps.sh`'s 24-hour quarantine. Dependabot security updates bypass
+- **`cooldown.default-days: 7`** for version updates — Semgrep's
+  `dependabot-missing-cooldown` floor, longer than `bump-deps.sh`'s 24-hour
+  quarantine. Dependabot security updates bypass
   cooldown, so advisory fixes are not held back.
 - **`neat-core` is ignored**, because `scripts/family-pins.sh` / family-sync
   owns that release-tag pin (Issue #630). A second bumper would race it.
@@ -32,7 +33,7 @@ fails the gate if the config loses any of these:
 - `version: 2`;
 - the cargo entry, or its root directory;
 - a daily or weekly schedule;
-- a cooldown of at least one day;
+- a cooldown of at least seven days;
 - the `neat-core` ignore.
 
 It reports every violation, not only the first.
@@ -55,7 +56,7 @@ flowchart LR
     ADV --> DSU[Dependabot security update]
     DSU -->|no cooldown| PR[bump PR runs ci.yml]
     WK[weekly schedule] --> DVU[Dependabot version update]
-    DVU -->|cooldown 1 day| PR
+    DVU -->|cooldown 7 days| PR
     AUD -->|maintainer| EM["bump-deps.sh --quarantine-hours 0"]
     EM --> PR
     FP[family-pins.sh] -->|neat-core only| PR
@@ -68,7 +69,7 @@ OK   .github/dependabot.yml: declares version: 2
 OK   .github/dependabot.yml: has an updates entry for package-ecosystem: cargo
 OK   .github/dependabot.yml: cargo entry covers the workspace root directory
 OK   .github/dependabot.yml: cargo schedule interval is weekly
-OK   .github/dependabot.yml: cargo cooldown default-days is 1
+OK   .github/dependabot.yml: cargo cooldown default-days is 7
 OK   .github/dependabot.yml: cargo entry ignores neat-core (owned by scripts/family-pins.sh)
 ```
 

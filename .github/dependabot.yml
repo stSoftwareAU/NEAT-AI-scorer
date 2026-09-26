@@ -11,10 +11,11 @@ updates:
     directory: "/"
     schedule:
       interval: "weekly"
-    # Mirrors bump-deps.sh's 24-hour quarantine for version updates.
+    # Seven days — Semgrep's dependabot-missing-cooldown floor, and longer than
+    # bump-deps.sh's 24-hour quarantine — before proposing a new version.
     # Dependabot security updates bypass cooldown, so advisory fixes land at once.
     cooldown:
-      default-days: 1
+      default-days: 7
     ignore:
       # `scripts/family-pins.sh` (family-sync job) owns this release-tag pin
       # (Issue #630); a second bumper would race it.

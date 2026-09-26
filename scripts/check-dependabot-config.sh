@@ -12,9 +12,10 @@
 #   3. Point that entry at the workspace root (`directory: "/"`, or a
 #      `directories` list containing it) — where `Cargo.lock` lives.
 #   4. Schedule it `daily` or `weekly`, so a bump never waits a month.
-#   5. Set a `cooldown` of at least one day (`default-days >= 1`), mirroring
-#      `bump-deps.sh`'s 24-hour quarantine. Dependabot security updates are
-#      exempt from cooldown, so advisory fixes still land immediately.
+#   5. Set a `cooldown` of at least seven days (`default-days >= 7`) — the
+#      floor Semgrep's `dependabot-missing-cooldown` rule enforces, and longer
+#      than `bump-deps.sh`'s 24-hour quarantine. Dependabot security updates
+#      are exempt from cooldown, so advisory fixes still land immediately.
 #   6. Ignore `neat-core` — `scripts/family-pins.sh` owns that release-tag pin
 #      (Issue #630), and a second bumper would race it.
 #
@@ -193,11 +194,11 @@ report(bool(interval) and interval[0] in ("daily", "weekly"),
        f"{interval[0] if interval else 'none'})")
 
 cooldown = values(entry, "cooldown.default-days")
-cooldown_ok = bool(cooldown) and cooldown[0].isdigit() and int(cooldown[0]) >= 1
+cooldown_ok = bool(cooldown) and cooldown[0].isdigit() and int(cooldown[0]) >= 7
 report(cooldown_ok,
        f"cargo cooldown default-days is {cooldown[0] if cooldown else ''}",
-       "cargo cooldown default-days must be >= 1 to mirror bump-deps.sh's "
-       "24-hour quarantine")
+       "cargo cooldown default-days must be >= 7 (Semgrep "
+       "dependabot-missing-cooldown)")
 
 report("neat-core" in values(entry, "ignore[].dependency-name"),
        "cargo entry ignores neat-core (owned by scripts/family-pins.sh)",
