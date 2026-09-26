@@ -73,6 +73,12 @@ section to the released version with its date.
 
 ### Changed
 
+- **`cli::run()` no longer inlines GPU, cost and racing decisions (Issue #648).**
+  The `--race-stdio` / `--gpu on` + CPU-only cost guards, up-front adapter
+  selection and the directory GPU routing moved into `rust_scorer/src/cli/gpu_plan.rs`,
+  where unit tests reach them without a GPU; `run()` now only sequences the
+  dispatch. Behaviour and error messages are unchanged.
+
 - **One median helper for the bench binaries (Issue #649).** `cost_scan_bench`,
   `float_scan_bench` and `if_tree_batch_bench` each carried their own median
   helper, and two of them sorted with `partial_cmp(..).unwrap()`, which panics
