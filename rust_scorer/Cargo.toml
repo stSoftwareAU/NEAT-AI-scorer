@@ -1,6 +1,6 @@
 [package]
 name = "rust_scorer"
-version = "1.1.89"
+version = "1.1.90"
 edition = "2024"
 license = "Apache-2.0"
 description = "Native CLI binary for scoring NEAT-AI creatures against training data."
@@ -73,7 +73,7 @@ rayon = "1.12"
 # GPU stack stays consistent across repos. Default `wgpu` features include all
 # native backends; opt-in is gated by `--gpu` / `NEAT_SCORER_GPU` so the CPU
 # path is unaffected.
-wgpu = "29"
+wgpu = "30"
 pollster = "0.4"
 bytemuck = "1.25"
 # Host RAM probe for self-tuning defaults (old machines ↔ large Macs).
