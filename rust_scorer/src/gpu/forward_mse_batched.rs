@@ -1171,9 +1171,9 @@ pub(crate) fn scratch_workgroups_x_for(
 /// the Issue #545 `--host-report` diagnostic can read the resolved budget on a
 /// GPU-less host.
 pub(crate) fn scratch_budget_bytes_from_env() -> u64 {
-    let env = std::env::var("NEAT_SCORER_GPU_SCRATCH_BYTES").ok();
+    let env = std::env::var(crate::env_tuning::NEAT_SCORER_GPU_SCRATCH_BYTES).ok();
     let (parsed, warning) = crate::env_tuning::parse_tuning_var(
-        "NEAT_SCORER_GPU_SCRATCH_BYTES",
+        crate::env_tuning::NEAT_SCORER_GPU_SCRATCH_BYTES,
         env.as_deref(),
         default_scratch_budget_bytes(),
         // A zero budget is semantically invalid, so treat it like a parse
