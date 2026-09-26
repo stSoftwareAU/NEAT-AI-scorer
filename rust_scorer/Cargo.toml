@@ -74,7 +74,7 @@ rayon = "1.12"
 # native backends; opt-in is gated by `--gpu` / `NEAT_SCORER_GPU` so the CPU
 # path is unaffected.
 wgpu = "29"
-pollster = "0.4"
+pollster = "1.0"
 bytemuck = "1.25"
 # Host RAM probe for self-tuning defaults (old machines ↔ large Macs).
 libc = "0.2"
