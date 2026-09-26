@@ -20,7 +20,7 @@
 
 use serde::Serialize;
 
-use crate::env_tuning::parse_tuning_var;
+use crate::env_tuning::{self, parse_tuning_var};
 use crate::gpu::forward_mse_batched::scratch_budget_bytes_from_env;
 use crate::host_resources;
 use crate::read_tuning::{
@@ -152,27 +152,27 @@ impl HostReport {
             knobs: Knobs {
                 default_worker_count: Knob {
                     value: activation_worker_count_for_scorer() as u64,
-                    source: env_source_usize("NEAT_SCORER_ACTIVATION_THREADS"),
-                    env_var: Some("NEAT_SCORER_ACTIVATION_THREADS"),
+                    source: env_source_usize(env_tuning::NEAT_SCORER_ACTIVATION_THREADS),
+                    env_var: Some(env_tuning::NEAT_SCORER_ACTIVATION_THREADS),
                 },
                 max_worker_count: host_ceiling(host_resources::max_worker_count(&host) as u64),
                 max_read_bytes: host_ceiling(host_resources::max_read_bytes(&host) as u64),
                 default_training_read_bytes: Knob {
                     value: training_read_target_bytes_from_env_for_readers(record_bytes, readers)
                         as u64,
-                    source: env_source_usize("NEAT_SCORER_READ_BYTES"),
-                    env_var: Some("NEAT_SCORER_READ_BYTES"),
+                    source: env_source_usize(env_tuning::NEAT_SCORER_READ_BYTES),
+                    env_var: Some(env_tuning::NEAT_SCORER_READ_BYTES),
                 },
                 file_read_workers: Knob {
                     value: readers as u64,
-                    source: env_source_usize("NEAT_SCORER_FILE_THREADS"),
-                    env_var: Some("NEAT_SCORER_FILE_THREADS"),
+                    source: env_source_usize(env_tuning::NEAT_SCORER_FILE_THREADS),
+                    env_var: Some(env_tuning::NEAT_SCORER_FILE_THREADS),
                 },
                 aggregate_read_budget_bytes: host_ceiling(aggregate_read_budget_bytes(&host) as u64),
                 gpu_scratch_bytes: Knob {
                     value: scratch_budget_bytes_from_env(),
-                    source: env_source_positive_u64("NEAT_SCORER_GPU_SCRATCH_BYTES"),
-                    env_var: Some("NEAT_SCORER_GPU_SCRATCH_BYTES"),
+                    source: env_source_positive_u64(env_tuning::NEAT_SCORER_GPU_SCRATCH_BYTES),
+                    env_var: Some(env_tuning::NEAT_SCORER_GPU_SCRATCH_BYTES),
                 },
             },
         }
@@ -363,6 +363,29 @@ mod tests {
         assert_eq!(
             value["knobs"]["max_read_bytes"]["source"], "default",
             "a host ceiling is never an env override"
+        );
+    }
+
+    #[test]
+    fn overridable_knobs_name_the_shared_env_var_constants() {
+        // Issue #650: each knob's `env_var` must be the same name its resolver
+        // reads, so both come from one `env_tuning` constant.
+        let knobs = HostReport::resolve(DEFAULT_REPORT_RECORD_BYTES).knobs;
+        assert_eq!(
+            knobs.default_worker_count.env_var,
+            Some(env_tuning::NEAT_SCORER_ACTIVATION_THREADS)
+        );
+        assert_eq!(
+            knobs.default_training_read_bytes.env_var,
+            Some(env_tuning::NEAT_SCORER_READ_BYTES)
+        );
+        assert_eq!(
+            knobs.file_read_workers.env_var,
+            Some(env_tuning::NEAT_SCORER_FILE_THREADS)
+        );
+        assert_eq!(
+            knobs.gpu_scratch_bytes.env_var,
+            Some(env_tuning::NEAT_SCORER_GPU_SCRATCH_BYTES)
         );
     }
 
