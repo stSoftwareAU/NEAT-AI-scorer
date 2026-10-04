@@ -849,7 +849,7 @@ impl BatchedRunner {
         poll_wait_result(device.poll(wgpu::PollType::wait_indefinitely()))?;
         map_readback_result(receiver.recv())?;
 
-        let mapped = slice.get_mapped_range();
+        let mapped = mapped_range_result(slice.get_mapped_range())?;
         let floats: &[f32] = bytemuck::cast_slice(&mapped);
 
         let mut sums = vec![0.0_f64; self.num_creatures as usize];
@@ -1194,6 +1194,16 @@ fn pad_for_storage<T: Copy + Default + Pod>(v: &[T]) -> Vec<T> {
     } else {
         v.to_vec()
     }
+}
+
+/// Turn a `get_mapped_range` result into the mapped value or a descriptive
+/// error string.
+///
+/// `wgpu` 30 made `get_mapped_range` fallible (`Result<BufferView,
+/// MapRangeError>`) instead of panicking internally, so the readback below
+/// must surface a failed map as a recoverable `Err` rather than unwrap it.
+fn mapped_range_result<T, E: std::fmt::Debug>(r: Result<T, E>) -> Result<T, String> {
+    r.map_err(|e| format!("partials get_mapped_range failed: {e:?}"))
 }
 
 /// Turn the readback channel result into `Ok(())` or a descriptive error
@@ -1736,6 +1746,29 @@ mod tests {
             ..cached
         };
         assert!(bind_group_needs_rebuild(Some(cached), current));
+    }
+
+    #[test]
+    fn mapped_range_result_ok_on_successful_map() {
+        // A successful `get_mapped_range` passes the value straight through.
+        let r: Result<&str, &str> = Ok("mapped view");
+        assert_eq!(mapped_range_result(r), Ok("mapped view"));
+    }
+
+    #[test]
+    fn mapped_range_result_err_on_map_failure() {
+        // A failed `get_mapped_range` (e.g. the buffer was never successfully
+        // mapped) is turned into a descriptive error instead of panicking.
+        let r: Result<&str, &str> = Err("buffer not mapped");
+        let err = mapped_range_result(r).expect_err("map failure surfaces as Err");
+        assert!(
+            err.contains("get_mapped_range failed"),
+            "error should name the mapping failure, got: {err}",
+        );
+        assert!(
+            err.contains("buffer not mapped"),
+            "error should carry the underlying cause, got: {err}",
+        );
     }
 
     #[test]
