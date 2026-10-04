@@ -238,8 +238,10 @@ pub fn run_with_device_loss_fallback<T>(
 mod tests {
     use super::*;
 
-    /// The exact payload `wgpu` 29.0.4 panics with when the device is lost
-    /// mid-run (from the fleet stage-failure dump quoted in Issue #583).
+    /// The exact payload `wgpu` 29.0.4 and 30.0.x panic with when the device
+    /// is lost mid-run (from the fleet stage-failure dump quoted in Issue
+    /// #583; confirmed unchanged in 30.0.1's `handle_error_fatal` /
+    /// `format_error` in `wgpu-30.0.1/src/backend/wgpu_core.rs`).
     const WGPU_DEVICE_LOST_PANIC: &str =
         "Error in Device::poll: Validation Error\n\nCaused by:\n  Parent device is lost\n";
 

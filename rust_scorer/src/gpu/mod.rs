@@ -430,6 +430,12 @@ pub fn select_adapter() -> Result<Option<GpuContext>, GpuInitError> {
         power_preference: wgpu::PowerPreference::HighPerformance,
         force_fallback_adapter: false,
         compatible_surface: None,
+        // `false` keeps the adapter's real, unbucketed limits — this is a
+        // trusted native CLI, not an untrusted-content host, and
+        // `HostResources::gpu` reads limits such as
+        // `max_storage_buffer_binding_size` straight from this adapter
+        // (bucketing exists to resist fingerprinting in browser contexts).
+        apply_limit_buckets: false,
     })) {
         Ok(a) => a,
         Err(_) => return Ok(None),

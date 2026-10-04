@@ -27,8 +27,9 @@ use rust_scorer::multi_score::score_from_creature_dir_sampled;
 use rust_scorer::sampling::SampleSpec;
 use rust_scorer::scoring::ScoreResult;
 
-/// The exact panic payload `wgpu` 29.0.4 raises when the parent device is lost
-/// (quoted from the stage-failure dump in Issue #583).
+/// The exact panic payload `wgpu` 29.0.4 and 30.0.x raise when the parent
+/// device is lost (quoted from the stage-failure dump in Issue #583; the
+/// `handle_error_fatal` / `format_error` wording is unchanged in 30.0.1).
 const WGPU_DEVICE_LOST_PANIC: &str =
     "Error in Device::poll: Validation Error\n\nCaused by:\n  Parent device is lost\n";
 
