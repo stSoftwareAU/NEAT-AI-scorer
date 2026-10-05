@@ -13,6 +13,10 @@
 # `channel` to the new `X.Y.Z`, run `./quality.sh` locally to confirm the gate
 # still passes under the new compiler, and land the bump in its own PR. See the
 # "Pinned Rust toolchain" section in README.md.
+#
+# 1.99 is also the NEAT-AI family floor (NEAT-AI-core#747): `rust-version` in
+# rust_scorer/Cargo.toml declares the same version, so CI builds at exactly the
+# declared minimum and the fleet's runlib.sh installs it on hosts below it.
 [toolchain]
-channel = "1.98.0"
+channel = "1.99.0"
 components = ["rustfmt", "clippy"]
