@@ -622,9 +622,9 @@ checksum = "e2db585e1d738fc771bf08a151420d3ed193d9d895a36df7f6f8a9456b911ddc"
 
 [[package]]
 name = "libc"
-version = "0.2.189"
+version = "0.2.190"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3eaf3ede3fee6db1a4c2ee091bf8a8b4dccdc6d17f656fb07896ee72867612f2"
+checksum = "ce5d3ddc6d3fa000eb1536d85e147bfe31aacaba692ed6a876f95cb7c855be78"
 
 [[package]]
 name = "libloading"
@@ -724,8 +724,8 @@ dependencies = [
 
 [[package]]
 name = "neat-core"
-version = "0.23.0"
-source = "git+https://github.com/stSoftwareAU/NEAT-AI-core?tag=v0.23.0#0d3231b8e654356f1c444c85d31beccb82354c07"
+version = "0.23.1"
+source = "git+https://github.com/stSoftwareAU/NEAT-AI-core?tag=v0.23.1#8f8fbd856b65de793e0d74c5910ed65860923a61"
 dependencies = [
  "serde",
  "serde_json",
@@ -1075,7 +1075,7 @@ checksum = "19b30a45b0cd0bcca8037f3d0dc3421eaf95327a17cad11964fb8179b4fc4832"
 
 [[package]]
 name = "rust_scorer"
-version = "1.1.98"
+version = "1.1.99"
 dependencies = [
  "bytemuck",
  "clap",
