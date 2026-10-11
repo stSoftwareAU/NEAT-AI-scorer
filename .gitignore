@@ -11,6 +11,8 @@
 !.markdownlint.json
 !.markdownlintignore
 !.markdownlint-cli2.yaml
+# Anthropic OSS Scanner build image and threat-model brief.
+!.oss-scanner/
 
 
 
