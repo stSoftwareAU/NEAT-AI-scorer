@@ -228,5 +228,14 @@
 # exited 0 with the edge silently dropped; against 0.22.5 it exits non-zero
 # naming the unresolved destination. That suite does not compile against
 # neat-core below 0.19.0 — the variant it matches does not exist there.
+#
+# 0.22.5 -> 0.23.0: the only breaking change is NEAT-AI-core #750 (Issue
+# #749), which declares `rust-version = "1.99"` on neat-core. Scorer already
+# pins 1.99.0 in rust-toolchain.toml and declares the same floor, so no
+# scorer code change is required; the rest of v0.22.16...v0.23.0 is runlib.sh
+# and wasm-bench tooling. Verified against the v0.23.0 tag (0d3231b) by
+# `cargo clippy --workspace --all-targets --all-features -- -D warnings` and
+# the full scorer test suite (351 lib tests plus every integration suite,
+# 0 failed).
 
-0.22.5
+0.23.0
