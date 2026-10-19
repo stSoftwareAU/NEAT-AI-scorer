@@ -724,8 +724,8 @@ dependencies = [
 
 [[package]]
 name = "neat-core"
-version = "0.23.1"
-source = "git+https://github.com/stSoftwareAU/NEAT-AI-core?tag=v0.23.1#8f8fbd856b65de793e0d74c5910ed65860923a61"
+version = "0.23.2"
+source = "git+https://github.com/stSoftwareAU/NEAT-AI-core?tag=v0.23.2#1d44889e405e4e0cfb553321b44cc39e7d771f5f"
 dependencies = [
  "serde",
  "serde_json",
@@ -1075,7 +1075,7 @@ checksum = "19b30a45b0cd0bcca8037f3d0dc3421eaf95327a17cad11964fb8179b4fc4832"
 
 [[package]]
 name = "rust_scorer"
-version = "1.1.99"
+version = "1.1.100"
 dependencies = [
  "bytemuck",
  "clap",
@@ -1162,9 +1162,9 @@ dependencies = [
 
 [[package]]
 name = "serde_json"
-version = "1.0.151"
+version = "1.0.152"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c841b55ecdae098c80dcae9cf767f6f8a0c2cdb3416bbef72181df4d0fe73f14"
+checksum = "1741ab7a6cc54a03a89b5d563ed60075c277d9e3cfa73ad0c1f23f23974703c6"
 dependencies = [
  "itoa",
  "memchr",
