@@ -33,7 +33,7 @@ on:
   # firing on push); this checker fires on `pull_request` and `workflow_dispatch`
   # only. `scripts/check-ci-push-trigger.sh` guards against re-adding it.
   pull_request:
-    types: [opened, synchronize, reopened]
+    types: [opened, synchronize, reopened, ready_for_review]
     branches:
       - Develop
       # Milestone sub-issue PRs target a shared `milestone/<slug>` branch
@@ -63,6 +63,7 @@ env:
 
 jobs:
   quality:
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
     name: Quality Checks
     # Foundational layout check must pass before we spend minutes compiling.
     needs: [validation]
@@ -170,7 +171,7 @@ jobs:
       checks: write
       pull-requests: write
     uses: ./.github/workflows/security.yml
-    if: github.event_name == 'pull_request'
+    if: github.event_name == 'pull_request' && !github.event.pull_request.draft
     with:
       # Opt out of the reusable workflow's dependency-review step (Issue #399).
       # The standalone `dependency-review.yml` runs the same action on every PR
@@ -180,6 +181,7 @@ jobs:
       include-dependency-review: false
 
   validation:
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
     name: Project Validation
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -238,6 +240,7 @@ jobs:
         run: ./scripts/check-neat-core-version.sh
 
   shell-checks:
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
     name: Shell Script Quality
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -303,6 +306,7 @@ jobs:
           fi
 
   spell-check:
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
     name: Spell Check
     runs-on: ubuntu-latest
     timeout-minutes: 10
