@@ -18,7 +18,7 @@ name: Auto Format
 
 on:
   pull_request:
-    types: [opened, synchronize, reopened]
+    types: [opened, synchronize, reopened, ready_for_review]
     branches:
       - Develop
       - "milestone/**"
@@ -43,7 +43,7 @@ jobs:
     timeout-minutes: 10
     # Skip forks — neither GITHUB_TOKEN nor ACTIONS_PUSH can push to a
     # fork's branch. Formatting on fork PRs is the author's responsibility.
-    if: github.event.pull_request.head.repo.full_name == github.repository
+    if: ${{ (github.event.pull_request.head.repo.full_name == github.repository) && (github.event_name != 'pull_request' || !github.event.pull_request.draft) }}
     env:
       # The `secrets` context is unavailable in a step-level `if:`, so the
       # push App's configured/not-configured state is hoisted to a job-level
