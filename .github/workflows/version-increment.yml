@@ -39,7 +39,7 @@ jobs:
     timeout-minutes: 5
     # Never attempt to push onto a fork's branch — bump-on-fork is the
     # PR author's responsibility.
-    if: ${{ (github.event.pull_request.head.repo.full_name == github.repository) && (github.event_name != 'pull_request' || !github.event.pull_request.draft) }}
+    if: (github.event.pull_request.head.repo.full_name == github.repository) && (github.event_name != 'pull_request' || !github.event.pull_request.draft)
     outputs:
       should_bump: ${{ steps.check.outputs.should_bump }}
       next_version: ${{ steps.check.outputs.next_version }}
@@ -83,7 +83,7 @@ jobs:
   bump:
     name: Apply Version Bump
     needs: guard
-    if: ${{ (needs.guard.outputs.should_bump == 'true') && (github.event_name != 'pull_request' || !github.event.pull_request.draft) }}
+    if: (needs.guard.outputs.should_bump == 'true') && (github.event_name != 'pull_request' || !github.event.pull_request.draft)
     runs-on: ubuntu-latest
     timeout-minutes: 10
     env:
