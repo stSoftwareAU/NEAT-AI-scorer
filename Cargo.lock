@@ -724,8 +724,8 @@ dependencies = [
 
 [[package]]
 name = "neat-core"
-version = "0.23.3"
-source = "git+https://github.com/stSoftwareAU/NEAT-AI-core?tag=v0.23.3#7c7b1505a7296d0e9fd135296c524556be7e6002"
+version = "0.23.4"
+source = "git+https://github.com/stSoftwareAU/NEAT-AI-core?tag=v0.23.4#e86c342e72e85172b2f9e557329aca3b15bf5229"
 dependencies = [
  "serde",
  "serde_json",
