@@ -182,7 +182,8 @@ alignment guard, `for_each_read_chunk`, decoder and canonical losses. It
 materialises the complete corpus for replay and refuses oversized inputs;
 there is no silent truncation. Defaults are 256 MiB of corpus bytes, a
 conservative six-times-full evaluation upper bound of one billion, 120 seconds
-per native trial and 1,800 seconds across driver execution. Binary compilation
+per native trial and a 1,800-second driver trial budget. Verification and
+report assembly can extend the elapsed time beyond that budget. Binary compilation
 has its own 900-second bound. These are operation/time limits, not a hard RSS
 cap. Larger networks can consume substantial memory even with a small corpus.
 
@@ -205,6 +206,8 @@ up to summary construction. `prepareSecs` includes building, hashing and, for
 not be added to that total again. Externally supplied input preparation is
 unknown unless declared in `inputPreparationSecs` in the config. There is no
 search/model-fitting cost in this fixed-population experiment.
+The ledger covers the declared `prepare`/`run` invocation; engineering and test
+iterations outside that invocation are not included.
 
 Inputs, executable, source and tuning environment are verified before and
 after the driver run; files must remain static during it. This is hash-based
@@ -236,3 +239,55 @@ input changes, split overlap, native failures and counterbalancing/statistics.
 The ordinary sampling/racing regression suites remain the safety net for
 existing interfaces. See the committed issue summary for observed commands and
 the public evidence record for the measured scope.
+
+## Public observation — 14 November 2026
+
+The [frozen manifest](../evidence/issue-680-manifest.json) and
+[raw JSONL observations (gzip)](../evidence/issue-680-synthetic.jsonl.gz)
+record 96 successful trials: four synthetic cases, three seeds and eight
+counterbalanced repetitions. There were no failed or omitted trials, integrity
+errors or lost cached-arm oracle winners; cached regret was zero. The maximum
+surviving-full relative deviation across the four arms was `2.01e-14`.
+
+Per-trial candidate-record evaluations were identical across seeds/repetitions
+within each case:
+
+| Case | Records | Full | Stride | Nested uncached | Cached |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Calibration, 12 candidates | 2,048 | 24,576 | 6,109 | 6,130 | 4,959 |
+| Calibration, 24 candidates | 2,048 | 49,152 | 10,170 | 10,212 | 8,178 |
+| Validation, 12 candidates | 4,096 | 49,152 | 12,230 | 12,251 | 9,914 |
+| Validation, 24 candidates | 4,096 | 98,304 | 20,364 | 20,406 | 16,347 |
+
+The nested control isolates approximately 19–20% fewer forward evaluations
+from caching on these fixtures. Across the declared run, the arms consumed
+8,603,760 evaluations and the independent authority consumed another
+5,308,416: **13,912,176 total**, including calibration and rejection audits.
+Statistics caches held 192/384 bytes for 12/24 candidates. Observed process
+peak RSS ranged from 19.92 to 21.07 MiB; this includes more than the caches.
+
+Indicative paired wall-time differences on the shared host, in milliseconds
+(mean and seed-cluster bootstrap 95% interval):
+
+| Synthetic validation population | Cached minus full | Cached minus stride | Cached minus nested |
+| --- | ---: | ---: | ---: |
+| 12 | -0.9412 [-1.0706, -0.8161] | -0.0264 [-0.0298, -0.0222] | -0.0559 [-0.0584, -0.0545] |
+| 24 | -1.8032 [-1.8132, -1.7964] | -0.0527 [-0.0558, -0.0485] | -0.0892 [-0.0901, -0.0882] |
+
+This is single-host evidence from `vibe-coder-7663`, Linux/aarch64. Python
+reported seven logical CPUs; the scorer's host report resolved six CPUs and
+16 GiB RAM. The precise CPU model was unavailable. The run used no tuning
+environment overrides, Rust 1.99.1, scorer 1.1.103 and neat-core v0.23.4
+(`e86c342e72e85172b2f9e557329aca3b15bf5229`). The manifest records the
+working-source fingerprint and executable hash; its git tip alone does not
+identify uncommitted working files. Preparation took 9.668 seconds, including
+a 9.656-second incremental release build and 0.0021-second fixture generation;
+driver execution/report construction took 0.637 seconds.
+
+Verdict: **inconclusive — no representative validation**. Neither a production
+candidate population nor a representative corpus was supplied; the configured
+production-fixture environment variables were unset, and the tracked binary
+fixture is a correctness fixture. The oracle population is deliberately easy.
+The adversarial lost-winner regression demonstrates why these zero-regret
+synthetic observations cannot establish real selection quality. No production
+optimisation, full-paper reproduction or fleet-wide conclusion is claimed.

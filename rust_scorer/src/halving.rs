@@ -291,6 +291,21 @@ fn check_inputs(nets: &[CompiledNetwork], corpus: &PackedCorpus<'_>) -> Result<u
         return Err("no candidate networks to score".to_string());
     }
     let n = corpus.record_count()?;
+    for (i, net) in nets.iter().enumerate() {
+        if net.num_inputs() != corpus.num_inputs {
+            return Err(format!(
+                "candidate {i} has {} inputs but corpus declares {}",
+                net.num_inputs(),
+                corpus.num_inputs
+            ));
+        }
+        if corpus.num_outputs > net.num_neurons().saturating_sub(net.num_inputs()) {
+            return Err(format!(
+                "candidate {i} has fewer non-input neurons than the {} declared outputs",
+                corpus.num_outputs
+            ));
+        }
+    }
     if let Some(i) = corpus.records.iter().position(|v| !v.is_finite()) {
         return Err(format!("non-finite corpus value at offset {i}"));
     }
@@ -1031,13 +1046,24 @@ mod tests {
         let recs = records();
         let ns = nets();
         assert_eq!(check_inputs(&ns, &corpus(&recs)).unwrap(), RECORDS);
-        let wrong_inputs = PackedCorpus { num_inputs: 3, num_outputs: 2, ..corpus(&recs) };
-        assert_eq!(check_inputs(&ns, &wrong_inputs).unwrap_err(),
-            "candidate 0 has 4 inputs but corpus declares 3");
+        let wrong_inputs = PackedCorpus {
+            num_inputs: 3,
+            num_outputs: 2,
+            ..corpus(&recs)
+        };
+        assert_eq!(
+            check_inputs(&ns, &wrong_inputs).unwrap_err(),
+            "candidate 0 has 4 inputs but corpus declares 3"
+        );
         let wide_record = vec![0.0_f32; 1004];
-        let wrong_outputs = PackedCorpus { num_outputs: 1000, ..corpus(&wide_record) };
-        assert_eq!(check_inputs(&ns, &wrong_outputs).unwrap_err(),
-            "candidate 0 has fewer non-input neurons than the 1000 declared outputs");
+        let wrong_outputs = PackedCorpus {
+            num_outputs: 1000,
+            ..corpus(&wide_record)
+        };
+        assert_eq!(
+            check_inputs(&ns, &wrong_outputs).unwrap_err(),
+            "candidate 0 has fewer non-input neurons than the 1000 declared outputs"
+        );
     }
 
     fn outcome(
