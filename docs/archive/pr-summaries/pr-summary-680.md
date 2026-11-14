@@ -111,9 +111,15 @@ This is backend/CLI work; no visual surface changed.
 - `cargo test -p rust_scorer --test sample_rate_tdd --test racing_stdio_cli
   < /dev/null` — passed, 14 existing tests in
   `rust_scorer/tests/sample_rate_tdd.rs` and `rust_scorer/tests/racing_stdio_cli.rs`.
-- `timeout 1200 ./quality.sh < /dev/null` — passed: shell checks/validators,
-  spelling, shell tests, cargo-deny, formatting, clippy, check, builds, the
-  workspace tests, rustdoc and release build.
+- `timeout 1500 ./quality.sh < /dev/null` — re-run on the final head on
+  `vibe-coder-88973`, exit 0 ("All quality checks passed!"): shell
+  checks/validators, spelling, shell tests, cargo-deny, formatting, clippy,
+  check, builds, the workspace tests (including
+  `rust_scorer/tests/halving_bench_cli.rs` and the 24 `halving::tests`),
+  rustdoc and release build. The Python unittests above were re-run there too
+  and passed (4 tests).
+- Removed the worker's stale interruption note
+  `docs/archive/handover/issue-680.md`; it is not a deliverable.
 - No base-branch test assertions were removed. In the resumed checkpoint's
   `rust_scorer/src/halving.rs::tests::verify_full_match_fails_loudly`, the error
   text expectation `tolerance 0.000000001` became `tolerance 0.000001` for the
