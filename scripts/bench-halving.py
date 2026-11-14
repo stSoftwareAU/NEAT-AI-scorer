@@ -20,9 +20,6 @@ PROTOCOL = {
     "schema": "neat-halving-protocol/1",
     "paper": "https://arxiv.org/html/2610.37276v1",
     "adaptation": "fixed-population raw-loss replay; no response modelling or evolution",
-    "rates": [0.02, 0.05, 0.15, 1.0],
-    "eta": 2,
-    "relativeNumericTolerance": 1e-6,
     "minWinnerRetention": 0.95,
     "maxRelativeRegret": 0.001,
     "minEvaluationSavingVsFull": 0.5,
@@ -110,8 +107,15 @@ def source_identity():
 
 
 def hardware():
+    cpu_model = platform.processor() or None
+    if sys.platform.startswith("linux"):
+        with open("/proc/cpuinfo", encoding="utf-8") as source:
+            for line in source:
+                if line.startswith("model name"):
+                    cpu_model = line.partition(":")[2].strip()
+                    break
     return {"host": platform.node(), "platform": platform.platform(),
-            "machine": platform.machine(), "logicalCpus": os.cpu_count()}
+            "machine": platform.machine(), "cpuModel": cpu_model, "logicalCpus": os.cpu_count()}
 
 
 def environment():
@@ -129,6 +133,13 @@ def checked_command(argv, seconds=30):
     if result.returncode:
         raise ValueError(f"{argv[0]} exited {result.returncode}: {result.stderr.strip()}")
     return result.stdout
+
+
+def native_protocol(binary):
+    value = json.loads(checked_command([str(binary), "--describe-protocol"]))
+    if set(value) != {"rates", "eta", "relativeNumericTolerance"}:
+        raise ValueError("native protocol omitted or added algorithm fields")
+    return value
 
 
 def prepare(args):
@@ -174,7 +185,7 @@ def prepare(args):
         if hashes["calibration"] & hashes["validation"]:
             raise ValueError(f"calibration/validation {field} hashes overlap")
     manifest = {
-        "schema": "neat-halving-manifest/1", "protocol": PROTOCOL,
+        "schema": "neat-halving-manifest/1", "protocol": dict(PROTOCOL, **native_protocol(binary)),
         "createdUtc": datetime.datetime.now(datetime.timezone.utc).isoformat(),
         "config": dict(config, cases=cases), "binary": str(binary), "binarySha256": sha256(binary),
         "sourceSha256": source_identity(),
@@ -193,11 +204,13 @@ def prepare(args):
 
 
 def verify(manifest):
-    if manifest["schema"] != "neat-halving-manifest/1" or manifest["protocol"] != PROTOCOL:
-        raise ValueError("manifest protocol/version differs from this driver")
+    if manifest["schema"] != "neat-halving-manifest/1":
+        raise ValueError("unsupported manifest schema")
     validate_config(manifest["config"])
     if source_identity() != manifest["sourceSha256"] or sha256(manifest["binary"]) != manifest["binarySha256"]:
         raise ValueError("source or binary changed since manifest freeze")
+    if manifest["protocol"] != dict(PROTOCOL, **native_protocol(manifest["binary"])):
+        raise ValueError("manifest protocol/version differs from this driver")
     if hardware() != manifest["hardware"] or environment() != manifest["environment"]:
         raise ValueError("hardware or tuning environment changed since manifest freeze")
     for case in manifest["config"]["cases"]:

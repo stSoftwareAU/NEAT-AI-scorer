@@ -271,6 +271,32 @@ fn frozen_driver_runs_real_worker_and_rejects_changed_inputs() {
         "inconclusive-no-representative-validation"
     );
     assert_eq!(summary["comparisons"].as_array().unwrap().len(), 2);
+    #[cfg(unix)]
+    {
+        let mut changed_binary: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&manifest).unwrap()).unwrap();
+        changed_binary["binary"] = serde_json::json!("/bin/sh");
+        let changed_manifest = dir.path().join("changed-binary.json");
+        std::fs::write(
+            &changed_manifest,
+            serde_json::to_vec(&changed_binary).unwrap(),
+        )
+        .unwrap();
+        let refused = python()
+            .arg("run")
+            .arg("--manifest")
+            .arg(&changed_manifest)
+            .arg("--results")
+            .arg(dir.path().join("changed-binary-results.jsonl"))
+            .output()
+            .unwrap();
+        assert!(!refused.status.success());
+        assert!(
+            String::from_utf8_lossy(&refused.stderr).contains("source or binary changed"),
+            "{}",
+            String::from_utf8_lossy(&refused.stderr)
+        );
+    }
     // An actual native limit failure stays failed in the aggregate, with its cause.
     let mut limited = config.clone();
     limited["limits"]["maxRecordEvaluations"] = serde_json::json!(1);

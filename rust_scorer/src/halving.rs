@@ -1026,6 +1026,20 @@ mod tests {
         assert_eq!(err, "corpus has zero records");
     }
 
+    #[test]
+    fn candidate_shape_is_checked_before_entering_loss_kernels() {
+        let recs = records();
+        let ns = nets();
+        assert_eq!(check_inputs(&ns, &corpus(&recs)).unwrap(), RECORDS);
+        let wrong_inputs = PackedCorpus { num_inputs: 3, num_outputs: 2, ..corpus(&recs) };
+        assert_eq!(check_inputs(&ns, &wrong_inputs).unwrap_err(),
+            "candidate 0 has 4 inputs but corpus declares 3");
+        let wide_record = vec![0.0_f32; 1004];
+        let wrong_outputs = PackedCorpus { num_outputs: 1000, ..corpus(&wide_record) };
+        assert_eq!(check_inputs(&ns, &wrong_outputs).unwrap_err(),
+            "candidate 0 has fewer non-input neurons than the 1000 declared outputs");
+    }
+
     fn outcome(
         arm: Arm,
         selected: usize,

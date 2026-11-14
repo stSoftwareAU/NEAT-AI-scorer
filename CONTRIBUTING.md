@@ -40,6 +40,7 @@ section for the full rationale.
 The local gate and CI expect the following tools on your `PATH`:
 
 - **Rust** — `cargo`, `rustc`, `clippy`, `rustfmt`. The exact compiler is pinned in [`rust-toolchain.toml`](./rust-toolchain.toml) and auto-installed by `rustup`, so local and CI builds use the same version (see the "Pinned Rust toolchain" section in the README for the bump cadence).
+- **Python 3.9+** — the opt-in cached-halving experiment driver and its CLI integration tests use the standard library only; see [the protocol](docs/experiments/halving.md).
 - **shellcheck** — lints the bash helper scripts.
 - **cargo-deny** — licence and dependency audit (`cargo install cargo-deny --locked`).
 - **codespell** — spell check (`pip install --user codespell`), driven by [`scripts/spell-check.sh`](./scripts/spell-check.sh).

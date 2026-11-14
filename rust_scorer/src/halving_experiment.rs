@@ -21,8 +21,9 @@ use crate::corpus_guard::assert_records_aligned;
 use crate::cost::CostKind;
 use crate::gpu::GpuBackendLabel;
 use crate::halving::{
-    Arm, ArmOutcome, Audit, PackedCorpus, RungPlan, audit, run_cached_halving, run_full,
-    run_independent_screening, run_nested_uncached, verify_full_match,
+    Arm, ArmOutcome, Audit, FULL_MATCH_REL_TOLERANCE, PackedCorpus, RungPlan, audit,
+    run_cached_halving, run_full, run_independent_screening, run_nested_uncached,
+    verify_full_match,
 };
 use crate::host_report::HostReport;
 use crate::if_tree_fixture::{
@@ -39,13 +40,16 @@ const SCHEMA: &str = "neat-halving-observation/1";
 #[derive(Debug, Parser)]
 #[command(name = "halving_bench", version)]
 struct Cli {
-    #[arg(required_unless_present = "generate_fixture")]
+    #[arg(required_unless_present_any = ["generate_fixture", "describe_protocol"])]
     creatures_dir: Option<PathBuf>,
-    #[arg(required_unless_present = "generate_fixture")]
+    #[arg(required_unless_present_any = ["generate_fixture", "describe_protocol"])]
     data_dir: Option<PathBuf>,
     /// Create a new, public synthetic correctness fixture and print its driver config.
-    #[arg(long, conflicts_with_all = ["creatures_dir", "data_dir"])]
+    #[arg(long, conflicts_with_all = ["creatures_dir", "data_dir", "describe_protocol"])]
     generate_fixture: Option<PathBuf>,
+    /// Describe the algorithm constants without touching candidates or data.
+    #[arg(long, conflicts_with_all = ["creatures_dir", "data_dir"])]
+    describe_protocol: bool,
     #[arg(long, default_value = "MSE")]
     cost: CostKind,
     #[arg(long, default_value_t = 0)]
@@ -114,7 +118,11 @@ struct Report {
 pub fn main() -> ExitCode {
     let cli = Cli::parse();
     let start = Instant::now();
-    let result = if let Some(root) = &cli.generate_fixture {
+    let result = if cli.describe_protocol {
+        let plan = RungPlan::issue_680_default();
+        Ok(serde_json::json!({"rates": plan.rates(), "eta": plan.eta(),
+            "relativeNumericTolerance": FULL_MATCH_REL_TOLERANCE}))
+    } else if let Some(root) = &cli.generate_fixture {
         generate_fixture(root)
     } else {
         run(&cli).and_then(|r| serde_json::to_value(r).map_err(|e| e.to_string()))
