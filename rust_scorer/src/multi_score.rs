@@ -163,10 +163,10 @@ pub mod compile_probe {
     }
 }
 
-struct LoadedCreature {
-    key: String,
-    path: PathBuf,
-    creature: CreatureExport,
+pub(crate) struct LoadedCreature {
+    pub(crate) key: String,
+    pub(crate) path: PathBuf,
+    pub(crate) creature: CreatureExport,
 }
 
 /// Partition `n_records` packed records into `workers` ranges over the
@@ -192,7 +192,7 @@ fn partition_packed_record_ranges(
     out
 }
 
-fn load_creatures_from_dir(creatures_dir: &Path) -> Result<Vec<LoadedCreature>, String> {
+pub(crate) fn load_creatures_from_dir(creatures_dir: &Path) -> Result<Vec<LoadedCreature>, String> {
     if !creatures_dir.is_dir() {
         return Err(format!(
             "Creature path '{}' is not a directory",

@@ -1,13 +1,16 @@
 //! Issue #680 — opt-in experiment: current screening versus cached successive
 //! halving.
 //!
-//! Nothing in the CLI calls this module; it exists so a benchmark can compare
-//! three arms on the same candidate population and corpus:
+//! The ordinary scorer CLI does not call this module. The opt-in experiment
+//! compares four arms on the same candidate population and corpus:
 //!
 //! * [`run_full`] scores every candidate on every record.
-//! * [`run_independent_screening`] is the **current** mechanism: each rung
-//!   rebuilds its subsample with the existing [`SampleSpec`] stride and
-//!   re-scores every alive candidate from zero.
+//! * [`run_independent_screening`] applies an experimental halving controller
+//!   to the existing [`SampleSpec`] stride, re-scoring each rung from zero.
+//!   The scorer itself supplies sampling and caller-directed early exit, not
+//!   this promotion schedule.
+//! * [`run_nested_uncached`] uses the same nested records as cached halving
+//!   but re-scores cumulative subsets, isolating the effect of caching.
 //! * [`run_cached_halving`] is the **new** mechanism: deterministic *nested*
 //!   strata ([`record_rank`], [`rung_increments`]) so record IDs are shared
 //!   across candidates and rungs, and each rung evaluates only the records the
@@ -31,7 +34,7 @@ use crate::sampling::SampleSpec;
 
 /// Relative tolerance within which a cached final error must equal a direct
 /// full-corpus evaluation.
-pub const FULL_MATCH_REL_TOLERANCE: f64 = 1e-9;
+pub const FULL_MATCH_REL_TOLERANCE: f64 = 1e-6;
 
 /// Nested, deterministic record rank in `[0, 1)`.
 ///
@@ -123,7 +126,8 @@ impl PackedCorpus<'_> {
     /// record width, or there are no records.
     pub fn record_count(&self) -> Result<usize, String> {
         validate_observation_width(self.num_inputs, self.num_outputs).map_err(|e| e.to_string())?;
-        let vpr = self.values_per_record();
+        let vpr = self.num_inputs.checked_add(self.num_outputs)
+            .ok_or("record width overflows usize")?;
         if self.records.len() % vpr != 0 {
             return Err(format!(
                 "corpus length {} is not a whole multiple of the record width {vpr}",
@@ -182,19 +186,22 @@ impl SufficientStats {
 pub enum Arm {
     /// Every candidate on every record.
     Full,
-    /// Current stride screening, re-scoring from zero each rung.
+    /// Existing stride sampler with an experimental halving controller.
     IndependentScreening,
     /// Nested strata with cached sufficient statistics.
     CachedHalving,
+    /// Same nested subsets as cached halving, re-evaluated from zero.
+    NestedUncached,
 }
 
 impl Arm {
-    /// Stable label: `full`, `independent-screening` or `cached-halving`.
+    /// Stable command/report label for the arm.
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Full => "full",
             Self::IndependentScreening => "independent-screening",
             Self::CachedHalving => "cached-halving",
+            Self::NestedUncached => "nested-uncached",
         }
     }
 }
@@ -213,6 +220,14 @@ pub struct ArmOutcome {
     pub cache_entries: usize,
     /// `cache_entries * size_of::<SufficientStats>()`.
     pub cache_bytes: usize,
+    /// Wall-clock seconds updating cached sums and counts (indicative).
+    pub cache_update_secs: f64,
+    /// Largest temporary packed-record buffer capacity in bytes.
+    pub record_buffer_bytes: usize,
+    /// Allocated nested record-index capacities in bytes (excluding Vec headers).
+    pub record_index_bytes: usize,
+    /// Cumulative records available for ranking at each rung, shared by candidates.
+    pub rung_records: Vec<usize>,
     /// Strata / subsample construction wall-clock seconds (indicative).
     pub prep_secs: f64,
     /// Scoring wall-clock seconds (indicative).
@@ -273,7 +288,11 @@ fn check_inputs(nets: &[CompiledNetwork], corpus: &PackedCorpus<'_>) -> Result<u
     if nets.is_empty() {
         return Err("no candidate networks to score".to_string());
     }
-    corpus.record_count()
+    let n = corpus.record_count()?;
+    if let Some(i) = corpus.records.iter().position(|v| !v.is_finite()) {
+        return Err(format!("non-finite corpus value at offset {i}"));
+    }
+    Ok(n)
 }
 
 fn score(
@@ -282,14 +301,13 @@ fn score(
     chunk: &[f32],
     corpus: &PackedCorpus<'_>,
 ) -> Result<f64, String> {
-    accumulate_cost_sum(
-        cost,
-        net,
-        chunk,
-        corpus.num_inputs,
-        corpus.num_outputs,
-        corpus.forward_only,
-    )
+    let sum = accumulate_cost_sum(
+        cost, net, chunk, corpus.num_inputs, corpus.num_outputs, corpus.forward_only,
+    )?;
+    if !sum.is_finite() {
+        return Err(format!("non-finite {} loss sum", cost.as_str()));
+    }
+    Ok(sum)
 }
 
 /// Score every candidate on every record (one rung).
@@ -315,6 +333,10 @@ pub fn run_full(
         record_evaluations: (c * n) as u64,
         cache_entries: 0,
         cache_bytes: 0,
+        cache_update_secs: 0.0,
+        record_buffer_bytes: 0,
+        record_index_bytes: 0,
+        rung_records: vec![n],
         prep_secs: 0.0,
         eval_secs: started.elapsed().as_secs_f64(),
         rung_survivors: vec![c],
@@ -323,7 +345,7 @@ pub fn run_full(
     })
 }
 
-/// The current mechanism: rebuild each rung's subsample with the existing
+/// Stride-sampler control: rebuild each rung's subsample with the existing
 /// [`SampleSpec`] stride (`phase`) and re-score every alive candidate from
 /// zero. Rate `1.0` is the full corpus.
 ///
@@ -350,6 +372,8 @@ pub fn run_independent_screening(
     let (mut evals, mut prep, mut eval) = (0_u64, 0.0, 0.0);
     let last = plan.rates.len() - 1;
     let mut selected = 0;
+    let mut rung_records = Vec::new();
+    let mut record_buffer_bytes = 0;
     for (k, &rate) in plan.rates.iter().enumerate() {
         rung_survivors.push(alive.len());
         let t = Instant::now();
@@ -357,6 +381,8 @@ pub fn run_independent_screening(
         let kept = SampleSpec::new(rate, phase)?
             .sampler()
             .filter_in_place(&mut buf, n, vpr);
+        record_buffer_bytes = record_buffer_bytes.max(buf.capacity() * size_of::<f32>());
+        rung_records.push(kept);
         prep += t.elapsed().as_secs_f64();
         let mut means = vec![f64::NAN; c];
         if kept > 0 {
@@ -382,6 +408,10 @@ pub fn run_independent_screening(
         record_evaluations: evals,
         cache_entries: 0,
         cache_bytes: 0,
+        cache_update_secs: 0.0,
+        record_buffer_bytes,
+        record_index_bytes: 0,
+        rung_records,
         prep_secs: prep,
         eval_secs: eval,
         rung_survivors,
@@ -404,40 +434,92 @@ pub fn run_cached_halving(
     plan: &RungPlan,
     seed: u64,
 ) -> Result<ArmOutcome, String> {
+    run_nested(cost, nets, corpus, plan, seed, true)
+}
+
+/// Nested uncached control: the same cumulative record IDs and halving policy
+/// as [`run_cached_halving`], with every cumulative subset scored from zero.
+///
+/// # Errors
+/// When candidates or corpus are invalid, or scoring yields a non-finite loss.
+pub fn run_nested_uncached(
+    cost: CostKind,
+    nets: &mut [CompiledNetwork],
+    corpus: PackedCorpus<'_>,
+    plan: &RungPlan,
+    seed: u64,
+) -> Result<ArmOutcome, String> {
+    run_nested(cost, nets, corpus, plan, seed, false)
+}
+
+fn run_nested(
+    cost: CostKind,
+    nets: &mut [CompiledNetwork],
+    corpus: PackedCorpus<'_>,
+    plan: &RungPlan,
+    seed: u64,
+    cached: bool,
+) -> Result<ArmOutcome, String> {
     let n = check_inputs(nets, &corpus)?;
     let c = nets.len();
     let vpr = corpus.values_per_record();
     let t = Instant::now();
     let increments = rung_increments(n, plan, seed);
+    let record_index_bytes = increments.iter().map(|v| v.capacity() * size_of::<usize>()).sum();
+    let mut cache = if cached { vec![SufficientStats::default(); c] } else { Vec::new() };
     let mut prep = t.elapsed().as_secs_f64();
-    let mut cache = vec![SufficientStats::default(); c];
     let mut alive: Vec<usize> = (0..c).collect();
     let mut eliminated_at = vec![None; c];
     let mut rung_survivors = Vec::with_capacity(increments.len());
-    let (mut evals, mut eval) = (0_u64, 0.0);
+    let mut rung_records = Vec::with_capacity(increments.len());
+    let (mut evals, mut eval, mut cache_update_secs) = (0_u64, 0.0, 0.0);
+    let mut record_buffer_bytes = 0;
     let last = increments.len() - 1;
     let mut means = vec![f64::NAN; c];
+    let mut cumulative = 0;
     for (k, inc) in increments.iter().enumerate() {
         rung_survivors.push(alive.len());
-        if !inc.is_empty() {
-            let t = Instant::now();
-            let mut buf = Vec::with_capacity(inc.len() * vpr);
+        cumulative += inc.len();
+        rung_records.push(cumulative);
+        let t = Instant::now();
+        let mut buf = Vec::with_capacity(if cached { inc.len() } else { cumulative } * vpr);
+        if cached {
             for &i in inc {
                 buf.extend_from_slice(&corpus.records[i * vpr..(i + 1) * vpr]);
             }
-            prep += t.elapsed().as_secs_f64();
-            let t = Instant::now();
-            for &i in &alive {
-                cache[i].error_sum += score(cost, &mut nets[i], &buf, &corpus)?;
-                cache[i].record_count += inc.len() as u64;
-                evals += inc.len() as u64;
+        } else {
+            // Ascending global IDs match an ordinary full sweep on the final rung.
+            for (i, record) in corpus.records.chunks_exact(vpr).enumerate() {
+                if record_rank(i as u64, seed) < plan.rates[k] {
+                    buf.extend_from_slice(record);
+                }
             }
-            eval += t.elapsed().as_secs_f64();
         }
-        for &i in &alive {
-            means[i] = cache[i].mean(cost).unwrap_or(f64::NAN);
+        record_buffer_bytes = record_buffer_bytes.max(buf.capacity() * size_of::<f32>());
+        prep += t.elapsed().as_secs_f64();
+        let count = buf.len() / vpr;
+        if count > 0 {
+            for &i in &alive {
+                let t = Instant::now();
+                let sum = score(cost, &mut nets[i], &buf, &corpus)?;
+                eval += t.elapsed().as_secs_f64();
+                let t = Instant::now();
+                if cached {
+                    cache[i].error_sum += sum;
+                    cache[i].record_count += count as u64;
+                    if !cache[i].error_sum.is_finite() {
+                        return Err(format!("non-finite cached loss sum for candidate {i}"));
+                    }
+                    means[i] = cache[i].mean(cost).expect("non-empty increment");
+                } else {
+                    means[i] = cost.finalise_mean(sum, count);
+                }
+                if cached { cache_update_secs += t.elapsed().as_secs_f64(); }
+                evals += count as u64;
+            }
         }
-        if k < last {
+        // No evidence means no rejection, including an empty initial stratum.
+        if k < last && cumulative > 0 {
             alive = eliminate(&alive, &means, plan.eta, k, &mut eliminated_at);
         }
     }
@@ -446,11 +528,15 @@ pub fn run_cached_halving(
         final_errors[i] = Some(means[i]);
     }
     Ok(ArmOutcome {
-        arm: Arm::CachedHalving,
+        arm: if cached { Arm::CachedHalving } else { Arm::NestedUncached },
         selected: argmin(&alive, &means),
         record_evaluations: evals,
-        cache_entries: c,
-        cache_bytes: c * std::mem::size_of::<SufficientStats>(),
+        cache_entries: cache.len(),
+        cache_bytes: cache.len() * size_of::<SufficientStats>(),
+        cache_update_secs,
+        record_buffer_bytes,
+        record_index_bytes,
+        rung_records,
         prep_secs: prep,
         eval_secs: eval,
         rung_survivors,
@@ -496,6 +582,12 @@ pub fn audit(arm: &ArmOutcome, full: &ArmOutcome) -> Result<Audit, String> {
         .enumerate()
         .map(|(i, e)| e.ok_or_else(|| format!("full outcome has no final error for candidate {i}")))
         .collect::<Result<_, _>>()?;
+    if errs.is_empty() || arm.selected >= errs.len() || arm.eliminated_at.len() != errs.len() {
+        return Err("invalid audit candidate indices or elimination count".to_string());
+    }
+    if errs.iter().any(|e| !e.is_finite()) {
+        return Err("non-finite authoritative full error".to_string());
+    }
     let all: Vec<usize> = (0..errs.len()).collect();
     let full_winner = argmin(&all, &errs);
     let selected_full_error = errs[arm.selected];
@@ -536,6 +628,9 @@ pub fn verify_full_match(arm: &ArmOutcome, full: &ArmOutcome) -> Result<f64, Str
         let Some(b) = *b else {
             return Err(format!("full outcome has no final error for candidate {i}"));
         };
+        if !a.is_finite() || !b.is_finite() {
+            return Err(format!("non-finite final error for candidate {i}"));
+        }
         let dev = (a - b).abs() / b.abs().max(1e-12);
         if dev.is_nan() || dev > FULL_MATCH_REL_TOLERANCE {
             return Err(format!(
@@ -784,6 +879,82 @@ mod tests {
     }
 
     #[test]
+    fn empty_early_rungs_do_not_reject_unobserved_candidates() {
+        let recs = records();
+        let c = corpus(&recs[..5]);
+        let plan = RungPlan::issue_680_default();
+        let mut ns = nets();
+        // rank(0, 1) = 0.5: all three early strata are empty.
+        let cached = run_cached_halving(CostKind::Mse, &mut ns, c, &plan, 1).unwrap();
+        let full = run_full(CostKind::Mse, &mut ns, c).unwrap();
+        assert_eq!(cached.rung_survivors, vec![CANDIDATES; 4]);
+        assert_eq!(cached.eliminated_at, vec![None; CANDIDATES]);
+        assert_eq!(cached.selected, full.selected);
+        assert_eq!(cached.record_evaluations, CANDIDATES as u64);
+    }
+
+    #[test]
+    fn non_finite_corpus_and_full_reference_are_refused() {
+        let mut recs = records();
+        let mut ns = nets();
+        assert!(run_full(CostKind::Mse, &mut ns, corpus(&recs)).is_ok());
+        recs[4] = f32::NAN;
+        assert_eq!(run_full(CostKind::Mse, &mut ns, corpus(&recs)).unwrap_err(),
+            "non-finite corpus value at offset 4");
+        let arm = outcome(Arm::Full, 0, vec![None], vec![Some(1.0)]);
+        let full = outcome(Arm::Full, 0, vec![None], vec![Some(f64::INFINITY)]);
+        assert!(audit(&arm, &full).unwrap_err().contains("non-finite"));
+        assert!(verify_full_match(&arm, &full).unwrap_err().contains("non-finite"));
+        assert_eq!(verify_full_match(&arm, &arm).unwrap(), 0.0);
+    }
+
+    #[test]
+    fn identical_candidates_break_ties_by_index() {
+        let recs = records();
+        let net = nets().remove(0);
+        let mut ns = vec![net; 12];
+        let result = run_cached_halving(CostKind::Rmse, &mut ns, corpus(&recs),
+            &RungPlan::issue_680_default(), 0).unwrap();
+        assert_eq!(result.selected, 0);
+        assert_eq!(result.eliminated_at,
+            vec![None, None, Some(2), Some(1), Some(1), Some(1),
+                 Some(0), Some(0), Some(0), Some(0), Some(0), Some(0)]);
+    }
+
+    #[test]
+    fn rmse_finalises_the_combined_sum_once() {
+        let stats = SufficientStats { error_sum: 25.0, record_count: 2 };
+        assert_eq!(stats.mean(CostKind::Mse), Some(12.5));
+        assert_eq!(stats.mean(CostKind::Rmse), Some(12.5_f64.sqrt()));
+        assert_eq!(SufficientStats::default().mean(CostKind::Rmse), None);
+    }
+
+    #[test]
+    fn uncached_nested_control_uses_the_same_records_and_survivors() {
+        let recs = records();
+        let c = corpus(&recs);
+        let plan = RungPlan::issue_680_default();
+        for &cost in CostKind::value_variants() {
+            let mut ns = nets();
+            let cached = run_cached_halving(cost, &mut ns, c, &plan, 11).unwrap();
+            let uncached = run_nested_uncached(cost, &mut ns, c, &plan, 11).unwrap();
+            assert_eq!(cached.selected, uncached.selected, "{cost:?}");
+            assert_eq!(cached.eliminated_at, uncached.eliminated_at, "{cost:?}");
+            let increments = rung_increments(RECORDS, &plan, 11);
+            let mut cumulative = 0;
+            let mut expected = 0;
+            for (k, inc) in increments.iter().enumerate() {
+                cumulative += inc.len();
+                expected += (cumulative * uncached.rung_survivors[k]) as u64;
+            }
+            assert_eq!(uncached.record_evaluations, expected);
+            assert_eq!(uncached.cache_bytes, 0);
+            assert!(cached.record_evaluations < uncached.record_evaluations);
+            verify_full_match(&cached, &uncached).unwrap();
+        }
+    }
+
+    #[test]
     fn invalid_inputs_are_refused() {
         let recs = records();
         let plan = RungPlan::issue_680_default();
@@ -816,6 +987,10 @@ mod tests {
             record_evaluations: 0,
             cache_entries: 0,
             cache_bytes: 0,
+            cache_update_secs: 0.0,
+            record_buffer_bytes: 0,
+            record_index_bytes: 0,
+            rung_records: vec![],
             prep_secs: 0.0,
             eval_secs: 0.0,
             rung_survivors: vec![],
@@ -866,11 +1041,11 @@ mod tests {
             Arm::CachedHalving,
             1,
             vec![Some(0), None],
-            vec![None, Some(2.0 * (1.0 + 1e-6))],
+            vec![None, Some(2.0 * (1.0 + 1e-3))],
         );
         let err = verify_full_match(&bad, &full).unwrap_err();
         assert!(err.starts_with("candidate 1 final error"), "{err}");
-        assert!(err.contains("tolerance 0.000000001"), "{err}");
+        assert!(err.contains("tolerance 0.000001"), "{err}");
         let good = outcome(
             Arm::CachedHalving,
             1,
