@@ -126,7 +126,9 @@ impl PackedCorpus<'_> {
     /// record width, or there are no records.
     pub fn record_count(&self) -> Result<usize, String> {
         validate_observation_width(self.num_inputs, self.num_outputs).map_err(|e| e.to_string())?;
-        let vpr = self.num_inputs.checked_add(self.num_outputs)
+        let vpr = self
+            .num_inputs
+            .checked_add(self.num_outputs)
             .ok_or("record width overflows usize")?;
         if self.records.len() % vpr != 0 {
             return Err(format!(
@@ -302,7 +304,12 @@ fn score(
     corpus: &PackedCorpus<'_>,
 ) -> Result<f64, String> {
     let sum = accumulate_cost_sum(
-        cost, net, chunk, corpus.num_inputs, corpus.num_outputs, corpus.forward_only,
+        cost,
+        net,
+        chunk,
+        corpus.num_inputs,
+        corpus.num_outputs,
+        corpus.forward_only,
     )?;
     if !sum.is_finite() {
         return Err(format!("non-finite {} loss sum", cost.as_str()));
@@ -465,8 +472,15 @@ fn run_nested(
     let vpr = corpus.values_per_record();
     let t = Instant::now();
     let increments = rung_increments(n, plan, seed);
-    let record_index_bytes = increments.iter().map(|v| v.capacity() * size_of::<usize>()).sum();
-    let mut cache = if cached { vec![SufficientStats::default(); c] } else { Vec::new() };
+    let record_index_bytes = increments
+        .iter()
+        .map(|v| v.capacity() * size_of::<usize>())
+        .sum();
+    let mut cache = if cached {
+        vec![SufficientStats::default(); c]
+    } else {
+        Vec::new()
+    };
     let mut prep = t.elapsed().as_secs_f64();
     let mut alive: Vec<usize> = (0..c).collect();
     let mut eliminated_at = vec![None; c];
@@ -514,7 +528,9 @@ fn run_nested(
                 } else {
                     means[i] = cost.finalise_mean(sum, count);
                 }
-                if cached { cache_update_secs += t.elapsed().as_secs_f64(); }
+                if cached {
+                    cache_update_secs += t.elapsed().as_secs_f64();
+                }
                 evals += count as u64;
             }
         }
@@ -528,7 +544,11 @@ fn run_nested(
         final_errors[i] = Some(means[i]);
     }
     Ok(ArmOutcome {
-        arm: if cached { Arm::CachedHalving } else { Arm::NestedUncached },
+        arm: if cached {
+            Arm::CachedHalving
+        } else {
+            Arm::NestedUncached
+        },
         selected: argmin(&alive, &means),
         record_evaluations: evals,
         cache_entries: cache.len(),
@@ -843,6 +863,8 @@ mod tests {
         let cached = run_cached_halving(CostKind::Mse, &mut ns, c, &plan, 0).unwrap();
         let indep = run_independent_screening(CostKind::Mse, &mut ns, c, &plan, 0).unwrap();
         assert_eq!(full.record_evaluations, (CANDIDATES * RECORDS) as u64);
+        assert_eq!(cached.record_evaluations, 4959);
+        assert_eq!(indep.record_evaluations, 6109);
         assert_eq!(cached.rung_survivors, vec![12, 6, 3, 2]);
         assert_eq!(indep.rung_survivors, vec![12, 6, 3, 2]);
         let inc = rung_increments(RECORDS, &plan, 0);
@@ -899,12 +921,18 @@ mod tests {
         let mut ns = nets();
         assert!(run_full(CostKind::Mse, &mut ns, corpus(&recs)).is_ok());
         recs[4] = f32::NAN;
-        assert_eq!(run_full(CostKind::Mse, &mut ns, corpus(&recs)).unwrap_err(),
-            "non-finite corpus value at offset 4");
+        assert_eq!(
+            run_full(CostKind::Mse, &mut ns, corpus(&recs)).unwrap_err(),
+            "non-finite corpus value at offset 4"
+        );
         let arm = outcome(Arm::Full, 0, vec![None], vec![Some(1.0)]);
         let full = outcome(Arm::Full, 0, vec![None], vec![Some(f64::INFINITY)]);
         assert!(audit(&arm, &full).unwrap_err().contains("non-finite"));
-        assert!(verify_full_match(&arm, &full).unwrap_err().contains("non-finite"));
+        assert!(
+            verify_full_match(&arm, &full)
+                .unwrap_err()
+                .contains("non-finite")
+        );
         assert_eq!(verify_full_match(&arm, &arm).unwrap(), 0.0);
     }
 
@@ -913,17 +941,40 @@ mod tests {
         let recs = records();
         let net = nets().remove(0);
         let mut ns = vec![net; 12];
-        let result = run_cached_halving(CostKind::Rmse, &mut ns, corpus(&recs),
-            &RungPlan::issue_680_default(), 0).unwrap();
+        let result = run_cached_halving(
+            CostKind::Rmse,
+            &mut ns,
+            corpus(&recs),
+            &RungPlan::issue_680_default(),
+            0,
+        )
+        .unwrap();
         assert_eq!(result.selected, 0);
-        assert_eq!(result.eliminated_at,
-            vec![None, None, Some(2), Some(1), Some(1), Some(1),
-                 Some(0), Some(0), Some(0), Some(0), Some(0), Some(0)]);
+        assert_eq!(
+            result.eliminated_at,
+            vec![
+                None,
+                None,
+                Some(2),
+                Some(1),
+                Some(1),
+                Some(1),
+                Some(0),
+                Some(0),
+                Some(0),
+                Some(0),
+                Some(0),
+                Some(0)
+            ]
+        );
     }
 
     #[test]
     fn rmse_finalises_the_combined_sum_once() {
-        let stats = SufficientStats { error_sum: 25.0, record_count: 2 };
+        let stats = SufficientStats {
+            error_sum: 25.0,
+            record_count: 2,
+        };
         assert_eq!(stats.mean(CostKind::Mse), Some(12.5));
         assert_eq!(stats.mean(CostKind::Rmse), Some(12.5_f64.sqrt()));
         assert_eq!(SufficientStats::default().mean(CostKind::Rmse), None);
