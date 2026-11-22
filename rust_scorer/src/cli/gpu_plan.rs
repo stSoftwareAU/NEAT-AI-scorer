@@ -94,6 +94,37 @@ pub(super) fn validate_cohort_flags(
     Ok(())
 }
 
+/// Refuse `--ensemble` combinations it cannot honour (Issue #589), before any
+/// `wgpu` call.
+///
+/// # Errors
+///
+/// A message naming the conflicting flags.
+pub(super) fn validate_ensemble_flags(
+    mode: GpuMode,
+    ensemble: bool,
+    cohort: bool,
+    race_stdio: bool,
+    creature_stdin: bool,
+) -> Result<(), String> {
+    if !ensemble {
+        return Ok(());
+    }
+    if creature_stdin {
+        return Err(
+            "--ensemble scores a creatures directory; it cannot be combined with --creature-stdin"
+                .to_string(),
+        );
+    }
+    if race_stdio || cohort {
+        return Err("--ensemble cannot be combined with --race-stdio or --cohort".to_string());
+    }
+    if matches!(mode, GpuMode::On) {
+        return Err("--ensemble runs on the CPU; it cannot be combined with --gpu on".to_string());
+    }
+    Ok(())
+}
+
 /// Select the adapter up-front — `--gpu on` only.
 ///
 /// Issue #180: under `--gpu auto` adapter selection is *deferred* to the
@@ -372,6 +403,23 @@ mod tests {
         let err = validate_cohort_flags(GpuMode::Auto, true, true, false).unwrap_err();
         assert!(err.contains("--race-stdio"), "{err}");
         let err = validate_cohort_flags(GpuMode::On, true, false, false).unwrap_err();
+        assert!(err.contains("--gpu on"), "{err}");
+    }
+
+    #[test]
+    fn ensemble_flag_conflicts_are_refused_before_adapter_selection() {
+        assert!(validate_ensemble_flags(GpuMode::On, false, true, true, true).is_ok());
+        for mode in [GpuMode::Auto, GpuMode::Off] {
+            validate_ensemble_flags(mode, true, false, false, false).expect("plain ensemble");
+        }
+        let err = validate_ensemble_flags(GpuMode::Auto, true, false, false, true).unwrap_err();
+        assert!(err.contains("--creature-stdin"), "{err}");
+        for (cohort, race) in [(true, false), (false, true)] {
+            let err =
+                validate_ensemble_flags(GpuMode::Auto, true, cohort, race, false).unwrap_err();
+            assert!(err.contains("--race-stdio or --cohort"), "{err}");
+        }
+        let err = validate_ensemble_flags(GpuMode::On, true, false, false, false).unwrap_err();
         assert!(err.contains("--gpu on"), "{err}");
     }
 }
