@@ -21,6 +21,14 @@
 //! An optional `phase` shifts the stride to select a *different* deterministic
 //! subsample (e.g. rotating the sampled stratum per generation) without any
 //! randomness: the record index is offset by `phase` before the stride test.
+//! The phase is bounded to `[0, MAX_SAMPLE_PHASE]` (Issue #685) so that offset
+//! index stays exactly representable in `f64`.
+
+/// The largest accepted stride phase (2^32-1, Issue #685); it keeps
+/// `phase + record index` far below 2^53, where f64 stops representing every
+/// integer and the stride test goes wrong, and keeps the u64 addition from
+/// overflowing.
+pub const MAX_SAMPLE_PHASE: u64 = u32::MAX as u64;
 
 /// Validated record sub-sampling configuration (Issue #310).
 ///
@@ -43,8 +51,9 @@ impl SampleSpec {
         }
     }
 
-    /// Build a validated spec. `rate` must lie in `(0, 1]`; `phase` shifts the
-    /// deterministic stride to a different stratum (default `0`).
+    /// Build a validated spec. `rate` must lie in `(0, 1]`; `phase` must lie in
+    /// `[0, MAX_SAMPLE_PHASE]` and shifts the deterministic stride to a
+    /// different stratum (default `0`).
     ///
     /// Fails loud (Issue #3234) rather than silently clamping an out-of-range
     /// rate, so a caller that fat-fingers the flag learns immediately.
@@ -58,11 +67,18 @@ impl SampleSpec {
     /// assert!(SampleSpec::new(1.0, 0).is_ok());
     /// assert!(SampleSpec::new(0.0, 0).is_err()); // 0 excluded
     /// assert!(SampleSpec::new(1.5, 0).is_err()); // > 1 excluded
+    /// assert!(SampleSpec::new(0.5, rust_scorer::sampling::MAX_SAMPLE_PHASE).is_ok());
+    /// assert!(SampleSpec::new(0.5, 1 << 54).is_err()); // phase beyond the exact f64 stride range
     /// ```
     pub fn new(rate: f64, phase: u64) -> Result<Self, String> {
         if !rate.is_finite() || rate <= 0.0 || rate > 1.0 {
             return Err(format!(
                 "--sample-rate must be a finite value in (0, 1], got {rate}"
+            ));
+        }
+        if phase > MAX_SAMPLE_PHASE {
+            return Err(format!(
+                "--sample-phase must be an integer in [0, {MAX_SAMPLE_PHASE}], got {phase}"
             ));
         }
         Ok(Self { rate, phase })
@@ -146,6 +162,29 @@ pub fn parse_sample_rate(s: &str) -> Result<f64, String> {
     SampleSpec::new(rate, 0).map(|spec| spec.rate())
 }
 
+/// Parse a `--sample-phase` argument string into a `u64` in
+/// `[0, MAX_SAMPLE_PHASE]` (Issue #685). Used as the clap `value_parser` so an
+/// out-of-range phase is rejected with a clean non-zero exit rather than
+/// silently keeping a skewed or empty subsample.
+///
+/// # Examples
+///
+/// ```
+/// use rust_scorer::sampling::parse_sample_phase;
+///
+/// assert_eq!(parse_sample_phase("7").unwrap(), 7);
+/// assert!(parse_sample_phase("4294967296").is_err());
+/// assert!(parse_sample_phase("-1").is_err());
+/// assert!(parse_sample_phase("abc").is_err());
+/// ```
+pub fn parse_sample_phase(s: &str) -> Result<u64, String> {
+    let phase: u64 = s.trim().parse::<u64>().map_err(|_| {
+        format!("invalid --sample-phase '{s}': expected an integer in [0, {MAX_SAMPLE_PHASE}]")
+    })?;
+    // Reuse the single source of truth for range validation.
+    SampleSpec::new(1.0, phase).map(|spec| spec.phase())
+}
+
 /// Stateful, deterministic record sampler that threads a global record index
 /// through every streamed chunk so the kept set is independent of chunk
 /// boundaries (Issue #310).
@@ -193,8 +232,9 @@ impl RecordSampler {
     ///
     /// Matches the TypeScript consumer's stratified stride exactly.
     fn keeps_index(&self, i: u64) -> bool {
-        // f64 represents every integer index exactly up to 2^53; a 21 GiB corpus
-        // holds far fewer records than that, so the cast is lossless in practice.
+        // `SampleSpec::new` caps `phase` at `MAX_SAMPLE_PHASE` (Issue #685), so
+        // `i + phase` stays exact in f64 for any corpus a host can hold, and
+        // cannot overflow.
         let j = (i + self.spec.phase) as f64;
         ((j + 1.0) * self.spec.rate).floor() > (j * self.spec.rate).floor()
     }
@@ -286,6 +326,48 @@ mod tests {
         assert!(parse_sample_rate("1.1").is_err());
         assert!(parse_sample_rate("-0.5").is_err());
         assert!(parse_sample_rate("not-a-number").is_err());
+    }
+
+    #[test]
+    fn spec_rejects_phase_beyond_exact_stride_range() {
+        let ok = SampleSpec::new(0.5, MAX_SAMPLE_PHASE).expect("max phase is accepted");
+        assert_eq!(ok.phase(), MAX_SAMPLE_PHASE);
+        for bad in [MAX_SAMPLE_PHASE + 1, 1 << 53, 1 << 54, 1 << 60, u64::MAX] {
+            let err = SampleSpec::new(0.5, bad).expect_err("phase must be rejected");
+            assert!(err.contains("--sample-phase"), "message was: {err}");
+        }
+    }
+
+    #[test]
+    fn largest_phase_still_keeps_the_expected_fraction() {
+        let n = 2048_usize;
+        let count = |rate: f64| {
+            let mut sampler = SampleSpec::new(rate, MAX_SAMPLE_PHASE).unwrap().sampler();
+            let mut buf: Vec<f32> = (0..n).map(|i| i as f32).collect();
+            sampler.filter_in_place(&mut buf, n, 1)
+        };
+        assert_eq!(count(0.5), 1024);
+        for (rate, expected) in [(0.02, 40.96), (0.05, 102.4), (0.15, 307.2)] {
+            let kept = count(rate) as f64;
+            assert!(
+                (kept - expected).abs() <= 1.0,
+                "rate {rate}: kept {kept}, expected about {expected}"
+            );
+        }
+    }
+
+    #[test]
+    fn parse_sample_phase_validates() {
+        assert_eq!(parse_sample_phase("0").unwrap(), 0);
+        assert_eq!(parse_sample_phase(" 7 ").unwrap(), 7);
+        assert_eq!(parse_sample_phase("4294967295").unwrap(), MAX_SAMPLE_PHASE);
+        for bad in ["4294967296", "18014398509481984", "18446744073709551615"] {
+            let err = parse_sample_phase(bad).expect_err(bad);
+            assert!(err.contains("--sample-phase"), "message was: {err}");
+        }
+        assert!(parse_sample_phase("18446744073709551616").is_err());
+        assert!(parse_sample_phase("-1").is_err());
+        assert!(parse_sample_phase("abc").is_err());
     }
 
     /// Reference implementation of the stride, used to cross-check the sampler.

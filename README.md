@@ -666,9 +666,13 @@ is no shard to drop and no room for a second corpus on disk.
   `floor((i+1)·rate) > floor(i·rate)`. This keeps `floor(N·rate)` of `N` records
   spread evenly across the corpus in a **single pass, no second corpus on disk**.
   Out-of-range values are rejected with a non-zero exit (never silently clamped).
-- `--sample-phase <u64>` — default `0`. Shifts the stride to select a *different*
-  subsample of the same size (e.g. rotating the sampled stratum per generation)
-  with no randomness. Ignored when `--sample-rate` is `1` or absent.
+- `--sample-phase <u64>` — an integer in `[0, 2^32-1]` (`4294967295`), default
+  `0`. Shifts the stride to select a *different* subsample of the same size
+  (e.g. rotating the sampled stratum per generation) with no randomness. Larger
+  values are rejected with a non-zero exit, because above that the stride index
+  would lose exactness in `f64` and silently keep a skewed or empty subsample
+  (Issue #685). Has no effect when `--sample-rate` is `1` or absent, but is
+  still range-checked.
 
 The stride matches the TypeScript consumer (NEAT-AI#3257) exactly, so both agree
 on which records survive. When sub-sampling runs, `error`/`score` are computed

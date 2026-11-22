@@ -199,6 +199,65 @@ fn out_of_range_sample_rate_is_rejected() {
 }
 
 #[test]
+fn out_of_range_sample_phase_is_rejected() {
+    let bin = env!("CARGO_BIN_EXE_rust_scorer");
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let data_dir = tmp.path().join("data");
+    std::fs::create_dir(&data_dir).expect("data dir");
+    write_training_data(&data_dir, &varied_corpus(100));
+    let creature = tmp.path().join("c.json");
+    std::fs::write(&creature, minimal_creature(1, 1, true)).expect("creature");
+
+    for bad in [
+        "4294967296",
+        "9007199254740992",
+        "18014398509481984",
+        "18446744073709551615",
+    ] {
+        let out = run_single(
+            bin,
+            &creature,
+            &data_dir,
+            &["--sample-rate", "0.5", "--sample-phase", bad],
+        );
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            !out.status.success(),
+            "--sample-phase {bad} must fail loud, not keep a skewed subset"
+        );
+        assert!(
+            stderr.contains("--sample-phase"),
+            "stderr must name the flag for {bad}: {stderr}"
+        );
+        assert!(
+            !stderr.contains("panicked"),
+            "--sample-phase {bad} must not panic: {stderr}"
+        );
+    }
+
+    // The phase is range-checked even when no sampling is requested.
+    let out = run_single(
+        bin,
+        &creature,
+        &data_dir,
+        &["--sample-phase", "18014398509481984"],
+    );
+    assert!(!out.status.success(), "huge phase without a rate must fail");
+    assert!(String::from_utf8_lossy(&out.stderr).contains("--sample-phase"));
+
+    // Control: the largest accepted phase still keeps half of 100 records.
+    let out = run_single(
+        bin,
+        &creature,
+        &data_dir,
+        &["--sample-rate", "0.5", "--sample-phase", "4294967295"],
+    );
+    assert!(out.status.success(), "max phase must succeed");
+    let json = parse_stdout(&out);
+    assert_eq!(json["recordCount"], 50);
+}
+
+#[test]
 fn help_advertises_sample_rate_for_consumer_probe() {
     // The consumer (NEAT-AI#3257) probes `--help` for `--sample-rate` before
     // passing it on the batch path, so the flag must appear in help output.
