@@ -18,6 +18,8 @@
 
 pub mod bench_support;
 pub mod cli;
+pub mod cohort;
+pub mod cohort_fixture;
 pub mod corpus_guard;
 pub mod cost;
 pub mod creature_width;

@@ -140,7 +140,7 @@ Configuration (ignore list, skip paths, check-filenames / check-hidden flags) is
 
 This section is the single documented home for the workspace's binary list; `rust_scorer/Cargo.toml` owns it and `CONTRIBUTING.md` / `AGENTS.md` cite it rather than keeping their own copies (Issue #509). `scripts/check-binary-list-docs.sh` (invoked from `quality.sh`, covered by `tests/scripts/binary_list_docs.bats`) fails the gate when a manifest binary is missing here, or when either of those documents restates the list.
 
-Binaries: `rust_scorer`, `float_scan_bench`, `cost_scan_bench`, `gpu_pipeline_alloc_bench`, `if_tree_batch_bench` (see `rust_scorer/Cargo.toml`). `cost_scan_bench` (Issue #124) sweeps every supported [`CostKind`](rust_scorer/src/cost.rs) through the forward-only fused path against a single creature and a `.bin` corpus, emitting a JSON summary for per-cost CPU baseline comparison. `gpu_pipeline_alloc_bench` (Issue #202) counts heap allocations during a multi-chunk pipelined (`inflight_chunks == 2`) GPU directory run; it skips cleanly on CPU-only hosts. `if_tree_batch_bench` (Issue #574) scores a batch of `IF` decision-tree candidates against one generated corpus and reports candidates/second and records/second — see [Tree-heavy candidate batching bench](#tree-heavy-candidate-batching-bench-issue-574).
+Binaries: `rust_scorer`, `float_scan_bench`, `cost_scan_bench`, `gpu_pipeline_alloc_bench`, `if_tree_batch_bench`, `cohort_bench` (see `rust_scorer/Cargo.toml`). `cost_scan_bench` (Issue #124) sweeps every supported [`CostKind`](rust_scorer/src/cost.rs) through the forward-only fused path against a single creature and a `.bin` corpus, emitting a JSON summary for per-cost CPU baseline comparison. `gpu_pipeline_alloc_bench` (Issue #202) counts heap allocations during a multi-chunk pipelined (`inflight_chunks == 2`) GPU directory run; it skips cleanly on CPU-only hosts. `if_tree_batch_bench` (Issue #574) scores a batch of `IF` decision-tree candidates against one generated corpus and reports candidates/second and records/second — see [Tree-heavy candidate batching bench](#tree-heavy-candidate-batching-bench-issue-574). `cohort_bench` (Issue #683) scores graft, weight-change and removal cohorts of a production-scale synthetic creature in directory mode and cohort mode — see [Cohort scoring bench](#cohort-scoring-bench-issue-683).
 
 ## CLI
 
@@ -718,6 +718,77 @@ score stays stable:
 > NEAT-AI#3256 / #3257. The scorer does **not** auto-release — the consumer bumps
 > to a released scorer through the normal dependency-bump flow once a human cuts
 > the release.
+
+### Cohort scoring (Issue #683)
+
+Optimisers ask about creatures that are almost identical to one incumbent: a
+graft cohort is the incumbent plus one small `IF` tree each, a Lamarck batch
+changes one weight, an Ockham batch removes one neuron. Directory mode scores
+each as if unrelated, so `N` candidates cost `N` full forward passes per record.
+`--cohort` makes a candidate cost only what it changed:
+
+```bash
+rust_scorer --cohort <creatures_dir> <data_dir>
+```
+
+The scorer hash-conses every creature into **one union network**. Two neurons
+are the same computation when both are constants with the same bias, or when
+squash, bias and the full **ordered** inbound list `(source, weight, role)`
+match and every source is, recursively, the same computation. Floats compare by
+bit pattern; UUIDs play no part and no caller-supplied diff is consulted. The
+union is activated once per record, so everything the cohort shares runs once
+and each candidate pays only for its **dirty cone** — the neurons it changed and
+everything downstream of them.
+
+```mermaid
+flowchart LR
+    I[inputs] --> S[shared incumbent sub-graph<br/>activated once per record]
+    S --> A0[anchor, incumbent]
+    S --> A1[anchor + graft 1]
+    S --> A2[anchor + graft 2]
+    A0 --> O0[outputs c000]
+    A1 --> O1[outputs c001]
+    A2 --> O2[outputs c002]
+```
+
+**Parity.** The union is evaluated with the same public `neat-core` kernels and
+per-record arithmetic the fused MSE scan uses — records in a 4-or-more SIMD
+group go through the record-interleaved gather, the `n % 4` tail through the
+single-record kernels, squared errors fold into an `f64` in record order — and
+each chunk is partitioned across workers exactly as directory mode partitions a
+**one-creature** directory. A creature's cohort result is therefore
+**bit-identical** to scoring that creature alone in a directory
+(`rust_scorer/tests/cohort_parity.rs`, `cohort_parity_workers.rs`: graft,
+weight-change, removal and unrelated cohorts; `IF`, `MINIMUM`, `MAXIMUM` and
+constant neurons; the #574 `IF` tree fixtures; every SIMD tier; sampled corpora;
+`RMSE`). Inside a larger directory, directory mode itself regroups records per
+worker (the #537 regrouping), which moves a score by `f32` rounding; cohort mode
+matches such a run within **`1e-6` relative** (measured ≤ 4e-8 on the small
+fixtures, ≤ 5e-9 at production scale), the drift being directory mode's own.
+Candidate ordering is exact against standalone scoring.
+
+**Contract.** stdout is the ordinary stem-keyed result map, and exit codes are
+unchanged. One stderr line reports what the union saved:
+
+```text
+[cohort] hosted 64 creatures: 8083 neuron activations per record (directory mode 499611, 0.0162x), …
+```
+
+A cohort the mode cannot host is scored on the ordinary directory path (GPU
+routing included) after exactly one stderr line
+`[cohort] fallback to directory mode: <reason>`, decided before any training
+data is read. The mode hosts **`MSE` and `RMSE`** only, **forward-only**
+creatures only, no `HYPOT` / `HYPOTv2` / `MEAN` neuron, and a union of at most
+65 536 nodes. It runs on the CPU, and `--cohort` is rejected with
+`--race-stdio`, with `--gpu on`, and with a single creature file. Sampling
+(`--sample-rate`) is honoured. Acceptance policy is untouched: callers still
+decide what to promote and can still re-score a winner standalone.
+
+Not built: the optional incremental-aggregate step (starting a grown anchor from
+the incumbent's partial sums). The public interleaved kernel seeds every lane
+with one scalar bias, so continuing a per-lane partial sum would need a second
+FMA chain whose rounding is not guaranteed to match; the measured win below did
+not need it.
 
 ### Self-tuning, and why the `NEAT_SCORER_*` knobs are not configuration (Issue #544)
 
@@ -2179,6 +2250,32 @@ unwritable fixture, a failed scoring run, or `--gpu on` on a host with no
 adapter exits non-zero rather than reporting an empty result as success
 (`rust_scorer/tests/if_tree_batch_bench_smoke.rs`). Recorded numbers live in
 [`docs/performance-baseline.md`](docs/performance-baseline.md).
+
+### Cohort scoring bench (Issue #683)
+
+`cohort_bench` scores three near-clone cohorts of a **production-scale
+synthetic** creature
+([`LayeredShape::production_scale`](rust_scorer/src/cohort_fixture.rs): 2 511
+inputs, 7 804 non-input neurons, 65 687 synapses, a fan-in-2 000 anchor) in
+directory mode and cohort mode, alternating, on one generated corpus:
+
+```bash
+cargo build --release -p rust_scorer --bin cohort_bench
+BENCH_SCORING_BYTES=200000000 ./target/release/cohort_bench --repeats 5
+```
+
+| Cohort | Creatures | Shape |
+|---|---|---|
+| `graft` | 64 | incumbent + 63 candidates grafted with 1–4 `IF` neurons at one anchor |
+| `weight` | 100 | one weight changed somewhere in the network |
+| `removal` | 100 | one hidden neuron removed |
+
+Each cohort prints one JSON object: neuron activations and synapses per record
+in both modes, the wall-time median with a 95 % order-statistic interval, the
+cohort/directory wall ratio, and the largest relative error difference. The
+production creature is private and never fetched, so the fixture is synthetic
+at production size. Recorded numbers live in
+[`docs/performance-baseline.md`](docs/performance-baseline.md#cohort-scoring--22-november-2026-issue-683).
 
 ### Knob sweep harness (Issue #545)
 

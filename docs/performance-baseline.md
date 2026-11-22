@@ -1688,6 +1688,58 @@ compare across runs. A GPU host should record its own row — the routing decisi
 for `IF` trees is the ordinary topology decision (private kernel below the
 256-neuron cap, scratch above it), unchanged by Issue #574.
 
+## Cohort scoring — 22 November 2026 (Issue #683)
+
+Directory mode versus `--cohort` on the same cohort, corpus and host, measured
+by [`cohort_bench`](../rust_scorer/src/bin/cohort_bench.rs). The "before" is
+directory mode (the path every caller uses today) and the "after" is cohort
+mode; the two runs alternate within each repetition so host drift hits both
+alike. Raw observations:
+[`docs/evidence/issue-683-cohort-bench.jsonl`](evidence/issue-683-cohort-bench.jsonl).
+
+Host: x86_64 Linux container, Intel Xeon @ 2.10 GHz, 2 logical CPUs, 7 GiB RAM,
+no GPU adapter. Release build, stable 1.97 (the 1.99 pin was not installable on
+this host). Corpus: 200 000 000 B = 19 904 records in four `.bin` files.
+Creature: the production-scale synthetic
+[`LayeredShape::production_scale`](../rust_scorer/src/cohort_fixture.rs) — 2 511
+inputs, 7 804 non-input neurons, 65 687 synapses, a fan-in-2 000 graft anchor.
+
+```bash
+BENCH_SCORING_BYTES=200000000 ./target/release/cohort_bench --repeats 5
+```
+
+| Cohort | Creatures | Activations / record, directory → cohort | Directory wall, median [range] | Cohort wall, median [range] | Cohort / directory |
+|---|---:|---|---|---|---:|
+| 64 grafts at one anchor | 64 | 499 611 → 8 083 (1.62 %) | 49.00 s [47.12, 49.39] | 4.26 s [3.90, 4.62] | **8.7 %** |
+| 100 single-weight changes | 100 | 780 400 → 8 892 (1.14 %) | 20.50 s [19.88, 21.53] | 5.90 s [5.70, 6.25] | 28.8 % |
+| 100 single-neuron removals | 100 | 780 300 → 8 657 (1.11 %) | 19.88 s [19.82, 21.22] | 5.72 s [5.64, 5.96] | 28.8 % |
+
+With five runs no order-statistic interval of the median reaches 95 %
+coverage inside the sample, so the bracket is the full range of the five runs
+(every cohort run is faster than every directory run in all three shapes).
+Synapses read per record fall from 4.20 M to 180 k (grafts) and from 6.57 M to
+≈ 245 k (weights, removals). The largest relative error difference against the
+multi-creature directory run is 3.8e-10; against each creature scored alone
+the results are bit-identical (the parity tests).
+
+**Predeclared bar: the 64-graft cohort at ≤ 25 % of directory mode's wall time
+— met at 8.7 %.**
+
+Reading the numbers:
+
+- Graft creatures carry `IF` neurons, so directory mode scores every one of them
+  on `neat-core`'s per-lane aggregate path, which is why its 64-creature run is
+  slower than the 100-creature standard-squash runs. Cohort mode evaluates the
+  shared standard sub-graph through the interleaved gather even when the union
+  contains `IF` neurons.
+- At this scale cohort mode's wall time is dominated by loading: parsing and
+  compiling 64–100 creature files of ≈ 5 MB each and hash-consing them. The
+  forward pass itself shrinks with the activation count (≈ 1 % of directory
+  mode's work), so the weight and removal ratios are a loading floor, not a
+  scoring one, and would fall further on a larger corpus.
+- The optional incremental-aggregate step was not built; the bar was met
+  without it.
+
 ## Learnings recovered from the early PR summaries (Issue #508)
 
 Measurements from PRs 1–105 whose outcomes were only ever recorded in the

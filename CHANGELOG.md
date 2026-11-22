@@ -17,6 +17,17 @@ section to the released version with its date.
 
 ### Added
 
+- **Cohort (delta) scoring — `--cohort` (Issue #683).** Directory mode can now
+  hash-cons every creature into one union network (squash, bias and the ordered
+  `(source, weight, role)` inbound list, compared by bit pattern) and activate it
+  once per record, so a near-clone pays only for its dirty cone. Each creature's
+  result is bit-identical to scoring it alone in a directory; stdout and exit
+  codes are unchanged, and an unhostable cohort (non-`MSE`/`RMSE` cost,
+  recurrent creature, `HYPOT`/`HYPOTv2`/`MEAN`, > 65 536 union nodes) falls back
+  to directory mode with one `[cohort] fallback to directory mode:` stderr line.
+  On a production-scale synthetic creature at 200 MB the 64-graft cohort ran in
+  a fraction of directory mode's wall time (see `docs/performance-baseline.md`).
+  New `cohort_bench` binary and `cohort_fixture` module.
 - **The family-sync guard accepts a push delegated to `push-with-app-token`
   (Issue #656).** `scripts/check-family-sync-workflow.sh` now passes a
   `family-sync.yml` whose push step `uses: ./.github/actions/push-with-app-token`:
