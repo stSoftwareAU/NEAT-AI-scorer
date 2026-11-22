@@ -606,14 +606,40 @@ fn score_from_creature_dir_cpu(
     // (`score_from_creature_dir_gpu_impl` passes a real adapter label here).
     gpu_backend: GpuBackendLabel,
     cost: CostKind,
-    mut on_chunk: Option<&mut EarlyExitCallback<'_>>,
+    on_chunk: Option<&mut EarlyExitCallback<'_>>,
     // Issue #310 — record-level sub-sampling. `SampleSpec::full()` restores the
     // pre-#310 full-corpus behaviour exactly.
     sample: &SampleSpec,
 ) -> Result<BTreeMap<String, ScoreResult>, String> {
     let started = Instant::now();
     let loaded = load_creatures_from_dir(creatures_dir)?;
+    score_loaded_creatures_cpu(
+        loaded,
+        data_path,
+        gpu_backend,
+        cost,
+        on_chunk,
+        sample,
+        started,
+    )
+}
 
+/// The CPU directory sweep over creatures already in memory (Issue #588: the
+/// perturbation mode scores perturbed copies it never writes to disk). Every
+/// creature must share one input/output shape, as [`load_creatures_from_dir`]
+/// guarantees for a directory.
+pub(crate) fn score_loaded_creatures_cpu(
+    loaded: Vec<LoadedCreature>,
+    data_path: &Path,
+    gpu_backend: GpuBackendLabel,
+    cost: CostKind,
+    mut on_chunk: Option<&mut EarlyExitCallback<'_>>,
+    sample: &SampleSpec,
+    started: Instant,
+) -> Result<BTreeMap<String, ScoreResult>, String> {
+    if loaded.is_empty() {
+        return Err("No creatures to score".to_string());
+    }
     if !data_path.is_dir() {
         return Err(format!(
             "Training data path '{}' is not a directory",
@@ -1020,6 +1046,7 @@ pub(crate) fn finalise_directory_results(
                 // Issue #310: report the effective rate only when sub-sampling
                 // actually ran, so a full-corpus run keeps the pre-#310 JSON.
                 sample_rate: (!sample.is_full()).then_some(sample.rate()),
+                perturbation: None,
             },
         );
     }
@@ -1536,6 +1563,7 @@ fn score_from_creature_dir_gpu_impl(
                 // Issue #310: report the effective rate only when sub-sampling
                 // actually ran, so a full-corpus run keeps the pre-#310 JSON.
                 sample_rate: (!sample.is_full()).then_some(sample.rate()),
+                perturbation: None,
             },
         );
     }

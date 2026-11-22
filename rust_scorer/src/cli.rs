@@ -41,7 +41,7 @@ use crate::sampling::{SampleSpec, parse_sample_rate};
 use crate::scoring::{ScoreResult, calculate_score, compute_score_components};
 use crate::signal_exit;
 use crate::stream_score::AUTO_FILE_READ_WORKERS;
-use crate::{cohort, cost, gpu, multi_score, scoring, stream_score};
+use crate::{cohort, cost, gpu, multi_score, perturb, scoring, stream_score};
 
 mod gpu_plan;
 
@@ -180,6 +180,38 @@ struct Cli {
     #[arg(long)]
     cohort: bool,
 
+    /// Perturbation-robustness mode (Issue #588): also score `--perturb-seeds`
+    /// copies of each creature with synapse weights perturbed by `N(0, σ²)`.
+    ///
+    /// The unperturbed result is unchanged; each creature's entry gains a
+    /// `perturbation` block with the mean and standard deviation of the
+    /// perturbed error and score. Noise is a pure function of the seed and the
+    /// synapse's `(from, to, role)`, so every creature is perturbed with the same
+    /// seeds and shared synapses get the same noise (paired comparisons). The
+    /// copies are scored on the CPU in one extra sweep. Rejected with
+    /// `--race-stdio`, `--cohort` and `--gpu on`. See the README
+    /// "Perturbation robustness" section.
+    #[arg(long, value_name = "SIGMA")]
+    perturb_sigma: Option<f64>,
+
+    /// With `--perturb-sigma`: number of perturbed copies per creature.
+    #[arg(
+        long,
+        value_name = "N",
+        default_value_t = 8,
+        requires = "perturb_sigma"
+    )]
+    perturb_seeds: usize,
+
+    /// With `--perturb-sigma`: first seed; copy `k` uses `base + k`.
+    #[arg(
+        long,
+        value_name = "SEED",
+        default_value_t = 0,
+        requires = "perturb_sigma"
+    )]
+    perturb_seed_base: u64,
+
     /// Print the detected host resources and every resolved knob as one JSON
     /// object, then exit — score nothing (Issue #545).
     ///
@@ -302,6 +334,29 @@ fn run(cli: &Cli) -> Result<RunOutput, String> {
         None => SampleSpec::full(),
     };
 
+    // Issue #588: resolve the perturbation request once, before any scoring.
+    let perturb_spec = match cli.perturb_sigma {
+        Some(sigma) => {
+            if cli.race_stdio || cli.cohort {
+                return Err(
+                    "--perturb-sigma cannot be combined with --race-stdio or --cohort".to_string(),
+                );
+            }
+            if mode == GpuMode::On {
+                return Err(
+                    "--perturb-sigma scores its copies on the CPU; it cannot be combined with --gpu on"
+                        .to_string(),
+                );
+            }
+            Some(perturb::PerturbSpec::new(
+                sigma,
+                cli.perturb_seeds,
+                cli.perturb_seed_base,
+            )?)
+        }
+        None => None,
+    };
+
     // Issue #648: GPU/cost/racing decisions live in `gpu_plan`.
     gpu_plan::validate_flag_combinations(mode, cli.cost, cli.race_stdio, cli.creature_stdin)?;
     gpu_plan::validate_cohort_flags(mode, cli.cohort, cli.race_stdio, cli.creature_stdin)?;
@@ -313,14 +368,25 @@ fn run(cli: &Cli) -> Result<RunOutput, String> {
         // (#81 closed as a negative result — no GPU kernel ships for this
         // path). The reported `gpuBackend` reflects what actually ran, so
         // it is `cpu-fallback` here regardless of `--gpu`.
-        return score_from_json(
+        let mut result = score_from_json(
             &creature_json,
             &data_path,
             GpuBackendLabel::CpuFallback,
             cli.cost,
             &sample,
-        )
-        .map(|r| RunOutput::Single(Box::new(r)));
+        )?;
+        if let Some(spec) = &perturb_spec {
+            attach_single_perturbation(
+                &mut result,
+                &creature_json,
+                None,
+                &data_path,
+                cli.cost,
+                &sample,
+                spec,
+            )?;
+        }
+        return Ok(RunOutput::Single(Box::new(result)));
     }
 
     if cli.args.len() != 2 {
@@ -363,7 +429,18 @@ fn run(cli: &Cli) -> Result<RunOutput, String> {
             return run_racing_directory(creature_path, data_path, cli.cost, &sample)
                 .map(RunOutput::Multi);
         }
-        run_creature_directory(cli, mode, up_front_gpu, &sample).map(RunOutput::Multi)
+        let mut results = run_creature_directory(cli, mode, up_front_gpu, &sample)?;
+        if let Some(spec) = &perturb_spec {
+            attach_directory_perturbations(
+                &mut results,
+                creature_path,
+                data_path,
+                cli.cost,
+                &sample,
+                spec,
+            )?;
+        }
+        Ok(RunOutput::Multi(results))
     } else {
         let creature_json = fs::read_to_string(creature_path).map_err(|e| {
             format!(
@@ -373,15 +450,68 @@ fn run(cli: &Cli) -> Result<RunOutput, String> {
         })?;
         // See note in the `--creature-stdin` branch — single-creature path
         // always reports `cpu-fallback`.
-        score_from_json(
+        let mut result = score_from_json(
             &creature_json,
             data_path,
             GpuBackendLabel::CpuFallback,
             cli.cost,
             &sample,
-        )
-        .map(|r| RunOutput::Single(Box::new(r)))
+        )?;
+        if let Some(spec) = &perturb_spec {
+            attach_single_perturbation(
+                &mut result,
+                &creature_json,
+                Some(creature_path),
+                data_path,
+                cli.cost,
+                &sample,
+                spec,
+            )?;
+        }
+        Ok(RunOutput::Single(Box::new(result)))
     }
+}
+
+/// Issue #588: score the perturbed copies of one creature and attach the
+/// summary to its (unchanged) result.
+fn attach_single_perturbation(
+    result: &mut ScoreResult,
+    creature_json: &str,
+    path: Option<&Path>,
+    data_path: &Path,
+    cost: CostKind,
+    sample: &SampleSpec,
+    spec: &perturb::PerturbSpec,
+) -> Result<(), String> {
+    let creature = neat_core::creature::parse_creature_json(creature_json)
+        .map_err(|e| format!("Failed parsing creature for perturbation: {e}"))?;
+    let target = perturb::PerturbTarget {
+        key: "creature".to_string(),
+        path: path.map_or_else(|| PathBuf::from("<stdin>"), Path::to_path_buf),
+        creature,
+    };
+    let mut summaries =
+        perturb::score_perturbations(std::slice::from_ref(&target), data_path, cost, sample, spec)?;
+    result.perturbation = summaries.remove("creature");
+    Ok(())
+}
+
+/// Issue #588: score the perturbed copies of every creature in the directory
+/// and attach each summary to that creature's (unchanged) result.
+fn attach_directory_perturbations(
+    results: &mut BTreeMap<String, ScoreResult>,
+    creatures_dir: &Path,
+    data_path: &Path,
+    cost: CostKind,
+    sample: &SampleSpec,
+    spec: &perturb::PerturbSpec,
+) -> Result<(), String> {
+    let targets = perturb::targets_from_dir(creatures_dir)?;
+    let mut summaries = perturb::score_perturbations(&targets, data_path, cost, sample, spec)?;
+    for (key, result) in results.iter_mut() {
+        result.perturbation = summaries.remove(key);
+    }
+    Ok(())
 }
 
 /// Score a creatures directory (`cli.args[0]`) on the GPU the plan picks, or
@@ -665,6 +795,7 @@ fn score_from_json(
         cost_name: cost.as_str().to_string(),
         // Issue #310: report the effective rate only when sub-sampling ran.
         sample_rate: (!sample.is_full()).then_some(sample.rate()),
+        perturbation: None,
     })
 }
 
@@ -814,6 +945,9 @@ mod tests {
             sample_phase: 0,
             race_stdio: false,
             cohort: false,
+            perturb_sigma: None,
+            perturb_seeds: 8,
+            perturb_seed_base: 0,
             host_report: false,
             record_bytes: DEFAULT_REPORT_RECORD_BYTES,
             args: vec![creature.to_path_buf(), data.to_path_buf()],
@@ -1105,6 +1239,7 @@ mod tests {
             gpu_dispatch_count: None,
             cost_name: "MSE".to_string(),
             sample_rate: None,
+            perturbation: None,
         };
         let json = serde_json::to_string_pretty(&result).unwrap();
         // Verify camelCase keys in output
@@ -1218,6 +1353,9 @@ mod tests {
             sample_phase: 0,
             race_stdio: false,
             cohort: false,
+            perturb_sigma: None,
+            perturb_seeds: 8,
+            perturb_seed_base: 0,
             host_report: false,
             record_bytes: DEFAULT_REPORT_RECORD_BYTES,
             args: vec![PathBuf::from("/tmp/creature.json"), PathBuf::from("/tmp")],
@@ -1240,6 +1378,9 @@ mod tests {
             sample_phase: 0,
             race_stdio: false,
             cohort: false,
+            perturb_sigma: None,
+            perturb_seeds: 8,
+            perturb_seed_base: 0,
             host_report: false,
             record_bytes: DEFAULT_REPORT_RECORD_BYTES,
             args: vec![PathBuf::from("/tmp")],
