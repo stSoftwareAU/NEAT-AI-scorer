@@ -51,7 +51,8 @@ point result. Part of #588.
   deviations are sample (`n − 1`) estimates; per-seed values are included so a
   caller can pair them across candidates itself.
 - Only weights are perturbed, per the issue; biases are untouched.
-- Rejected with `--race-stdio`, `--cohort` and `--gpu on`.
+- Rejected with `--race-stdio`, `--cohort`, `--ensemble` (#589, merged) and
+  `--gpu on`, all before adapter selection.
 
 ### Undiscoverable Facts
 
@@ -113,7 +114,8 @@ flowchart LR
   rounding, other creatures different; single-file mode leaves the point
   `error` and `score` unchanged, is deterministic, seed-base sensitive,
   recovers both point values as σ → 0 and widens both spreads with larger σ;
-  seven refusals each asserted by its stderr message.
+  eight refusals each asserted by its stderr message (including
+  `--ensemble`).
 - Full workspace fmt, clippy (`-D warnings`, `filter_next`, `collapsible_if`),
   tests, rustdoc `-D warnings`, codespell, `markdownlint-cli2` and every
   `scripts/check-*.sh` validator — all pass.

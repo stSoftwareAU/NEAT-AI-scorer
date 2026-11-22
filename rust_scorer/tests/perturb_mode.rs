@@ -272,7 +272,7 @@ fn perturbations_are_deterministic_and_scale_with_sigma() {
 fn bad_perturbation_flags_are_rejected() {
     let tmp = tempfile::tempdir().unwrap();
     let (pop, data) = fixture(tmp.path());
-    let cases: [(&[&str], &str); 7] = [
+    let cases: [(&[&str], &str); 8] = [
         (
             &["--perturb-sigma", "0", &pop, &data],
             "--perturb-sigma must be a finite value > 0",
@@ -295,11 +295,15 @@ fn bad_perturbation_flags_are_rejected() {
         (&["--perturb-seeds", "4", &pop, &data], "--perturb-sigma"),
         (
             &["--perturb-sigma", "0.01", "--cohort", &pop, &data],
-            "--race-stdio or --cohort",
+            "--race-stdio, --cohort or --ensemble",
         ),
         (
             &["--perturb-sigma", "0.01", "--race-stdio", &pop, &data],
-            "--race-stdio or --cohort",
+            "--race-stdio, --cohort or --ensemble",
+        ),
+        (
+            &["--perturb-sigma", "0.01", "--ensemble", "mean", &pop, &data],
+            "--race-stdio, --cohort or --ensemble",
         ),
         // Named before adapter selection, so a GPU-less host reports the conflict.
         (

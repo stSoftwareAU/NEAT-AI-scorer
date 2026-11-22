@@ -24,6 +24,14 @@ section to the released version with its date.
   and median |w| for σ calibration). The unperturbed result is unchanged. Noise
   is a pure function of the seed and the synapse's `(from, to, role)`, so
   comparisons across creatures are paired.
+- **Ensemble mode — `--ensemble mean [--ensemble-top-k N]` (Issue #589).**
+  Scores a creatures directory in the ordinary single corpus pass (per-creature
+  results bit-identical to plain directory mode) and adds an `"ensemble"` block
+  for the uniform mean prediction: `meanMemberError`, `ensembleError`,
+  `ambiguity` (= `meanMemberError − ensembleError`, the Krogh–Vedelsby
+  identity), `bestMemberError` and `beatsBestMember`. Top-k membership is chosen
+  after the pass from per-subset squared-error statistics. `MSE`, forward-only,
+  CPU; measurement only.
 - **Cohort (delta) scoring — `--cohort` (Issue #683).** Directory mode can now
   hash-cons every creature into one union network (squash, bias and the ordered
   `(source, weight, role)` inbound list, compared by bit pattern) and activate it

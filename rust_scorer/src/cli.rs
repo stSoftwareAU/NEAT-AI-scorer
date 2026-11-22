@@ -41,7 +41,7 @@ use crate::sampling::{SampleSpec, parse_sample_rate};
 use crate::scoring::{ScoreResult, calculate_score, compute_score_components};
 use crate::signal_exit;
 use crate::stream_score::AUTO_FILE_READ_WORKERS;
-use crate::{cohort, cost, gpu, multi_score, perturb, scoring, stream_score};
+use crate::{cohort, cost, ensemble, gpu, multi_score, perturb, scoring, stream_score};
 
 mod gpu_plan;
 
@@ -189,7 +189,7 @@ struct Cli {
     /// synapse's `(from, to, role)`, so every creature is perturbed with the same
     /// seeds and shared synapses get the same noise (paired comparisons). The
     /// copies are scored on the CPU in one extra sweep. Rejected with
-    /// `--race-stdio`, `--cohort` and `--gpu on`. See the README
+    /// `--race-stdio`, `--cohort`, `--ensemble` and `--gpu on`. See the README
     /// "Perturbation robustness" section.
     #[arg(long, value_name = "SIGMA")]
     perturb_sigma: Option<f64>,
@@ -211,6 +211,24 @@ struct Cli {
         requires = "perturb_sigma"
     )]
     perturb_seed_base: u64,
+
+    /// Ensemble mode for a creatures directory (Issue #589).
+    ///
+    /// Scores the directory in the ordinary single corpus pass (the
+    /// per-creature results are unchanged) and adds an `"ensemble"` block for
+    /// the uniform mean prediction of the members: `meanMemberError`,
+    /// `ensembleError`, `ambiguity` (= `meanMemberError − ensembleError`, the
+    /// Krogh–Vedelsby identity), `bestMemberError` and `beatsBestMember`.
+    /// Measurement only: no `score` for the ensemble and no candidate emitted.
+    /// `MSE` and forward-only creatures only; CPU. See the README "Ensemble
+    /// mode" section.
+    #[arg(long, value_enum, value_name = "METHOD")]
+    ensemble: Option<ensemble::EnsembleMethod>,
+
+    /// With `--ensemble`, average only the `N` members with the lowest own
+    /// full-corpus error (still one corpus pass).
+    #[arg(long, value_name = "N", requires = "ensemble")]
+    ensemble_top_k: Option<usize>,
 
     /// Print the detected host resources and every resolved knob as one JSON
     /// object, then exit — score nothing (Issue #545).
@@ -303,6 +321,8 @@ enum RunOutput {
     // (one heap pointer) and stays small.
     Single(Box<ScoreResult>),
     Multi(BTreeMap<String, ScoreResult>),
+    // Issue #589: the per-creature map plus the `"ensemble"` block.
+    Ensemble(BTreeMap<String, ScoreResult>, Box<ensemble::EnsembleReport>),
     // Issue #545: `--host-report` scores nothing and prints the knob diagnostic.
     // Boxed for the same reason as `Single`: Issue #549 added the
     // `file_read_workers` knob, which pushed the inline payload over clippy's
@@ -337,9 +357,10 @@ fn run(cli: &Cli) -> Result<RunOutput, String> {
     // Issue #588: resolve the perturbation request once, before any scoring.
     let perturb_spec = match cli.perturb_sigma {
         Some(sigma) => {
-            if cli.race_stdio || cli.cohort {
+            if cli.race_stdio || cli.cohort || cli.ensemble.is_some() {
                 return Err(
-                    "--perturb-sigma cannot be combined with --race-stdio or --cohort".to_string(),
+                    "--perturb-sigma cannot be combined with --race-stdio, --cohort or --ensemble"
+                        .to_string(),
                 );
             }
             if mode == GpuMode::On {
@@ -360,6 +381,13 @@ fn run(cli: &Cli) -> Result<RunOutput, String> {
     // Issue #648: GPU/cost/racing decisions live in `gpu_plan`.
     gpu_plan::validate_flag_combinations(mode, cli.cost, cli.race_stdio, cli.creature_stdin)?;
     gpu_plan::validate_cohort_flags(mode, cli.cohort, cli.race_stdio, cli.creature_stdin)?;
+    gpu_plan::validate_ensemble_flags(
+        mode,
+        cli.ensemble.is_some(),
+        cli.cohort,
+        cli.race_stdio,
+        cli.creature_stdin,
+    )?;
     let up_front_gpu = gpu_plan::select_up_front(mode)?;
 
     if cli.creature_stdin {
@@ -400,6 +428,22 @@ fn run(cli: &Cli) -> Result<RunOutput, String> {
             "--race-stdio requires a creatures directory; '{}' is not a directory",
             creature_path.display()
         ));
+    }
+    if cli.ensemble.is_some() {
+        if !creature_path.is_dir() {
+            return Err(format!(
+                "--ensemble requires a creatures directory; '{}' is not a directory",
+                creature_path.display()
+            ));
+        }
+        let (results, report) = ensemble::score_from_creature_dir_ensemble(
+            creature_path,
+            data_path,
+            cli.cost,
+            &sample,
+            cli.ensemble_top_k,
+        )?;
+        return Ok(RunOutput::Ensemble(results, Box::new(report)));
     }
     if cli.cohort {
         if !creature_path.is_dir() {
@@ -828,6 +872,15 @@ pub fn main() {
             .map_err(|e| format!("Failed to serialise result to JSON: {e}")),
         RunOutput::Multi(result_map) => serde_json::to_string_pretty(&result_map)
             .map_err(|e| format!("Failed to serialise multi-creature result to JSON: {e}")),
+        RunOutput::Ensemble(result_map, report) => serde_json::to_value(&result_map)
+            .and_then(|mut v| {
+                let block = serde_json::to_value(&report)?;
+                if let Some(map) = v.as_object_mut() {
+                    map.insert(ensemble::ENSEMBLE_KEY.to_string(), block);
+                }
+                serde_json::to_string_pretty(&v)
+            })
+            .map_err(|e| format!("Failed to serialise ensemble result to JSON: {e}")),
         RunOutput::Host(report) => report.to_json(),
     });
 
@@ -846,7 +899,9 @@ mod tests {
     fn run_single(cli: &Cli) -> Result<ScoreResult, String> {
         match run(cli)? {
             RunOutput::Single(result) => Ok(*result),
-            RunOutput::Multi(_) => Err("Expected single-creature output".to_string()),
+            RunOutput::Multi(_) | RunOutput::Ensemble(..) => {
+                Err("Expected single-creature output".to_string())
+            }
             RunOutput::Host(_) => Err("Expected single-creature output".to_string()),
         }
     }
@@ -948,6 +1003,8 @@ mod tests {
             perturb_sigma: None,
             perturb_seeds: 8,
             perturb_seed_base: 0,
+            ensemble: None,
+            ensemble_top_k: None,
             host_report: false,
             record_bytes: DEFAULT_REPORT_RECORD_BYTES,
             args: vec![creature.to_path_buf(), data.to_path_buf()],
@@ -1356,6 +1413,8 @@ mod tests {
             perturb_sigma: None,
             perturb_seeds: 8,
             perturb_seed_base: 0,
+            ensemble: None,
+            ensemble_top_k: None,
             host_report: false,
             record_bytes: DEFAULT_REPORT_RECORD_BYTES,
             args: vec![PathBuf::from("/tmp/creature.json"), PathBuf::from("/tmp")],
@@ -1381,6 +1440,8 @@ mod tests {
             perturb_sigma: None,
             perturb_seeds: 8,
             perturb_seed_base: 0,
+            ensemble: None,
+            ensemble_top_k: None,
             host_report: false,
             record_bytes: DEFAULT_REPORT_RECORD_BYTES,
             args: vec![PathBuf::from("/tmp")],
