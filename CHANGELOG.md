@@ -17,6 +17,17 @@ section to the released version with its date.
 
 ### Added
 
+- **Cohort (delta) scoring — `--cohort` (Issue #683).** Directory mode can now
+  hash-cons every creature into one union network (squash, bias and the ordered
+  `(source, weight, role)` inbound list, compared by bit pattern) and activate it
+  once per record, so a near-clone pays only for its dirty cone. Each creature's
+  result is bit-identical to scoring it alone in a directory; stdout and exit
+  codes are unchanged, and an unhostable cohort (non-`MSE`/`RMSE` cost,
+  recurrent creature, `HYPOT`/`HYPOTv2`/`MEAN`, > 65 536 union nodes) falls back
+  to directory mode with one `[cohort] fallback to directory mode:` stderr line.
+  On a production-scale synthetic creature at 200 MB the 64-graft cohort ran in
+  a fraction of directory mode's wall time (see `docs/performance-baseline.md`).
+  New `cohort_bench` binary and `cohort_fixture` module.
 - **Opt-in cached-halving experiment (Issue #680).** A separate `halving_bench`
   worker and `scripts/bench-halving.py` driver compare full scoring, stride
   screening, nested uncached screening and cached cumulative 2%/5%/15%/100%
@@ -54,6 +65,9 @@ section to the released version with its date.
 
 ### Security
 
+- **`rustix` 1.1.4 → 1.1.6 (RUSTSEC-2026-0486).** The xattr functions could mark
+  unwritten bytes initialised for a zero-length buffer (unsound). The scorer
+  does not call them; the bump clears the `cargo audit` warning.
 - **Dependency bumps get their own trigger (Issue #658).** Nothing opened a
   bump PR on its own. `bump-deps.sh` only ran alongside unrelated worker PRs
   (#105 removed its schedule), and `cargo-audit.yml` only detects advisories.

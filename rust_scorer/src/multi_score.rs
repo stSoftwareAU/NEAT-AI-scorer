@@ -172,7 +172,7 @@ pub(crate) struct LoadedCreature {
 /// Partition `n_records` packed records into `workers` ranges over the
 /// flat float buffer. Each returned range is a half-open `[start, end)` over
 /// the f32 slice. `workers` must be in `[1, n_records]`.
-fn partition_packed_record_ranges(
+pub(crate) fn partition_packed_record_ranges(
     values_per_record: usize,
     n_records: usize,
     workers: usize,
@@ -295,7 +295,7 @@ const MAX_WORKER_SPLIT: usize = 64;
 /// exactly. `k > 1` splits every creature's chunk into roughly `k` times as
 /// many record sub-ranges, so the Rayon pool sees finer tasks and the tail of
 /// each chunk idles fewer threads.
-fn worker_split_factor() -> usize {
+pub(crate) fn worker_split_factor() -> usize {
     let env = std::env::var(WORKER_SPLIT_ENV).ok();
     let (parsed, warning) = crate::env_tuning::parse_tuning_var(
         WORKER_SPLIT_ENV,
@@ -341,7 +341,7 @@ fn workers_per_creature(n_creatures: usize, activation_threads: usize) -> Vec<us
 /// Every creature's workers are contiguous and folded back in worker order, so
 /// the per-creature partial sums are added in a fixed order and the result
 /// stays deterministic for a given `split`.
-fn workers_per_creature_split(
+pub(crate) fn workers_per_creature_split(
     n_creatures: usize,
     activation_threads: usize,
     split: usize,
@@ -917,7 +917,47 @@ fn score_from_creature_dir_cpu(
         return Err("No training records found".to_string());
     }
 
-    let elapsed = started.elapsed().as_secs_f64();
+    finalise_directory_results(
+        &loaded,
+        &total_mse,
+        &records_scored,
+        cost,
+        &DirectoryRunMeta {
+            training_read_backend,
+            gpu_backend,
+            read_buf_len: fused_read_buf_len,
+            activation_threads,
+            time_taken_secs: started.elapsed().as_secs_f64(),
+            compile_time_secs,
+            sample,
+        },
+    )
+}
+
+/// Run-wide facts every creature's [`ScoreResult`] in a CPU directory sweep
+/// shares (Issue #683: the per-creature finalisation is shared by the
+/// directory sweep and the cohort sweep in [`crate::cohort`], so the two cannot
+/// drift on how a summed loss becomes a score).
+pub(crate) struct DirectoryRunMeta<'a> {
+    pub(crate) training_read_backend: String,
+    pub(crate) gpu_backend: GpuBackendLabel,
+    pub(crate) read_buf_len: usize,
+    pub(crate) activation_threads: usize,
+    pub(crate) time_taken_secs: f64,
+    pub(crate) compile_time_secs: f64,
+    pub(crate) sample: &'a SampleSpec,
+}
+
+/// Turn each creature's summed loss and scored-record count into its
+/// [`ScoreResult`], keyed by file stem.
+pub(crate) fn finalise_directory_results(
+    loaded: &[LoadedCreature],
+    total_loss: &[f64],
+    records_scored: &[usize],
+    cost: CostKind,
+    meta: &DirectoryRunMeta<'_>,
+) -> Result<BTreeMap<String, ScoreResult>, String> {
+    let sample = meta.sample;
     let mut results = BTreeMap::new();
     for (ci, loaded_creature) in loaded.iter().enumerate() {
         let scored = records_scored[ci];
@@ -932,7 +972,7 @@ fn score_from_creature_dir_cpu(
         }
         // Issue #339: shared finaliser — RMSE takes a host-side `sqrt` of the
         // mean here, reusing the MSE squared-error sum unchanged.
-        let avg_error = cost.finalise_mean(total_mse[ci], scored);
+        let avg_error = cost.finalise_mean(total_loss[ci], scored);
         // Issue #289: the scoring API now returns the typed `ScoringError`;
         // flatten to this module's `String` error contract at the boundary.
         let components =
@@ -963,16 +1003,16 @@ fn score_from_creature_dir_cpu(
                 // Issue #579: report the creature's own flag, not the batch's
                 // former `forwardOnly=true` precondition.
                 forward_only: loaded_creature.creature.forward_only,
-                training_read_backend: training_read_backend.clone(),
-                gpu_backend,
-                read_buf_len: Some(fused_read_buf_len),
+                training_read_backend: meta.training_read_backend.clone(),
+                gpu_backend: meta.gpu_backend,
+                read_buf_len: Some(meta.read_buf_len),
                 // Issue #529 parallel file reads are a fused-path knob only.
                 file_read_workers: None,
-                activation_threads: Some(activation_threads),
+                activation_threads: Some(meta.activation_threads),
                 parallel_activation_batches: None,
                 max_activation_batch_records: None,
-                time_taken_secs: elapsed,
-                compile_time_secs: Some(compile_time_secs),
+                time_taken_secs: meta.time_taken_secs,
+                compile_time_secs: Some(meta.compile_time_secs),
                 gpu_kernel: None,
                 gpu_inflight_chunks: None,
                 gpu_dispatch_count: None,

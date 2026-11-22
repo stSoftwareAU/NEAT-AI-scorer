@@ -63,6 +63,37 @@ pub(super) fn validate_flag_combinations(
     Ok(())
 }
 
+/// Refuse `--cohort` combinations it cannot honour (Issue #683), before any
+/// `wgpu` call — so `--cohort --gpu on` names the conflict even on a host with
+/// no adapter, rather than failing on adapter selection.
+///
+/// # Errors
+///
+/// A message naming the conflicting flags.
+pub(super) fn validate_cohort_flags(
+    mode: GpuMode,
+    cohort: bool,
+    race_stdio: bool,
+    creature_stdin: bool,
+) -> Result<(), String> {
+    if !cohort {
+        return Ok(());
+    }
+    if creature_stdin {
+        return Err(
+            "--cohort scores a creatures directory; it cannot be combined with --creature-stdin"
+                .to_string(),
+        );
+    }
+    if race_stdio {
+        return Err("--cohort cannot be combined with --race-stdio".to_string());
+    }
+    if matches!(mode, GpuMode::On) {
+        return Err("--cohort runs on the CPU; it cannot be combined with --gpu on".to_string());
+    }
+    Ok(())
+}
+
 /// Select the adapter up-front — `--gpu on` only.
 ///
 /// Issue #180: under `--gpu auto` adapter selection is *deferred* to the
@@ -325,5 +356,22 @@ mod tests {
         let dir = dir_with(&tmp, &creature_json(2, 1));
         assert!(resolve_directory_gpu(GpuMode::Off, None, &dir).is_none());
         assert!(resolve_directory_gpu(GpuMode::On, None, &dir).is_none());
+    }
+
+    #[test]
+    fn cohort_flag_conflicts_are_refused_before_adapter_selection() {
+        assert!(
+            validate_cohort_flags(GpuMode::On, false, true, true).is_ok(),
+            "no --cohort, no check"
+        );
+        for mode in [GpuMode::Auto, GpuMode::Off] {
+            validate_cohort_flags(mode, true, false, false).expect("plain cohort");
+        }
+        let err = validate_cohort_flags(GpuMode::Auto, true, false, true).unwrap_err();
+        assert!(err.contains("--creature-stdin"), "{err}");
+        let err = validate_cohort_flags(GpuMode::Auto, true, true, false).unwrap_err();
+        assert!(err.contains("--race-stdio"), "{err}");
+        let err = validate_cohort_flags(GpuMode::On, true, false, false).unwrap_err();
+        assert!(err.contains("--gpu on"), "{err}");
     }
 }

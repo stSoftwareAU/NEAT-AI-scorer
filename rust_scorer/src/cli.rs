@@ -41,7 +41,7 @@ use crate::sampling::{SampleSpec, parse_sample_rate};
 use crate::scoring::{ScoreResult, calculate_score, compute_score_components};
 use crate::signal_exit;
 use crate::stream_score::AUTO_FILE_READ_WORKERS;
-use crate::{cost, gpu, multi_score, scoring, stream_score};
+use crate::{cohort, cost, gpu, multi_score, scoring, stream_score};
 
 mod gpu_plan;
 
@@ -162,6 +162,23 @@ struct Cli {
     /// a non-zero exit.
     #[arg(long)]
     race_stdio: bool,
+
+    /// Cohort (delta) scoring for a creatures directory (Issue #683).
+    ///
+    /// Builds one union network in which every computation the creatures
+    /// share — matched by structural hashing of squash, bias and the ordered
+    /// inbound list, never by UUID — appears once, then activates it once per
+    /// record. A near-clone of an incumbent costs only the neurons it changed
+    /// and their downstream cone. The printed result map is the one directory
+    /// mode prints; each creature's score is bit-identical to scoring it alone
+    /// in a directory.
+    ///
+    /// CPU only, `MSE`/`RMSE` only, forward-only creatures only. A directory the
+    /// mode cannot host is scored on the ordinary directory path after one
+    /// `[cohort] fallback to directory mode: …` stderr line. Incompatible with
+    /// `--race-stdio` and `--gpu on`. See the README "Cohort scoring" section.
+    #[arg(long)]
+    cohort: bool,
 
     /// Print the detected host resources and every resolved knob as one JSON
     /// object, then exit — score nothing (Issue #545).
@@ -287,6 +304,7 @@ fn run(cli: &Cli) -> Result<RunOutput, String> {
 
     // Issue #648: GPU/cost/racing decisions live in `gpu_plan`.
     gpu_plan::validate_flag_combinations(mode, cli.cost, cli.race_stdio, cli.creature_stdin)?;
+    gpu_plan::validate_cohort_flags(mode, cli.cohort, cli.race_stdio, cli.creature_stdin)?;
     let up_front_gpu = gpu_plan::select_up_front(mode)?;
 
     if cli.creature_stdin {
@@ -316,6 +334,26 @@ fn run(cli: &Cli) -> Result<RunOutput, String> {
             "--race-stdio requires a creatures directory; '{}' is not a directory",
             creature_path.display()
         ));
+    }
+    if cli.cohort {
+        if !creature_path.is_dir() {
+            return Err(format!(
+                "--cohort requires a creatures directory; '{}' is not a directory",
+                creature_path.display()
+            ));
+        }
+        match cohort::score_from_creature_dir_cohort(creature_path, data_path, cli.cost, &sample)? {
+            cohort::CohortRun::Hosted { results, stats } => {
+                eprintln!("{stats}");
+                return Ok(RunOutput::Multi(results));
+            }
+            cohort::CohortRun::Unhostable(reason) => {
+                eprintln!(
+                    "{} fallback to directory mode: {reason}",
+                    cohort::COHORT_LOG_PREFIX
+                );
+            }
+        }
     }
     if creature_path.is_dir() {
         // NEAT-AI#3928: racing owns the whole directory sweep — it runs on the
@@ -775,6 +813,7 @@ mod tests {
             sample_rate: None,
             sample_phase: 0,
             race_stdio: false,
+            cohort: false,
             host_report: false,
             record_bytes: DEFAULT_REPORT_RECORD_BYTES,
             args: vec![creature.to_path_buf(), data.to_path_buf()],
@@ -1178,6 +1217,7 @@ mod tests {
             sample_rate: None,
             sample_phase: 0,
             race_stdio: false,
+            cohort: false,
             host_report: false,
             record_bytes: DEFAULT_REPORT_RECORD_BYTES,
             args: vec![PathBuf::from("/tmp/creature.json"), PathBuf::from("/tmp")],
@@ -1199,6 +1239,7 @@ mod tests {
             sample_rate: None,
             sample_phase: 0,
             race_stdio: false,
+            cohort: false,
             host_report: false,
             record_bytes: DEFAULT_REPORT_RECORD_BYTES,
             args: vec![PathBuf::from("/tmp")],
