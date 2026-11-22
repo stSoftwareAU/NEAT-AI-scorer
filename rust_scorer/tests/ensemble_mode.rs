@@ -39,55 +39,87 @@ fn write_corpus(dir: &Path, inputs: usize, outputs: usize, files: &[usize]) {
 fn per_creature_results_are_directory_mode_bit_for_bit() {
     let shape = LayeredShape::small(5);
     let base = layered_creature(&shape);
-    let mut creatures: Vec<String> = graft_cohort(&base, &shape, 3, 1)
+    // Aggregate-squash creatures (MINIMUM/MAXIMUM, grafted IF): neat-core's
+    // per-lane path.
+    let mut aggregate: Vec<String> = graft_cohort(&base, &shape, 3, 1)
         .iter()
         .map(|c| c.to_json())
         .collect();
-    creatures.extend((0..3).map(|s| layered_creature(&LayeredShape::small(50 + s)).to_json()));
-    for files in [&[1_usize][..], &[3], &[6], &[13, 7], &[517, 5, 1000]] {
-        for n in [1, creatures.len()] {
-            let tmp = tempfile::tempdir().unwrap();
-            let dir = tmp.path().join("pop");
-            let data = tmp.path().join("data");
-            write(&dir, &creatures[..n]);
-            write_corpus(&data, shape.inputs, shape.outputs, files);
-            let sample = SampleSpec::full();
-            let (got, report) =
-                score_from_creature_dir_ensemble(&dir, &data, CostKind::Mse, &sample, None)
-                    .unwrap();
-            let want = score_from_creature_dir_sampled(
-                &dir,
-                &data,
-                GpuBackendLabel::CpuFallback,
-                CostKind::Mse,
-                &sample,
-            )
-            .unwrap();
-            for (k, w) in &want {
-                assert_eq!(
-                    got[k].error.to_bits(),
-                    w.error.to_bits(),
-                    "{k} files={files:?} n={n}"
-                );
-                assert_eq!(got[k].score.to_bits(), w.score.to_bits());
-            }
-            assert_eq!(report.members, n);
+    aggregate.extend((0..3).map(|s| layered_creature(&LayeredShape::small(50 + s)).to_json()));
+    // Standard-squash-only creatures: neat-core's interleaved path.
+    let standard: Vec<String> = (0..3)
+        .map(|s| {
+            layered_creature(&LayeredShape {
+                squashes: vec!["TANH", "LOGISTIC", "RELU", "IDENTITY", "GELU", "SINE"],
+                ..LayeredShape::small(70 + s)
+            })
+            .to_json()
+        })
+        .collect();
+    for population in [
+        &aggregate[..1],
+        &aggregate[..],
+        &standard[..1],
+        &standard[..],
+    ] {
+        check_population(population, &shape);
+    }
+}
+
+/// Every SIMD tier of a worker range: scalar-only (< 4), a lone 4-group, a
+/// 4-group after an 8-group, 8-groups plus tails, 32-tiles, several files.
+fn check_population(creatures: &[String], shape: &LayeredShape) {
+    for files in [
+        &[1_usize][..],
+        &[3],
+        &[4],
+        &[6],
+        &[12],
+        &[13, 7],
+        &[517, 5, 1000],
+    ] {
+        let n = creatures.len();
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("pop");
+        let data = tmp.path().join("data");
+        write(&dir, creatures);
+        write_corpus(&data, shape.inputs, shape.outputs, files);
+        let sample = SampleSpec::full();
+        let (got, report) =
+            score_from_creature_dir_ensemble(&dir, &data, CostKind::Mse, &sample, None).unwrap();
+        let want = score_from_creature_dir_sampled(
+            &dir,
+            &data,
+            GpuBackendLabel::CpuFallback,
+            CostKind::Mse,
+            &sample,
+        )
+        .unwrap();
+        for (k, w) in &want {
             assert_eq!(
-                report.ambiguity,
-                report.mean_member_error - report.ensemble_error
+                got[k].error.to_bits(),
+                w.error.to_bits(),
+                "{k} files={files:?} n={n}"
             );
-            assert!(
-                report.ensemble_error <= report.mean_member_error + 1e-12,
-                "{report:?}"
+            assert_eq!(
+                got[k].score.to_bits(),
+                w.score.to_bits(),
+                "{k} files={files:?} n={n}"
             );
-            let best = want.values().map(|r| r.error).fold(f64::INFINITY, f64::min);
-            assert!(
-                (report.best_member_error - best).abs() <= 1e-6 * best,
-                "{report:?}"
-            );
-            if n == 1 {
-                assert!(report.ambiguity.abs() < 1e-15, "{report:?}");
-            }
+        }
+        assert_eq!(report.members, n);
+        assert_eq!(
+            report.ambiguity,
+            report.mean_member_error - report.ensemble_error
+        );
+        assert!(report.ambiguity >= -1e-15, "{report:?}");
+        let best = want.values().map(|r| r.error).fold(f64::INFINITY, f64::min);
+        assert!(
+            (report.best_member_error - best).abs() <= 1e-6 * best,
+            "{report:?}"
+        );
+        if n == 1 {
+            assert!(report.ambiguity.abs() < 1e-15, "{report:?}");
         }
     }
 }
@@ -234,4 +266,30 @@ fn recurrent_members_are_rejected() {
         score_from_creature_dir_ensemble(&dir, &data, CostKind::Mse, &SampleSpec::full(), None)
             .unwrap_err();
     assert!(err.contains("forward-only"), "{err}");
+}
+
+#[test]
+fn a_creature_named_ensemble_is_refused_rather_than_shadowed() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().join("pop");
+    let data = tmp.path().join("data");
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(dir.join("ensemble.json"), constant_creature(1.0)).unwrap();
+    fs::write(dir.join("other.json"), constant_creature(-1.0)).unwrap();
+    write_corpus(&data, 1, 1, &[10]);
+    let err =
+        score_from_creature_dir_ensemble(&dir, &data, CostKind::Mse, &SampleSpec::full(), None)
+            .unwrap_err();
+    assert!(
+        err.contains("would collide with the 'ensemble' result key"),
+        "{err}"
+    );
+    let out = scorer(&[
+        "--ensemble",
+        "mean",
+        dir.to_str().unwrap(),
+        data.to_str().unwrap(),
+    ]);
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("would collide"));
 }

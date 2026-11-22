@@ -87,16 +87,18 @@ flowchart LR
   form equal to a direct average within 1e-12, positive ambiguity; top-k picks
   the lowest-error members and rejects `0` and `> members`; merged partial
   statistics equal one pass.
-- `cargo test -p rust_scorer --test ensemble_mode` — 3 tests: per-creature
-  `error`/`score` bit-identical to directory mode for graft-cohort and unrelated
-  creatures, 1 and 6 members, corpora of 1, 3, 6, 13+7 and 517+5+1000 records,
-  identity and `ambiguity ≥ 0`, zero ambiguity for one member; CLI on constant
-  predictors `+1, −1, +3` against target `0` (`Ē = 11/3`, `E = 1`, `Ā = 8/3`,
-  top-2 perfect, no `score` key); nine refusals each asserted by its stderr
-  message (`--ensemble-top-k` 0 and above the member count, `MAE`, `--cohort`,
-  `--race-stdio`, `--gpu on` before adapter selection, `--creature-stdin`, a
-  single file, `--ensemble-top-k` without `--ensemble`); recurrent member and
-  an `ensemble.json` key clash rejected.
+- `cargo test -p rust_scorer --test ensemble_mode` — 4 tests: per-creature
+  `error`/`score` bit-identical to directory mode for aggregate-squash
+  populations (graft cohort with `IF`, `MINIMUM`/`MAXIMUM` creatures —
+  neat-core's per-lane path) **and** standard-squash-only populations
+  (neat-core's interleaved path), 1 and several members, corpora of 1, 3, 4,
+  6, 12, 13+7 and 517+5+1000 records (scalar-only ranges, a lone 4-group, a
+  4-group after an 8-group, tiles, multi-file); identity, `ambiguity ≥ 0`, zero
+  ambiguity for one member; CLI on constant predictors `+1, −1, +3` against
+  target `0` (`Ē = 11/3`, `E = 1`, `Ā = 8/3`, top-2 perfect, no `score` key);
+  nine refusals each asserted by its stderr message; recurrent member
+  rejected; a creature named `ensemble.json` refused with its collision
+  message, from the library and the CLI.
 - Full workspace fmt, clippy (`-D warnings`, `filter_next`, `collapsible_if`),
   tests, rustdoc `-D warnings`, codespell, `markdownlint-cli2` and every
   `scripts/check-*.sh` validator — all pass.
