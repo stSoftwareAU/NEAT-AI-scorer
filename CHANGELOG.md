@@ -15,12 +15,6 @@ section to the released version with its date.
 
 ## [Unreleased]
 
-### Security
-
-- **`rustix` 1.1.4 → 1.1.6 (RUSTSEC-2026-0486).** The xattr functions could mark
-  unwritten bytes initialised for a zero-length buffer (unsound). The scorer
-  does not call them; the bump clears the `cargo audit` warning.
-
 ### Added
 
 - **Cohort (delta) scoring — `--cohort` (Issue #683).** Directory mode can now
@@ -64,6 +58,9 @@ section to the released version with its date.
 
 ### Security
 
+- **`rustix` 1.1.4 → 1.1.6 (RUSTSEC-2026-0486).** The xattr functions could mark
+  unwritten bytes initialised for a zero-length buffer (unsound). The scorer
+  does not call them; the bump clears the `cargo audit` warning.
 - **Dependency bumps get their own trigger (Issue #658).** Nothing opened a
   bump PR on its own. `bump-deps.sh` only ran alongside unrelated worker PRs
   (#105 removed its schedule), and `cargo-audit.yml` only detects advisories.
