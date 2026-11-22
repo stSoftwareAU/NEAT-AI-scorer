@@ -17,6 +17,13 @@ section to the released version with its date.
 
 ### Added
 
+- **Perturbation-robustness mode — `--perturb-sigma σ [--perturb-seeds n]`
+  (Issue #588).** Scores `n` copies of each creature with synapse weights
+  perturbed by `N(0, σ²)` in one extra CPU sweep and adds a `perturbation` block
+  (mean and standard deviation of error and score, per-seed values, weight RMS
+  and median |w| for σ calibration). The unperturbed result is unchanged. Noise
+  is a pure function of the seed and the synapse's `(from, to, role)`, so
+  comparisons across creatures are paired.
 - **Ensemble mode — `--ensemble mean [--ensemble-top-k N]` (Issue #589).**
   Scores a creatures directory in the ordinary single corpus pass (per-creature
   results bit-identical to plain directory mode) and adds an `"ensemble"` block

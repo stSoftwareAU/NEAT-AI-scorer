@@ -580,6 +580,10 @@ pub struct ScoreResult {
     /// a full-corpus run (`--sample-rate 1`, the default).
     #[serde(rename = "sampleRate", skip_serializing_if = "Option::is_none")]
     pub sample_rate: Option<f64>,
+    /// Issue #588: perturbation-robustness summary (`--perturb-sigma`).
+    /// Present only in that mode, so every other run's JSON is unchanged.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub perturbation: Option<crate::perturb::PerturbationSummary>,
 }
 
 #[cfg(test)]
