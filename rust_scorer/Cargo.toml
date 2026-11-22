@@ -57,6 +57,11 @@ path = "src/bin/if_tree_batch_bench.rs"
 name = "cohort_bench"
 path = "src/bin/cohort_bench.rs"
 
+# Opt-in cached-halving experiment; separate from the ordinary scorer CLI.
+[[bin]]
+name = "halving_bench"
+path = "src/bin/halving_bench.rs"
+
 # Criterion bench harness — see `benches/scoring.rs` and
 # `docs/performance-baseline.md`. Not wired into `quality.sh` (Criterion runs
 # are slow and non-deterministic enough to be unsuitable as a merge gate);
