@@ -66,11 +66,24 @@ fn cohort_bench_reports_no_interval_below_six_runs() {
 
 #[test]
 fn cohort_bench_refuses_unknown_shapes_and_zero_repeats() {
-    for args in [&["--shape", "huge"][..], &["--repeats", "0"]] {
+    let cases: [(&[&str], &str); 2] = [
+        (&["--shape", "huge"], "unknown --shape 'huge'"),
+        (&["--repeats", "0"], "--repeats must be at least 1"),
+    ];
+    for (args, message) in cases {
         let out = Command::new(env!("CARGO_BIN_EXE_cohort_bench"))
             .args(args)
             .output()
             .unwrap();
         assert!(!out.status.success(), "{args:?}");
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            stderr.contains(message),
+            "{args:?}: unexpected stderr: {stderr}"
+        );
+        assert!(
+            !stderr.contains("panicked"),
+            "{args:?} must be a named refusal: {stderr}"
+        );
     }
 }
