@@ -169,14 +169,56 @@ fn cli_reports_the_hand_computable_decomposition() {
     assert_eq!(v["ensemble"]["ensembleError"].as_f64().unwrap(), 0.0);
     assert_eq!(v["ensemble"]["beatsBestMember"], true);
 
-    for bad in [
-        &["--ensemble", "mean", "--ensemble-top-k", "4", d, s][..],
-        &["--ensemble", "mean", "--ensemble-top-k", "0", d, s],
-        &["--ensemble", "mean", "--cost", "MAE", d, s],
-        &["--ensemble", "mean", "--cohort", d, s],
-        &["--ensemble-top-k", "2", d, s],
-    ] {
-        assert!(!scorer(bad).status.success(), "{bad:?} must fail");
+    let file = dir.join("m00.json");
+    let f = file.to_str().unwrap();
+    let cases: [(&[&str], &str); 9] = [
+        (
+            &["--ensemble", "mean", "--ensemble-top-k", "4", d, s],
+            "--ensemble-top-k 4 is outside 1..=3",
+        ),
+        (
+            &["--ensemble", "mean", "--ensemble-top-k", "0", d, s],
+            "--ensemble-top-k 0 is outside 1..=3",
+        ),
+        (
+            &["--ensemble", "mean", "--cost", "MAE", d, s],
+            "--ensemble needs --cost MSE",
+        ),
+        (
+            &["--ensemble", "mean", "--cohort", d, s],
+            "--race-stdio or --cohort",
+        ),
+        (
+            &["--ensemble", "mean", "--race-stdio", d, s],
+            "--race-stdio or --cohort",
+        ),
+        // Named before adapter selection, so a GPU-less host reports the conflict.
+        (
+            &["--ensemble", "mean", "--gpu", "on", d, s],
+            "--ensemble runs on the CPU",
+        ),
+        (
+            &["--ensemble", "mean", "--creature-stdin", s],
+            "cannot be combined with --creature-stdin",
+        ),
+        (
+            &["--ensemble", "mean", f, s],
+            "--ensemble requires a creatures directory",
+        ),
+        (&["--ensemble-top-k", "2", d, s], "--ensemble"),
+    ];
+    for (args, message) in cases {
+        let out = Command::new(env!("CARGO_BIN_EXE_rust_scorer"))
+            .args(args)
+            .stdin(std::process::Stdio::null())
+            .output()
+            .unwrap();
+        assert!(!out.status.success(), "{args:?} must fail");
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            stderr.contains(message),
+            "{args:?}: unexpected stderr: {stderr}"
+        );
     }
 }
 

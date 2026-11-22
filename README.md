@@ -836,9 +836,10 @@ entries are unchanged — bit-identical to plain directory mode
 - **Measurement only.** There is no `score` for the ensemble (it has no single
   complexity), no weighting, and no population candidate is emitted.
 - `MSE` only, forward-only members only (a recurrent member is rejected), CPU
-  only. Rejected with `--cohort`, `--race-stdio`, `--gpu on` and a single
-  creature file; a creature named `ensemble.json` is rejected because its key
-  would collide with the block.
+  only. Rejected — before any GPU adapter is selected — with `--cohort`,
+  `--race-stdio`, `--gpu on`, `--creature-stdin` and a single creature file; a
+  creature named `ensemble.json` is rejected because its key would collide with
+  the block.
 
 ### Self-tuning, and why the `NEAT_SCORER_*` knobs are not configuration (Issue #544)
 

@@ -325,6 +325,13 @@ fn run(cli: &Cli) -> Result<RunOutput, String> {
     // Issue #648: GPU/cost/racing decisions live in `gpu_plan`.
     gpu_plan::validate_flag_combinations(mode, cli.cost, cli.race_stdio, cli.creature_stdin)?;
     gpu_plan::validate_cohort_flags(mode, cli.cohort, cli.race_stdio, cli.creature_stdin)?;
+    gpu_plan::validate_ensemble_flags(
+        mode,
+        cli.ensemble.is_some(),
+        cli.cohort,
+        cli.race_stdio,
+        cli.creature_stdin,
+    )?;
     let up_front_gpu = gpu_plan::select_up_front(mode)?;
 
     if cli.creature_stdin {
@@ -361,14 +368,6 @@ fn run(cli: &Cli) -> Result<RunOutput, String> {
                 "--ensemble requires a creatures directory; '{}' is not a directory",
                 creature_path.display()
             ));
-        }
-        if cli.race_stdio || cli.cohort {
-            return Err("--ensemble cannot be combined with --race-stdio or --cohort".to_string());
-        }
-        if mode == GpuMode::On {
-            return Err(
-                "--ensemble runs on the CPU; it cannot be combined with --gpu on".to_string(),
-            );
         }
         let (results, report) = ensemble::score_from_creature_dir_ensemble(
             creature_path,

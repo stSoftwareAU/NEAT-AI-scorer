@@ -47,10 +47,14 @@ the Krogh–Vedelsby decomposition for the uniform mean prediction. Closes #589.
   mode does) left a one-member ensemble with ~-1e-10 ambiguity — found by the
   disagreeing-members test and fixed this way, so a negative ambiguity is a
   genuine bug signal.
+- **Flag conflicts are refused in `gpu_plan::validate_ensemble_flags`**, beside
+  the `--cohort` and `--race-stdio` checks and before adapter selection, so
+  `--ensemble --gpu on` names the conflict even on a GPU-less host and
+  `--ensemble --creature-stdin` is refused rather than silently ignored.
 - **Output shape.** The stem-keyed map gains one `"ensemble"` key; a creature
   named `ensemble.json` is rejected rather than silently shadowed. No `score`,
   no weighting, no promotion path, as the issue scopes it.
-- Built on the shared `finalise_directory_results` from #683.
+- Built on the shared `finalise_directory_results` from #683 (merged).
 
 ### Undiscoverable Facts
 
@@ -76,7 +80,8 @@ flowchart LR
 
 ## Test Plan
 
-- `cargo test -p rust_scorer --lib ensemble` — 4 tests: hand-computed
+- `cargo test -p rust_scorer --lib ensemble` — 5 tests (4 in `ensemble`, plus
+  `gpu_plan`'s `ensemble_flag_conflicts_are_refused_before_adapter_selection`): hand-computed
   decomposition (members at `t ± 1`: `Ē = 1`, `E = 0`, `Ā = 1`, identity exact);
   six disagreeing members, every `k`: `ensembleError ≤ meanMemberError`, Gram
   form equal to a direct average within 1e-12, positive ambiguity; top-k picks
@@ -87,7 +92,11 @@ flowchart LR
   creatures, 1 and 6 members, corpora of 1, 3, 6, 13+7 and 517+5+1000 records,
   identity and `ambiguity ≥ 0`, zero ambiguity for one member; CLI on constant
   predictors `+1, −1, +3` against target `0` (`Ē = 11/3`, `E = 1`, `Ā = 8/3`,
-  top-2 perfect, no `score` key); flag rejections; recurrent member rejected.
+  top-2 perfect, no `score` key); nine refusals each asserted by its stderr
+  message (`--ensemble-top-k` 0 and above the member count, `MAE`, `--cohort`,
+  `--race-stdio`, `--gpu on` before adapter selection, `--creature-stdin`, a
+  single file, `--ensemble-top-k` without `--ensemble`); recurrent member and
+  an `ensemble.json` key clash rejected.
 - Full workspace fmt, clippy (`-D warnings`, `filter_next`, `collapsible_if`),
   tests, rustdoc `-D warnings`, codespell, `markdownlint-cli2` and every
   `scripts/check-*.sh` validator — all pass.
