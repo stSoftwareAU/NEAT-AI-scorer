@@ -791,6 +791,55 @@ with one scalar bias, so continuing a per-lane partial sum would need a second
 FMA chain whose rounding is not guaranteed to match; the measured win below did
 not need it.
 
+### Ensemble mode (Issue #589)
+
+The fleet evolves a population and keeps one champion. Averaging the members'
+predictions is, under squared error, never worse than the **average** member —
+the Krogh & Vedelsby (1995) ambiguity decomposition `E_ensemble = Ē − Ā` with
+`Ā ≥ 0`. Whether it beats the **best** member depends on the members'
+disagreement `Ā`, which `--ensemble` measures:
+
+```bash
+rust_scorer --ensemble mean [--ensemble-top-k N] <creatures_dir> <data_dir>
+```
+
+The directory is scored in the ordinary single corpus pass. The per-creature
+entries are unchanged — bit-identical to plain directory mode
+(`rust_scorer/tests/ensemble_mode.rs`) — and one more key is added:
+
+```json
+{
+  "ensemble": {
+    "method": "mean",
+    "members": 10,
+    "memberKeys": ["champion", "…"],
+    "meanMemberError": 0.597456,
+    "ensembleError": 0.597101,
+    "ambiguity": 0.000355,
+    "bestMemberError": 0.597252,
+    "beatsBestMember": true
+  }
+}
+```
+
+- **`--ensemble-top-k N`** averages only the `N` members with the lowest own
+  full-corpus error, still in one pass: the pass keeps the sufficient
+  statistics of squared error for every subset (`Σ t²`, `Σ t·oₐ`, the Gram
+  matrix `Σ oₐ·o_b` per output), so membership is chosen afterwards. `N` must be
+  in `1..=members`.
+- **`ambiguity` is defined as `meanMemberError − ensembleError`**, never
+  estimated separately. All three terms come from the same `f64` statistics, so
+  a one-member ensemble has zero ambiguity and a negative value beyond `f64`
+  rounding is a bug signal. `meanMemberError` and `bestMemberError` agree with
+  the members' printed `error` to `f32` rounding (those take the `f32`
+  difference first, as directory mode does).
+- **Measurement only.** There is no `score` for the ensemble (it has no single
+  complexity), no weighting, and no population candidate is emitted.
+- `MSE` only, forward-only members only (a recurrent member is rejected), CPU
+  only. Rejected with `--cohort`, `--race-stdio`, `--gpu on` and a single
+  creature file; a creature named `ensemble.json` is rejected because its key
+  would collide with the block.
+
 ### Self-tuning, and why the `NEAT_SCORER_*` knobs are not configuration (Issue #544)
 
 The scorer picks every performance knob from the machine it is running on —
