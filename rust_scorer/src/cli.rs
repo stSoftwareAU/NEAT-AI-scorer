@@ -304,6 +304,7 @@ fn run(cli: &Cli) -> Result<RunOutput, String> {
 
     // Issue #648: GPU/cost/racing decisions live in `gpu_plan`.
     gpu_plan::validate_flag_combinations(mode, cli.cost, cli.race_stdio, cli.creature_stdin)?;
+    gpu_plan::validate_cohort_flags(mode, cli.cohort, cli.race_stdio, cli.creature_stdin)?;
     let up_front_gpu = gpu_plan::select_up_front(mode)?;
 
     if cli.creature_stdin {
@@ -340,14 +341,6 @@ fn run(cli: &Cli) -> Result<RunOutput, String> {
                 "--cohort requires a creatures directory; '{}' is not a directory",
                 creature_path.display()
             ));
-        }
-        if cli.race_stdio {
-            return Err("--cohort cannot be combined with --race-stdio".to_string());
-        }
-        if mode == GpuMode::On {
-            return Err(
-                "--cohort runs on the CPU; it cannot be combined with --gpu on".to_string(),
-            );
         }
         match cohort::score_from_creature_dir_cohort(creature_path, data_path, cli.cost, &sample)? {
             cohort::CohortRun::Hosted { results, stats } => {

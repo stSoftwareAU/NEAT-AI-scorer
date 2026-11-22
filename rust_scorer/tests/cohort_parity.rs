@@ -423,27 +423,44 @@ fn cli_cohort_flag_hosts_and_falls_back_loudly() {
 fn cli_cohort_rejects_incompatible_flags() {
     let tmp = tempfile::tempdir().unwrap();
     let base = layered_creature(&LayeredShape::small(21));
-    let file = tmp.path().join("one.json");
-    fs::write(&file, base.to_json()).unwrap();
+    let pop = tmp.path().join("pop");
+    write_dir(&pop, std::slice::from_ref(&base));
+    let file = pop.join("c000.json");
     let data = tmp.path().join("data");
     write_corpus(&data, 12, 2, &[10], 1);
-    let run = |args: &[&str]| {
-        Command::new(env!("CARGO_BIN_EXE_rust_scorer"))
-            .args(args)
-            .output()
-            .unwrap()
-    };
-    let out = run(&["--cohort", file.to_str().unwrap(), data.to_str().unwrap()]);
-    assert!(!out.status.success());
-    assert!(
-        String::from_utf8_lossy(&out.stderr).contains("--cohort requires a creatures directory")
-    );
-    let out = run(&[
-        "--cohort",
-        "--gpu",
-        "on",
-        tmp.path().to_str().unwrap(),
+    let (p, f, d) = (
+        pop.to_str().unwrap(),
+        file.to_str().unwrap(),
         data.to_str().unwrap(),
-    ]);
-    assert!(!out.status.success());
+    );
+    let refused = |args: &[&str], message: &str| {
+        let out = Command::new(env!("CARGO_BIN_EXE_rust_scorer"))
+            .args(args)
+            .stdin(std::process::Stdio::null())
+            .output()
+            .unwrap();
+        assert!(!out.status.success(), "{args:?} must be refused");
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            stderr.contains(message),
+            "{args:?}: unexpected stderr: {stderr}"
+        );
+    };
+    refused(
+        &["--cohort", f, d],
+        "--cohort requires a creatures directory",
+    );
+    // Named before adapter selection, so a GPU-less host reports the conflict.
+    refused(
+        &["--cohort", "--gpu", "on", p, d],
+        "--cohort runs on the CPU",
+    );
+    refused(
+        &["--cohort", "--race-stdio", p, d],
+        "--cohort cannot be combined with --race-stdio",
+    );
+    refused(
+        &["--cohort", "--creature-stdin", d],
+        "cannot be combined with --creature-stdin",
+    );
 }

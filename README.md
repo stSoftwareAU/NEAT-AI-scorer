@@ -779,8 +779,9 @@ routing included) after exactly one stderr line
 `[cohort] fallback to directory mode: <reason>`, decided before any training
 data is read. The mode hosts **`MSE` and `RMSE`** only, **forward-only**
 creatures only, no `HYPOT` / `HYPOTv2` / `MEAN` neuron, and a union of at most
-65 536 nodes. It runs on the CPU, and `--cohort` is rejected with
-`--race-stdio`, with `--gpu on`, and with a single creature file. Sampling
+65 536 nodes. It runs on the CPU, and `--cohort` is rejected — before any GPU
+adapter is selected — with `--race-stdio`, `--gpu on`, `--creature-stdin` and a
+single creature file. Sampling
 (`--sample-rate`) is honoured. Acceptance policy is untouched: callers still
 decide what to promote and can still re-score a winner standalone.
 
@@ -2256,12 +2257,12 @@ adapter exits non-zero rather than reporting an empty result as success
 `cohort_bench` scores three near-clone cohorts of a **production-scale
 synthetic** creature
 ([`LayeredShape::production_scale`](rust_scorer/src/cohort_fixture.rs): 2 511
-inputs, 7 804 non-input neurons, 65 687 synapses, a fan-in-2 000 anchor) in
+inputs, 7 804 non-input neurons, 65 687 synapses, a fan-in-1 500 anchor) in
 directory mode and cohort mode, alternating, on one generated corpus:
 
 ```bash
 cargo build --release -p rust_scorer --bin cohort_bench
-BENCH_SCORING_BYTES=200000000 ./target/release/cohort_bench --repeats 5
+BENCH_SCORING_BYTES=200000000 ./target/release/cohort_bench --repeats 6
 ```
 
 | Cohort | Creatures | Shape |
@@ -2271,8 +2272,13 @@ BENCH_SCORING_BYTES=200000000 ./target/release/cohort_bench --repeats 5
 | `removal` | 100 | one hidden neuron removed |
 
 Each cohort prints one JSON object: neuron activations and synapses per record
-in both modes, the wall-time median with a 95 % order-statistic interval, the
-cohort/directory wall ratio, and the largest relative error difference. The
+in both modes, the wall-time median of `--repeats` alternating runs (default 6)
+with a distribution-free 95 % confidence interval of the median
+(`bench_support::median_ci95`: the narrowest order-statistic interval whose
+coverage is ≥ 95 %, with that coverage; `null` below 6 runs, where none exists),
+the cohort/directory wall ratio, and the largest relative error difference.
+`--shape small` runs the parity-test shape for a quick smoke run
+(`rust_scorer/tests/cohort_bench_smoke.rs`). The
 production creature is private and never fetched, so the fixture is synthetic
 at production size. Recorded numbers live in
 [`docs/performance-baseline.md`](docs/performance-baseline.md#cohort-scoring--22-november-2026-issue-683).

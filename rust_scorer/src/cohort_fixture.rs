@@ -8,8 +8,8 @@
 //!
 //! [`layered_creature`] builds a sparse layered network from a seed; with
 //! [`LayeredShape::production_scale`] it has the size of the production
-//! creature named in Issue #683 (≈ 10 k neurons, ≈ 67 k synapses, 2 511
-//! inputs). It is synthetic: the production creature is private and is never
+//! creature named in Issue #683 (7 804 non-input neurons, 65 687 synapses,
+//! 2 511 inputs). It is synthetic: the production creature is private and is never
 //! fetched by this repository.
 
 use crate::fixture_json::{
@@ -231,15 +231,17 @@ pub struct LayeredShape {
     pub squashes: Vec<&'static str>,
     /// Extra fan-in of the last hidden layer's first neuron (the graft
     /// anchor), drawn from the layer below; production anchors have fan-in in
-    /// the thousands.
+    /// the thousands. The anchor's total fan-in (`fan_in + anchor_fan_in`) must
+    /// not exceed the layer below's width.
     pub anchor_fan_in: usize,
     /// PRNG seed.
     pub seed: u64,
 }
 
 impl LayeredShape {
-    /// Production-scale shape (Issue #683): 2 511 inputs, 10 316 neurons in
-    /// all, ≈ 68 k synapses, a fan-in-2 000 anchor.
+    /// Production-scale shape (Issue #683): 2 511 inputs, 7 804 non-input
+    /// neurons (10 315 nodes in all), 65 687 synapses, and a graft anchor with
+    /// fan-in 1 500 — every neuron of the layer below.
     #[must_use]
     pub fn production_scale(seed: u64) -> Self {
         Self {
@@ -247,7 +249,7 @@ impl LayeredShape {
             layers: vec![(6000, 7), (1500, 12), (300, 13)],
             outputs: 1,
             squashes: vec!["TANH", "LOGISTIC", "RELU", "IDENTITY", "GELU", "TANH"],
-            anchor_fan_in: 2000,
+            anchor_fan_in: 1487,
             seed,
         }
     }
@@ -263,7 +265,7 @@ impl LayeredShape {
             squashes: vec![
                 "TANH", "LOGISTIC", "RELU", "IDENTITY", "GELU", "MINIMUM", "SINE", "MAXIMUM",
             ],
-            anchor_fan_in: 6,
+            anchor_fan_in: 2,
             seed,
         }
     }
@@ -281,8 +283,13 @@ pub fn anchor_uuid(shape: &LayeredShape) -> String {
     hidden_uuid(shape.layers.len() - 1, 0)
 }
 
+/// `count` distinct indices in `0..pool`. Refuses a `count` above `pool`
+/// rather than silently building a smaller fan-in than the shape declares.
 fn distinct_sources(rng: &mut SplitMix64, pool: usize, count: usize) -> Vec<usize> {
-    let count = count.min(pool);
+    assert!(
+        count <= pool,
+        "fan-in {count} exceeds the {pool}-neuron source pool"
+    );
     let mut picked: Vec<usize> = Vec::with_capacity(count);
     while picked.len() < count {
         let i = rng.index(pool);
@@ -456,4 +463,43 @@ pub fn corpus(inputs: usize, outputs: usize, n: usize, seed: u64) -> Vec<f32> {
 #[must_use]
 pub fn to_le_bytes(records: &[f32]) -> Vec<u8> {
     records.iter().flat_map(|v| v.to_le_bytes()).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn fan_in(spec: &CreatureSpec, uuid: &str) -> usize {
+        spec.synapses.iter().filter(|s| s.to == uuid).count()
+    }
+
+    #[test]
+    fn production_scale_shape_is_what_the_documents_say() {
+        let shape = LayeredShape::production_scale(683);
+        let base = layered_creature(&shape);
+        assert_eq!(base.inputs, 2511);
+        assert_eq!(base.neuron_count(), 7804);
+        assert_eq!(base.inputs + base.neuron_count(), 10_315);
+        assert_eq!(base.synapse_count(), 65_687);
+        assert_eq!(fan_in(&base, &anchor_uuid(&shape)), 1500);
+    }
+
+    #[test]
+    fn small_shape_anchor_has_its_declared_fan_in() {
+        let shape = LayeredShape::small(1);
+        let base = layered_creature(&shape);
+        let (_, fan) = shape.layers[shape.layers.len() - 1];
+        assert_eq!(
+            fan_in(&base, &anchor_uuid(&shape)),
+            fan + shape.anchor_fan_in
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "exceeds the 8-neuron source pool")]
+    fn an_impossible_fan_in_is_refused() {
+        let mut shape = LayeredShape::small(1);
+        shape.anchor_fan_in = 3;
+        let _ = layered_creature(&shape);
+    }
 }

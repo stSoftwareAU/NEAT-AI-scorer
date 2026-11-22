@@ -5,7 +5,7 @@ computation the creatures share appears once, and activates it once per record,
 so a near-clone of an incumbent costs only its dirty cone. Each creature's
 result is bit-identical to scoring it alone in a directory. On a
 production-scale synthetic creature at 200 MB, the 64-graft cohort ran in
-**8.7 %** of directory mode's wall time (bar: ≤ 25 %). Closes #683.
+**8.3 %** of directory mode's wall time (bar: ≤ 25 %). Closes #683.
 
 - [x] Parity tests: cohort versus standalone on graft, weight-change and
   removal cohorts, including `IF`, `MINIMUM` and `MAXIMUM` aggregates and
@@ -13,7 +13,7 @@ production-scale synthetic creature at 200 MB, the 64-graft cohort ran in
 - [x] Bench on the production-scale fixture for the three cohort shapes,
   reporting neuron activations per record and wall time against directory mode.
 - [x] Predeclared success: the 64-graft cohort at most a quarter of directory
-  mode's wall time on the same host — met at 8.7 %.
+  mode's wall time on the same host — met at 8.3 %.
 - [x] CPU first. No GPU hosting.
 
 ## Spec
@@ -67,7 +67,7 @@ production-scale synthetic creature at 200 MB, the 64-graft cohort ran in
 
 - The production creature is private and never fetched. The bench uses
   `LayeredShape::production_scale` (2 511 inputs, 7 804 non-input neurons,
-  65 687 synapses, a fan-in-2 000 anchor), sized to the issue's figures.
+  65 687 synapses, a fan-in-1 500 anchor), sized to the issue's figures.
 - This host could not install the pinned 1.99 toolchain (the Rust dist server
   is not reachable from it); everything here was built and tested with stable
   1.97 and `--ignore-rust-version`. CI builds with the pin.
@@ -76,22 +76,22 @@ production-scale synthetic creature at 200 MB, the 64-graft cohort ran in
 
 Host: x86_64 Linux container, Intel Xeon @ 2.10 GHz, 2 logical CPUs, 7 GiB
 RAM, no GPU. Release build. 200 000 000 B corpus (19 904 records, four files).
-Five alternating directory/cohort runs per shape. Raw results:
+Six alternating directory/cohort runs per shape. Raw results:
 `docs/evidence/issue-683-cohort-bench.jsonl`.
 
 ```bash
-BENCH_SCORING_BYTES=200000000 ./target/release/cohort_bench --repeats 5
+BENCH_SCORING_BYTES=200000000 ./target/release/cohort_bench --repeats 6
 ```
 
-| Cohort | Activations / record, directory → cohort | Directory wall, median [range] | Cohort wall, median [range] | Cohort / directory |
+| Cohort | Activations / record, directory → cohort | Directory wall, median [95 % CI] | Cohort wall, median [95 % CI] | Cohort / directory |
 |---|---|---|---|---:|
-| 64 grafts at one anchor | 499 611 → 8 083 | 49.00 s [47.12, 49.39] | 4.26 s [3.90, 4.62] | **8.7 %** |
-| 100 single-weight changes | 780 400 → 8 892 | 20.50 s [19.88, 21.53] | 5.90 s [5.70, 6.25] | 28.8 % |
-| 100 single-neuron removals | 780 300 → 8 657 | 19.88 s [19.82, 21.22] | 5.72 s [5.64, 5.96] | 28.8 % |
+| 64 grafts at one anchor | 499 611 → 8 083 | 47.72 s [46.79, 49.11] | 3.96 s [3.70, 4.49] | **8.3 %** |
+| 100 single-weight changes | 780 400 → 8 892 | 20.73 s [19.60, 21.40] | 5.91 s [5.65, 6.34] | 28.5 % |
+| 100 single-neuron removals | 780 300 → 8 657 | 21.18 s [20.46, 22.72] | 6.14 s [5.92, 6.37] | 29.0 % |
 
-Five runs give no 95 % order-statistic interval inside the sample, so brackets
-are the full range; every cohort run beat every directory run in all three
-shapes. At this scale cohort wall time is mostly loading 64–100 creature files
+Brackets are distribution-free 95 % intervals of the median
+(`bench_support::median_ci95`; with six runs, the full range at 96.9 %
+coverage). They do not overlap in any shape. At this scale cohort wall time is mostly loading 64–100 creature files
 of ≈ 5 MB; the forward pass is ≈ 1 % of directory mode's, so the weight and
 removal ratios are a loading floor. Graft creatures carry `IF`, which puts
 directory mode on `neat-core`'s per-lane aggregate path — hence its slower
@@ -118,7 +118,7 @@ flowchart LR
   fixtures.
 - **met** — bench on the production-scale fixture for all three shapes,
   activations per record and wall time against directory mode.
-- **met** — 64-graft cohort at 8.7 % of directory mode's wall time (≤ 25 %).
+- **met** — 64-graft cohort at 8.3 % of directory mode's wall time (≤ 25 %).
 - **met** — CPU only; GPU hosting left as a follow-up the result could justify.
 
 ## Test Plan
@@ -133,7 +133,17 @@ flowchart LR
   neurons, anchor and outputs; identical creatures share everything; `-0.0`
   is a distinct weight); refusals for `MAE`, `HYPOT`, recurrent (before any
   corpus read); CLI hosted line, single fallback line with output equal to
-  plain directory mode, flag rejections.
+  plain directory mode; `--cohort` refused with a single file, `--gpu on`,
+  `--race-stdio` and `--creature-stdin`, each by its stderr message and before
+  adapter selection.
+- `cargo test -p rust_scorer --lib bench_support cohort_fixture` — the median
+  interval's ranks pinned for n = 5 (none), 6 and 8 (full range), 9 (2nd–8th)
+  and ≥ 95 % coverage for n = 6..60; the production-scale fixture's 7 804
+  neurons, 65 687 synapses and fan-in-1 500 anchor; an impossible fan-in is
+  refused rather than clamped.
+- `cargo test -p rust_scorer --test cohort_bench_smoke` — the bench on the
+  small shape: three cohorts, real intervals at 6 runs, `null` below 6, refused
+  bad flags.
 - `cargo test -p rust_scorer --test cohort_parity_workers` — the #574 `IF`
   tree fixtures (grafted, ungrafted, mixed, depth 1–3 trees, boundary records)
   under `NEAT_SCORER_ACTIVATION_THREADS=5`, bit-identical to standalone.

@@ -1702,28 +1702,30 @@ no GPU adapter. Release build, stable 1.97 (the 1.99 pin was not installable on
 this host). Corpus: 200 000 000 B = 19 904 records in four `.bin` files.
 Creature: the production-scale synthetic
 [`LayeredShape::production_scale`](../rust_scorer/src/cohort_fixture.rs) — 2 511
-inputs, 7 804 non-input neurons, 65 687 synapses, a fan-in-2 000 graft anchor.
+inputs, 7 804 non-input neurons, 65 687 synapses, a fan-in-1 500 graft anchor
+(every neuron of the layer below).
 
 ```bash
-BENCH_SCORING_BYTES=200000000 ./target/release/cohort_bench --repeats 5
+BENCH_SCORING_BYTES=200000000 ./target/release/cohort_bench --repeats 6
 ```
 
-| Cohort | Creatures | Activations / record, directory → cohort | Directory wall, median [range] | Cohort wall, median [range] | Cohort / directory |
+| Cohort | Creatures | Activations / record, directory → cohort | Directory wall, median [95 % CI] | Cohort wall, median [95 % CI] | Cohort / directory |
 |---|---:|---|---|---|---:|
-| 64 grafts at one anchor | 64 | 499 611 → 8 083 (1.62 %) | 49.00 s [47.12, 49.39] | 4.26 s [3.90, 4.62] | **8.7 %** |
-| 100 single-weight changes | 100 | 780 400 → 8 892 (1.14 %) | 20.50 s [19.88, 21.53] | 5.90 s [5.70, 6.25] | 28.8 % |
-| 100 single-neuron removals | 100 | 780 300 → 8 657 (1.11 %) | 19.88 s [19.82, 21.22] | 5.72 s [5.64, 5.96] | 28.8 % |
+| 64 grafts at one anchor | 64 | 499 611 → 8 083 (1.62 %) | 47.72 s [46.79, 49.11] | 3.96 s [3.70, 4.49] | **8.3 %** |
+| 100 single-weight changes | 100 | 780 400 → 8 892 (1.14 %) | 20.73 s [19.60, 21.40] | 5.91 s [5.65, 6.34] | 28.5 % |
+| 100 single-neuron removals | 100 | 780 300 → 8 657 (1.11 %) | 21.18 s [20.46, 22.72] | 6.14 s [5.92, 6.37] | 29.0 % |
 
-With five runs no order-statistic interval of the median reaches 95 %
-coverage inside the sample, so the bracket is the full range of the five runs
-(every cohort run is faster than every directory run in all three shapes).
-Synapses read per record fall from 4.20 M to 180 k (grafts) and from 6.57 M to
-≈ 245 k (weights, removals). The largest relative error difference against the
-multi-creature directory run is 3.8e-10; against each creature scored alone
-the results are bit-identical (the parity tests).
+Six alternating runs per mode. Each bracket is the distribution-free 95 %
+confidence interval of the median (`bench_support::median_ci95`); with six runs
+the narrowest interval reaching 95 % is the full range, at 96.9 % coverage. The
+intervals do not overlap in any shape (every cohort run is faster than every
+directory run). Synapses read per record fall from 4.20 M to 180 k (grafts) and
+from 6.57 M to ≈ 245 k (weights, removals). The largest relative error
+difference against the multi-creature directory run is 3.8e-10; against each
+creature scored alone the results are bit-identical (the parity tests).
 
 **Predeclared bar: the 64-graft cohort at ≤ 25 % of directory mode's wall time
-— met at 8.7 %.**
+— met at 8.3 %.**
 
 Reading the numbers:
 
