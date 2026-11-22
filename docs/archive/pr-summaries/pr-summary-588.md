@@ -100,7 +100,9 @@ flowchart LR
   flag); block shape, mean consistency and positive spread; twin bit-identical,
   reordered within `f32` rounding, other creatures different; single-file mode
   unchanged point result, determinism, seed-base sensitivity, σ → 0 recovers
-  the point error, larger σ widens the spread; flag rejections.
+  the point error, larger σ widens the spread; seven refusals each asserted
+  by its stderr message (σ ≤ 0, `--perturb-seeds 0`, seeds without σ,
+  `--cohort`, `--race-stdio`, and `--gpu on` before adapter selection).
 - Full workspace fmt, clippy (`-D warnings`, `filter_next`, `collapsible_if`),
   tests, rustdoc `-D warnings`, codespell, `markdownlint-cli2` and every
   `scripts/check-*.sh` validator — all pass.

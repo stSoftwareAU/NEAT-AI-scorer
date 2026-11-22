@@ -173,21 +173,48 @@ fn perturbations_are_deterministic_and_scale_with_sigma() {
 fn bad_perturbation_flags_are_rejected() {
     let tmp = tempfile::tempdir().unwrap();
     let (pop, data) = fixture(tmp.path());
-    for bad in [
-        &["--perturb-sigma", "0", &pop, &data][..],
-        &["--perturb-sigma", "-1", &pop, &data],
-        &[
-            "--perturb-sigma",
-            "0.01",
-            "--perturb-seeds",
-            "0",
-            &pop,
-            &data,
-        ],
-        &["--perturb-seeds", "4", &pop, &data],
-        &["--perturb-sigma", "0.01", "--cohort", &pop, &data],
-        &["--perturb-sigma", "0.01", "--gpu", "on", &pop, &data],
-    ] {
-        assert!(!scorer(bad).status.success(), "{bad:?} must fail");
+    let cases: [(&[&str], &str); 7] = [
+        (
+            &["--perturb-sigma", "0", &pop, &data],
+            "--perturb-sigma must be a finite value > 0",
+        ),
+        (
+            &["--perturb-sigma=-1", &pop, &data],
+            "--perturb-sigma must be a finite value > 0",
+        ),
+        (
+            &[
+                "--perturb-sigma",
+                "0.01",
+                "--perturb-seeds",
+                "0",
+                &pop,
+                &data,
+            ],
+            "--perturb-seeds must be in 1..=",
+        ),
+        (&["--perturb-seeds", "4", &pop, &data], "--perturb-sigma"),
+        (
+            &["--perturb-sigma", "0.01", "--cohort", &pop, &data],
+            "--race-stdio or --cohort",
+        ),
+        (
+            &["--perturb-sigma", "0.01", "--race-stdio", &pop, &data],
+            "--race-stdio or --cohort",
+        ),
+        // Named before adapter selection, so a GPU-less host reports the conflict.
+        (
+            &["--perturb-sigma", "0.01", "--gpu", "on", &pop, &data],
+            "scores its copies on the CPU",
+        ),
+    ];
+    for (args, message) in cases {
+        let out = scorer(args);
+        assert!(!out.status.success(), "{args:?} must fail");
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            stderr.contains(message),
+            "{args:?}: unexpected stderr: {stderr}"
+        );
     }
 }
