@@ -615,6 +615,7 @@ fn score_from_creature_dir_cpu(
     let loaded = load_creatures_from_dir(creatures_dir)?;
     score_loaded_creatures_cpu(
         loaded,
+        WorkerPartition::Directory,
         data_path,
         gpu_backend,
         cost,
@@ -624,12 +625,24 @@ fn score_from_creature_dir_cpu(
     )
 }
 
+/// How a CPU sweep spreads its worker budget across creatures (Issue #588).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum WorkerPartition {
+    /// Directory mode's own split: when the thread budget does not divide
+    /// evenly, the first creatures get one extra worker (a ragged split).
+    Directory,
+    /// Every creature gets the same worker count, so two creatures with the
+    /// same weights fold the same record partition and score bit-identically.
+    Uniform,
+}
+
 /// The CPU directory sweep over creatures already in memory (Issue #588: the
 /// perturbation mode scores perturbed copies it never writes to disk). Every
 /// creature must share one input/output shape, as [`load_creatures_from_dir`]
 /// guarantees for a directory.
 pub(crate) fn score_loaded_creatures_cpu(
     loaded: Vec<LoadedCreature>,
+    partition: WorkerPartition,
     data_path: &Path,
     gpu_backend: GpuBackendLabel,
     cost: CostKind,
@@ -686,12 +699,18 @@ pub(crate) fn score_loaded_creatures_cpu(
     // Issue #537: `NEAT_SCORER_WORKER_SPLIT` multiplies the task count so the
     // Rayon tail idles fewer threads; `k = 1` is the shipped default and keeps
     // the pre-#537 partition.
-    let workers_per = workers_per_creature_split(
+    let mut workers_per = workers_per_creature_split(
         loaded.len(),
         activation_threads,
         worker_split_factor(),
         crate::host_resources::max_worker_count(&crate::host_resources::host()),
     );
+    // Issue #588: paired comparisons need every creature to fold the same
+    // record partition, so drop the ragged remainder's extra workers.
+    if partition == WorkerPartition::Uniform {
+        let w = workers_per.iter().copied().min().unwrap_or(1);
+        workers_per.fill(w);
+    }
     let total_workers: usize = workers_per.iter().sum();
 
     // Prefix-sum offsets: worker i for creature c lives at

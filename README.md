@@ -816,7 +816,10 @@ rust_scorer --perturb-sigma 1e-3 [--perturb-seeds 8] [--perturb-seed-base 0] <cr
   noise however their synapses are ordered — comparisons are paired.
 - Only synapse weights are perturbed; biases are left alone.
 - The `n × creatures` copies are scored in **one extra CPU sweep** over
-  in-memory creatures, so the mode costs `n + 1` scorings. Pay it at the
+  in-memory creatures, so the mode costs `n + 1` scorings. That sweep gives
+  every copy the same worker count (no ragged remainder), so copies with
+  identical weights fold the same record partition and score bit-identically
+  on any host. Pay it at the
   authoritative step on a handful of survivors, never during screening.
 - Rejected with `--race-stdio`, `--cohort` and `--gpu on`.
 

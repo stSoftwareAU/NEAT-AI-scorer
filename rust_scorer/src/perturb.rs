@@ -24,7 +24,9 @@
 //! independent draws.
 //!
 //! All `n × creatures` copies are scored in one extra CPU directory sweep over
-//! in-memory creatures; nothing is written to disk. Only synapse weights are
+//! in-memory creatures, with the **same worker count for every copy** (no
+//! ragged remainder), so copies with identical weights fold the same record
+//! partition and score bit-identically on any host; nothing is written to disk. Only synapse weights are
 //! perturbed (biases are left alone), so σ is calibrated against the weight
 //! distribution, which each summary reports (`weightRms`, `weightMedianAbs`).
 
@@ -37,7 +39,7 @@ use serde::Serialize;
 
 use crate::cost::CostKind;
 use crate::gpu::GpuBackendLabel;
-use crate::multi_score::{LoadedCreature, score_loaded_creatures_cpu};
+use crate::multi_score::{LoadedCreature, WorkerPartition, score_loaded_creatures_cpu};
 use crate::sampling::SampleSpec;
 use crate::scoring::ScoreResult;
 
@@ -228,8 +230,11 @@ pub fn score_perturbations(
             });
         }
     }
+    // Uniform partition: identical weights must give identical perturbed
+    // errors on every host, whatever its thread count.
     let scored = score_loaded_creatures_cpu(
         copies,
+        WorkerPartition::Uniform,
         data_path,
         GpuBackendLabel::CpuFallback,
         cost,

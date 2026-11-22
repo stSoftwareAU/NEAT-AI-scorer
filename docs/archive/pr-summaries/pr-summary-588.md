@@ -39,6 +39,13 @@ point result. Part of #588.
   so its sweep (`score_loaded_creatures_cpu`) takes loaded creatures; the
   perturbed copies are never written to disk and all `n × creatures` of them
   share one corpus pass.
+- **Uniform partition for pairing.** Directory mode gives the first creatures
+  one extra worker when the thread budget does not divide evenly; a ragged
+  split regroups their `f32` sums. The perturbation sweep passes
+  `WorkerPartition::Uniform`, so every copy gets the same worker count and two
+  creatures with identical weights score bit-identically on any host. The
+  test pins `NEAT_SCORER_ACTIVATION_THREADS=32` over 25 copies (ragged under
+  directory mode) and fails if the sweep is switched back.
 - **Output.** `ScoreResult` gains an optional `perturbation` field, skipped
   when absent, so every other run's JSON is byte-for-byte as before. Standard
   deviations are sample (`n − 1`) estimates; per-seed values are included so a
@@ -95,14 +102,18 @@ flowchart LR
   function of seed and `(from, to, role)` (independent of weight), standard
   normal over 20 000 draws (mean and std within 0.03), spec rejects bad σ and
   seed counts, sample std estimator.
-- `cargo test -p rust_scorer --test perturb_mode` — 3 tests: directory results
-  identical to a plain run apart from the new block (and absent without the
-  flag); block shape, mean consistency and positive spread; twin bit-identical,
-  reordered within `f32` rounding, other creatures different; single-file mode
-  unchanged point result, determinism, seed-base sensitivity, σ → 0 recovers
-  the point error, larger σ widens the spread; seven refusals each asserted
-  by its stderr message (σ ≤ 0, `--perturb-seeds 0`, seeds without σ,
-  `--cohort`, `--race-stdio`, and `--gpu on` before adapter selection).
+- `cargo test -p rust_scorer --test perturb_mode` — 3 tests: directory
+  results identical to a plain run apart from the new block (and absent
+  without the flag), under 32 activation threads; every summary consistent
+  with its arrays on both sides (`meanError`/`stdError` and
+  `meanScore`/`stdScore` equal the mean and sample std of `errors`/`scores`,
+  `scores[k] + errors[k]` tracks the point `score + error`, `seedBase` echoed,
+  `weightMedianAbs` and `weightRms` equal values computed from the fixture's
+  weights); twin bit-identical on errors and scores, reordered within `f32`
+  rounding, other creatures different; single-file mode leaves the point
+  `error` and `score` unchanged, is deterministic, seed-base sensitive,
+  recovers both point values as σ → 0 and widens both spreads with larger σ;
+  seven refusals each asserted by its stderr message.
 - Full workspace fmt, clippy (`-D warnings`, `filter_next`, `collapsible_if`),
   tests, rustdoc `-D warnings`, codespell, `markdownlint-cli2` and every
   `scripts/check-*.sh` validator — all pass.
