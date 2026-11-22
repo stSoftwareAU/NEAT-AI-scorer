@@ -1,6 +1,6 @@
 [package]
 name = "rust_scorer"
-version = "1.1.104"
+version = "1.1.105"
 edition = "2024"
 # NEAT-AI family floor (NEAT-AI-core#747); keep equal to rust-toolchain.toml.
 rust-version = "1.99"
@@ -49,6 +49,11 @@ path = "src/bin/gpu_pipeline_alloc_bench.rs"
 [[bin]]
 name = "if_tree_batch_bench"
 path = "src/bin/if_tree_batch_bench.rs"
+
+# Opt-in cached-halving experiment; separate from the ordinary scorer CLI.
+[[bin]]
+name = "halving_bench"
+path = "src/bin/halving_bench.rs"
 
 # Criterion bench harness — see `benches/scoring.rs` and
 # `docs/performance-baseline.md`. Not wired into `quality.sh` (Criterion runs

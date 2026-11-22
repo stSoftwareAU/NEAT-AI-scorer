@@ -17,6 +17,13 @@ section to the released version with its date.
 
 ### Added
 
+- **Opt-in cached-halving experiment (Issue #680).** A separate `halving_bench`
+  worker and `scripts/bench-halving.py` driver compare full scoring, stride
+  screening, nested uncached screening and cached cumulative 2%/5%/15%/100%
+  scoring. Frozen manifests, authoritative rejection audits and paired JSONL
+  observations support reproducible investigation. This is an experimental
+  adaptation, with no representative-data benefit established and no default
+  scorer change. See [`docs/experiments/halving.md`](docs/experiments/halving.md).
 - **The family-sync guard accepts a push delegated to `push-with-app-token`
   (Issue #656).** `scripts/check-family-sync-workflow.sh` now passes a
   `family-sync.yml` whose push step `uses: ./.github/actions/push-with-app-token`:
