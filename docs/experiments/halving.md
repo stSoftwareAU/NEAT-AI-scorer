@@ -249,15 +249,22 @@ counterbalanced repetitions. There were no failed or omitted trials, integrity
 errors or lost cached-arm oracle winners; cached regret was zero. The maximum
 surviving-full relative deviation across the four arms was `2.01e-14`.
 
-Per-trial candidate-record evaluations were identical across seeds/repetitions
-within each case:
+Per-trial candidate-record evaluations for the full, nested-uncached and cached
+arms were identical across seeds and repetitions within each case. The stride
+arm's were identical across repetitions but **vary with the seed**: its stride
+phase is the seed, and the stratified stride keeps
+`floor((n + phase) * rate) - floor(phase * rate)` records, so phase 17 keeps
+41/103 records at 2%/5% of 2,048 where phase 0 keeps 40/102. The Stride column
+gives seeds 0 and 101 / seed 17:
 
-| Case | Records | Full | Stride | Nested uncached | Cached |
+| Case | Records | Full | Stride (seeds 0, 101 / 17) | Nested uncached | Cached |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| Calibration, 12 candidates | 2,048 | 24,576 | 6,109 | 6,130 | 4,959 |
-| Calibration, 24 candidates | 2,048 | 49,152 | 10,170 | 10,212 | 8,178 |
-| Validation, 12 candidates | 4,096 | 49,152 | 12,230 | 12,251 | 9,914 |
-| Validation, 24 candidates | 4,096 | 98,304 | 20,364 | 20,406 | 16,347 |
+| Calibration, 12 candidates | 2,048 | 24,576 | 6,109 / 6,127 | 6,130 | 4,959 |
+| Calibration, 24 candidates | 2,048 | 49,152 | 10,170 / 10,206 | 10,212 | 8,178 |
+| Validation, 12 candidates | 4,096 | 49,152 | 12,230 / 12,248 | 12,251 | 9,914 |
+| Validation, 24 candidates | 4,096 | 98,304 | 20,364 / 20,400 | 20,406 | 16,347 |
+
+The difference is about 0.3% and does not change the verdict.
 
 The nested control isolates approximately 19–20% fewer forward evaluations
 from caching on these fixtures. Across the declared run, the arms consumed

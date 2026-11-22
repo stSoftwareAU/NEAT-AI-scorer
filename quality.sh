@@ -222,6 +222,11 @@ cargo build --workspace
 echo "🧪 Running tests..."
 cargo test --workspace --all-features -- --test-threads=2
 
+# Issue #680: the halving driver's protocol/statistics contracts. Also run
+# from `cargo test` (rust_scorer/tests/halving_bench_cli.rs) so CI gates them.
+echo "🐍 Running experiment driver tests..."
+python3 -B -m unittest discover -s tests/experiments
+
 echo "📖 Building documentation..."
 RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
 

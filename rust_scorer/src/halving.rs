@@ -824,12 +824,11 @@ mod tests {
     #[test]
     fn every_cost_is_decomposable() {
         let recs = records();
-        let c = corpus(&recs);
         let plan = RungPlan::issue_680_default();
         let inc = rung_increments(RECORDS, &plan, 5);
         let mut net = nets().remove(3);
         for &cost in CostKind::value_variants() {
-            let whole = score(cost, &mut net, &recs, &c).unwrap();
+            let whole = accumulate_cost_sum(cost, &mut net, &recs, 4, 1, true).unwrap();
             assert!(whole.is_finite(), "{cost:?} produced {whole}");
             let mut split = 0.0;
             for v in &inc {
@@ -838,7 +837,7 @@ mod tests {
                     buf.extend_from_slice(&recs[i * 5..(i + 1) * 5]);
                 }
                 if !buf.is_empty() {
-                    split += score(cost, &mut net, &buf, &c).unwrap();
+                    split += accumulate_cost_sum(cost, &mut net, &buf, 4, 1, true).unwrap();
                 }
             }
             let dev = (whole - split).abs() / whole.abs().max(1e-12);
@@ -1044,26 +1043,41 @@ mod tests {
     #[test]
     fn candidate_shape_is_checked_before_entering_loss_kernels() {
         let recs = records();
-        let ns = nets();
-        assert_eq!(check_inputs(&ns, &corpus(&recs)).unwrap(), RECORDS);
+        let plan = RungPlan::issue_680_default();
+        // Positive control through a public arm.
+        assert!(run_full(CostKind::Mse, &mut nets(), corpus(&recs)).is_ok());
         let wrong_inputs = PackedCorpus {
             num_inputs: 3,
             num_outputs: 2,
             ..corpus(&recs)
         };
-        assert_eq!(
-            check_inputs(&ns, &wrong_inputs).unwrap_err(),
-            "candidate 0 has 4 inputs but corpus declares 3"
-        );
         let wide_record = vec![0.0_f32; 1004];
         let wrong_outputs = PackedCorpus {
             num_outputs: 1000,
             ..corpus(&wide_record)
         };
-        assert_eq!(
-            check_inputs(&ns, &wrong_outputs).unwrap_err(),
-            "candidate 0 has fewer non-input neurons than the 1000 declared outputs"
-        );
+        let cases = [
+            (
+                wrong_inputs,
+                "candidate 0 has 4 inputs but corpus declares 3",
+            ),
+            (
+                wrong_outputs,
+                "candidate 0 has fewer non-input neurons than the 1000 declared outputs",
+            ),
+        ];
+        for (bad, message) in cases {
+            // Every arm refuses the mismatched candidate before scoring it.
+            let arms: [Result<ArmOutcome, String>; 4] = [
+                run_full(CostKind::Mse, &mut nets(), bad),
+                run_independent_screening(CostKind::Mse, &mut nets(), bad, &plan, 0),
+                run_nested_uncached(CostKind::Mse, &mut nets(), bad, &plan, 5),
+                run_cached_halving(CostKind::Mse, &mut nets(), bad, &plan, 5),
+            ];
+            for (arm, result) in arms.into_iter().enumerate() {
+                assert_eq!(result.unwrap_err(), message, "arm {arm}");
+            }
+        }
     }
 
     fn outcome(

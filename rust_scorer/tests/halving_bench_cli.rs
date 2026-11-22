@@ -357,3 +357,41 @@ fn frozen_driver_runs_real_worker_and_rejects_changed_inputs() {
     assert!(String::from_utf8_lossy(&changed.stderr).contains("frozen data changed"));
     assert!(!dir.path().join("changed.jsonl").exists());
 }
+
+/// The Python driver's protocol and statistics contracts (counterbalanced arm
+/// orders, the seed-clustered interval and the config refusals in
+/// `tests/experiments/test_halving_driver.py`) run inside `cargo test`, so the
+/// normal gate — `./quality.sh` and CI's `cargo test` — fails when they break.
+#[test]
+fn python_driver_contract_tests_pass_in_the_cargo_gate() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+    let out = Command::new("python3")
+        .args([
+            "-B",
+            "-m",
+            "unittest",
+            "discover",
+            "-s",
+            "tests/experiments",
+            "-v",
+        ])
+        .current_dir(&root)
+        .output()
+        .expect("python3 must be available to run the driver contract tests");
+    let log = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "driver contract tests failed:\n{log}");
+    let ran = log
+        .lines()
+        .find_map(|l| {
+            l.strip_prefix("Ran ")?
+                .split_whitespace()
+                .next()?
+                .parse::<usize>()
+                .ok()
+        })
+        .unwrap_or(0);
+    assert!(
+        ran >= 4,
+        "expected the driver contract tests to run, got {ran}:\n{log}"
+    );
+}

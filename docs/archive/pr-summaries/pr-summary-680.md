@@ -53,12 +53,14 @@ validation is outstanding. Part of #680.
   All cached oracle winners were retained, with zero regret; maximum surviving
   full-result relative deviation across the arms was `2.01e-14`.
 
-Per-trial evaluations on the 4,096-record synthetic validation cases:
+Per-trial evaluations on the 4,096-record synthetic validation cases. Full,
+nested and cached counts are identical across seeds; the stride arm's depend on
+the stride phase (the seed), so its column gives seeds 0 and 101 / seed 17:
 
-| Population | Full | Stride | Nested uncached | Cached |
+| Population | Full | Stride (seeds 0, 101 / 17) | Nested uncached | Cached |
 | --- | ---: | ---: | ---: | ---: |
-| 12 | 49,152 | 12,230 | 12,251 | 9,914 |
-| 24 | 98,304 | 20,364 | 20,406 | 16,347 |
+| 12 | 49,152 | 12,230 / 12,248 | 12,251 | 9,914 |
+| 24 | 98,304 | 20,364 / 20,400 | 20,406 | 16,347 |
 
 Caching saved approximately 19–20% of evaluations against the nested control
 on these fixtures. Total experimental accounting includes 8,603,760 arm
@@ -99,7 +101,9 @@ This is backend/CLI work; no visual surface changed.
   implementation before their fixes; this is checkpoint review, not a claim
   of reproducing a default-branch bug.
 - `cargo test -p rust_scorer --test halving_bench_cli < /dev/null` — passed,
-  five tests in `rust_scorer/tests/halving_bench_cli.rs`. They exercise the real
+  six tests (including `python_driver_contract_tests_pass_in_the_cargo_gate`,
+  which runs the Python driver contracts inside `cargo test` so CI gates them),
+  in `rust_scorer/tests/halving_bench_cli.rs`. They exercise the real
   native worker and Python driver, authoritative RMSE parity, a deliberately
   rejected full-data winner with 0.96 regret, limits, malformed data, invalid
   order/seed, split hash overlap, changed inputs/binary and native failures.
