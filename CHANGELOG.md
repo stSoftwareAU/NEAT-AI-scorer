@@ -17,6 +17,13 @@ section to the released version with its date.
 
 ### Added
 
+- **Perturbation-robustness mode — `--perturb-sigma σ [--perturb-seeds n]`
+  (Issue #588).** Scores `n` copies of each creature with synapse weights
+  perturbed by `N(0, σ²)` in one extra CPU sweep and adds a `perturbation` block
+  (mean and standard deviation of error and score, per-seed values, weight RMS
+  and median |w| for σ calibration). The unperturbed result is unchanged. Noise
+  is a pure function of the seed and the synapse's `(from, to, role)`, so
+  comparisons across creatures are paired.
 - **Cohort (delta) scoring — `--cohort` (Issue #683).** Directory mode can now
   hash-cons every creature into one union network (squash, bias and the ordered
   `(source, weight, role)` inbound list, compared by bit pattern) and activate it

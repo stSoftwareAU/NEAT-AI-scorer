@@ -790,6 +790,50 @@ with one scalar bias, so continuing a per-lane partial sum would need a second
 FMA chain whose rounding is not guaranteed to match; the measured win below did
 not need it.
 
+### Perturbation robustness (Issue #588)
+
+Fleet wins are ≈ 6e-05. At that scale "scores higher" and "is better" are
+different claims: a win on a knife-edge optimum that a 1e-3 jostle of the
+weights would lose is not the asset a win that survives it is. Evolution
+Strategies (Salimans et al. 2017) optimise the smoothed objective
+`E[f(θ + σε)]`; `--perturb-sigma` measures it:
+
+```bash
+rust_scorer --perturb-sigma 1e-3 [--perturb-seeds 8] [--perturb-seed-base 0] <creature.json|creatures_dir> <data_dir>
+```
+
+- The **unperturbed result is unchanged** — computed on exactly the path it
+  takes without the flag (GPU routing included) — so nothing downstream breaks.
+- Each creature's entry gains a `perturbation` block: `sigma`, `seeds`,
+  `seedBase`, `target` (`"synapseWeights"`), `meanError`, `stdError`,
+  `meanScore`, `stdScore`, the per-seed `errors` and `scores`, and the weight
+  distribution for σ calibration (`weightRms`, `weightMedianAbs`). The standard
+  deviations are sample (`n − 1`) estimates.
+- **Common random numbers.** Copy `k`'s noise on a synapse is a pure function
+  of `(seedBase + k, from UUID, to UUID, role)`, so every creature in a run is
+  perturbed with the same seeds and a synapse two creatures share gets the same
+  noise however their synapses are ordered — comparisons are paired.
+- Only synapse weights are perturbed; biases are left alone.
+- The `n × creatures` copies are scored in **one extra CPU sweep** over
+  in-memory creatures, so the mode costs `n + 1` scorings. Pay it at the
+  authoritative step on a handful of survivors, never during screening.
+- Rejected with `--race-stdio`, `--cohort` and `--gpu on`.
+
+Consumers gate on whatever they like, for example: accept only if the candidate
+wins on both the point score and `meanScore`, or rank by `meanScore` and break
+ties on the point score.
+
+**Calibrating σ.** Choose σ from the weight distribution, not a round number:
+the reported `weightRms` / `weightMedianAbs` are the scale, and `stdError`
+grows linearly in σ for small σ, so a short sweep finds the σ at which
+`stdError` is comparable to the wins being judged. On the production-scale
+synthetic fixture (`LayeredShape::production_scale`, RMS weight 0.299, median
+|w| 0.248, 4 000 records, 8 seeds), `stdError` was 6.0e-04, 6.0e-03 and 5.9e-02
+at σ = 1e-4, 1e-3 and 1e-2. That fixture is a random network, so its numbers
+only illustrate the method; the calibration against the production weight
+distribution and the measurement of how many recent fleet accepts survive
+perturbation need the private creatures and are tracked on Issue #588.
+
 ### Self-tuning, and why the `NEAT_SCORER_*` knobs are not configuration (Issue #544)
 
 The scorer picks every performance knob from the machine it is running on —
