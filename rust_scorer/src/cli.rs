@@ -37,7 +37,7 @@ use crate::racing_stdio::RacingStdio;
 use crate::read_tuning::{
     training_read_backend_label, training_read_target_bytes_from_env_for_readers,
 };
-use crate::sampling::{SampleSpec, parse_sample_rate};
+use crate::sampling::{SampleSpec, parse_sample_phase, parse_sample_rate};
 use crate::scoring::{ScoreResult, calculate_score, compute_score_components};
 use crate::signal_exit;
 use crate::stream_score::AUTO_FILE_READ_WORKERS;
@@ -138,9 +138,11 @@ struct Cli {
     ///
     /// Shifts the deterministic stratified stride to select a *different*
     /// subsample of the same size — e.g. rotating the sampled stratum per
-    /// generation — without any randomness. Defaults to `0`. Ignored when
-    /// `--sample-rate` is `1` or absent.
-    #[arg(long, value_name = "PHASE", default_value_t = 0)]
+    /// generation — without any randomness. An integer in `[0, 2^32-1]`; a
+    /// larger value is rejected with a non-zero exit (Issue #685) because the
+    /// stride index would stop being exact. Defaults to `0`. Has no effect when
+    /// `--sample-rate` is `1` or absent, but is still range-checked.
+    #[arg(long, value_name = "PHASE", default_value_t = 0, value_parser = parse_sample_phase)]
     sample_phase: u64,
 
     /// Race the directory-mode batch over stdio: publish per-chunk partial

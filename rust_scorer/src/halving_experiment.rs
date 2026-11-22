@@ -31,7 +31,7 @@ use crate::if_tree_fixture::{
 };
 use crate::multi_score::{load_creatures_from_dir, score_from_creature_dir};
 use crate::read_tuning::training_read_target_bytes_from_env;
-use crate::sampling::SampleSpec;
+use crate::sampling::{MAX_SAMPLE_PHASE, SampleSpec};
 use crate::stream_io::run_io_loop;
 use crate::stream_score::effective_fused_read_buf_len;
 
@@ -155,7 +155,7 @@ pub fn main() -> ExitCode {
 
 fn run(cli: &Cli) -> Result<Report, String> {
     let started = Instant::now();
-    if cli.seed > u32::MAX as u64 {
+    if cli.seed > MAX_SAMPLE_PHASE {
         return Err("seed must be in [0, 2^32-1] for stride index precision".to_string());
     }
     let creatures_dir = cli

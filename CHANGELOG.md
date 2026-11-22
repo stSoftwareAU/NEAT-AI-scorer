@@ -205,6 +205,11 @@ section to the released version with its date.
 
 ### Fixed
 
+- **`--sample-phase` is bounded to `[0, 2^32-1]` (Issue #685).** A larger phase
+  used to make the `f64` stride keep a skewed subset (from 2^53), no records
+  (from 2^54) or overflow the index addition; it is now rejected with a non-zero
+  exit naming `--sample-phase`, both on the CLI and in `SampleSpec::new`.
+
 - **Acknowledges neat-core 0.18.0 – 0.22.5 — a synapse into an unlisted neuron
   is now refused instead of silently dropped (neat-core #682 / #685).**
   `neat-core.expected-version` recorded `0.17.0` while the sibling clone CI
