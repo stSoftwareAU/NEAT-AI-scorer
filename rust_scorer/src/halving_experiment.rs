@@ -59,6 +59,10 @@ struct Cli {
     /// Synthetic fixture profile for `--generate-fixture`.
     #[arg(long, value_enum, default_value_t = FixtureProfile::TreeOracle, requires = "generate_fixture")]
     fixture_profile: FixtureProfile,
+    /// Seed base for the near-clone validation cases (calibration uses 0).
+    /// A new base draws fresh, never-observed validation parents and corpora.
+    #[arg(long, requires = "generate_fixture")]
+    fixture_validation_base: Option<u64>,
     /// Describe the algorithm constants without touching candidates or data.
     #[arg(long, conflicts_with_all = ["creatures_dir", "data_dir"])]
     describe_protocol: bool,
@@ -135,7 +139,7 @@ pub fn main() -> ExitCode {
         Ok(serde_json::json!({"rates": plan.rates(), "eta": plan.eta(),
             "relativeNumericTolerance": FULL_MATCH_REL_TOLERANCE}))
     } else if let Some(root) = &cli.generate_fixture {
-        generate_fixture(root, cli.fixture_profile)
+        generate_fixture(root, cli.fixture_profile, cli.fixture_validation_base)
     } else {
         run(&cli).and_then(|r| serde_json::to_value(r).map_err(|e| e.to_string()))
     };
@@ -416,11 +420,29 @@ fn peak_rss_bytes() -> Result<Option<u64>, String> {
     }
 }
 
+/// Default validation seed base; the calibration base is 0.
+const DEFAULT_VALIDATION_BASE: u64 = 100_000;
+/// Near-clone case seeds are `base + population + 0..=3` (population <= 24),
+/// so a validation base at or above this cannot collide with calibration.
+const MIN_VALIDATION_BASE: u64 = 1_000;
+
 fn generate_fixture(
     root: &std::path::Path,
     profile: FixtureProfile,
+    validation_base: Option<u64>,
 ) -> Result<serde_json::Value, String> {
     let started = Instant::now();
+    if let Some(base) = validation_base {
+        if !matches!(profile, FixtureProfile::NearClone) {
+            return Err("--fixture-validation-base only applies to the near-clone profile".into());
+        }
+        if !(MIN_VALIDATION_BASE..=MAX_SAMPLE_PHASE).contains(&base) {
+            return Err(format!(
+                "--fixture-validation-base must be in [{MIN_VALIDATION_BASE}, {MAX_SAMPLE_PHASE}] to stay disjoint from calibration seeds"
+            ));
+        }
+    }
+    let validation_seed = validation_base.unwrap_or(DEFAULT_VALIDATION_BASE);
     // Refuse existing state: this command owns only a newly created directory.
     std::fs::create_dir(root).map_err(|e| format!("create synthetic root: {e}"))?;
     let root = root
@@ -435,7 +457,10 @@ fn generate_fixture(
         }
     };
     let mut cases = Vec::new();
-    for (split, base, records) in [("calibration", 0, 2048), ("validation", 100_000, 4096)] {
+    for (split, base, records) in [
+        ("calibration", 0, 2048),
+        ("validation", validation_seed, 4096),
+    ] {
         for population in [12, 24] {
             let id = format!("{split}-{population}");
             let case = root.join(&id);
@@ -459,14 +484,17 @@ fn generate_fixture(
             );
         }
     }
-    Ok(
-        serde_json::json!({"schema": "neat-halving-config/1", "cases": cases,
+    let mut config = serde_json::json!({"schema": "neat-halving-config/1", "cases": cases,
         "seeds": [0, 17, 101], "repetitions": 8, "cost": "MSE",
         "splitJustification": split_justification,
         "inputPreparationSecs": started.elapsed().as_secs_f64(),
         "limits": {"maxCorpusBytes": 268435456, "maxRecordEvaluations": 1000000000,
-            "trialSeconds": 120, "totalSeconds": 1800}}),
-    )
+            "trialSeconds": 120, "totalSeconds": 1800}});
+    // Only an explicit base is recorded, so default output is unchanged.
+    if let Some(base) = validation_base {
+        config["fixtureValidationBase"] = base.into();
+    }
+    Ok(config)
 }
 
 fn write_tree_oracle_case(

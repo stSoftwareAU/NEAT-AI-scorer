@@ -396,3 +396,33 @@ corpora, which this public repository and this host do not hold; run it with a
 private `--config` as described above, keeping its manifest and observations
 private. The harness is kept for that run; it is opt-in and changes no scorer
 default.
+
+## Predeclared fresh near-clone validation — 24 November 2026
+
+The near-clone validation cases above were observed once before the generator
+fix, so they are not strictly untouched. This section is committed **before**
+the fresh validation run, and its contents are fixed for that run.
+
+- Inputs: `prepare --synthetic-root <dir>/inputs --synthetic-profile near-clone
+  --synthetic-validation-base 300000`. Calibration cases (base 0) are the
+  calibration cases above, unchanged. The validation parents and corpora are
+  drawn from base 300000. No run, test or fixture on this branch has generated
+  that base before (the regression test uses 200000 and only checks hashes).
+  The driver refuses the manifest if any calibration and validation candidate or
+  corpus hash overlaps.
+- Controls: the four paired arms (full, stride, nested uncached, cached) plus the
+  authoritative full-data audit of every rejected candidate.
+- Seeds 0, 17 and 101; eight counterbalanced repetitions; populations 12 and
+  24; 2,048 calibration and 4,096 validation records; cost `MSE`.
+- Compute limits: the generated config's limits (256 MiB corpus,
+  1,000,000,000 record evaluations, 120 seconds per trial, 1,800 seconds in
+  total). A breach is a failure, not a truncation.
+- Success and failure criteria: the driver's `PROTOCOL` thresholds, unchanged
+  (winner retention ≥ 0.95, relative regret ≤ 0.001, evaluation saving ≥ 50%
+  against full and > 0 against nested uncached, at least three validation
+  seeds). Every case is `kind: synthetic`, so the only reachable verdicts are
+  `inconclusive-no-representative-validation` or a failure. The run is reported
+  whatever its outcome, and it is not re-run to obtain a different one.
+- Costs counted: the release build, fixture generation, driver execution and
+  every record evaluation, including the audits, as recorded by the manifest
+  and observations.

@@ -159,8 +159,11 @@ def prepare(args):
             raise ValueError("cargo emitted no halving_bench executable")
         binary = pathlib.Path(binaries[-1]).resolve(strict=True)
     if args.synthetic_root:
-        config = json.loads(checked_command([str(binary), "--generate-fixture", args.synthetic_root,
-                                              "--fixture-profile", args.synthetic_profile or "tree-oracle"], 60))
+        argv = [str(binary), "--generate-fixture", args.synthetic_root,
+                "--fixture-profile", args.synthetic_profile or "tree-oracle"]
+        if args.synthetic_validation_base is not None:
+            argv += ["--fixture-validation-base", str(args.synthetic_validation_base)]
+        config = json.loads(checked_command(argv, 60))
         config_root = ROOT
     else:
         config_path = pathlib.Path(args.config).resolve(strict=True)
@@ -354,6 +357,8 @@ def main():
     sources.add_argument("--synthetic-root")
     freeze.add_argument("--synthetic-profile", choices=["tree-oracle", "near-clone"], default=None,
                         help="fixture profile for --synthetic-root (default tree-oracle)")
+    freeze.add_argument("--synthetic-validation-base", type=int, default=None,
+                        help="near-clone validation seed base: draws fresh, never-observed validation cases")
     freeze.add_argument("--binary", help="use a prebuilt worker; binary build cost is recorded as unknown")
     freeze.add_argument("--manifest", required=True)
     execute = commands.add_parser("run", help="verify the frozen manifest and execute paired trials")
@@ -362,6 +367,8 @@ def main():
     args = parser.parse_args()
     if args.command == "prepare" and args.config and args.synthetic_profile:
         parser.error("--synthetic-profile only applies with --synthetic-root")
+    if args.command == "prepare" and args.config and args.synthetic_validation_base is not None:
+        parser.error("--synthetic-validation-base only applies with --synthetic-root")
     try:
         if args.command == "prepare":
             prepare(args)
