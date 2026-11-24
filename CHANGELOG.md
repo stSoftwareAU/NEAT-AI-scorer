@@ -58,7 +58,10 @@ section to the released version with its date.
   every full-data winner and caching changed no promotion decision, while the
   stride control lost the winner in two of twelve case/seed pairs at the 2%
   rung (relative regret up to 1.2%). The default `tree-oracle` profile is
-  unchanged.
+  unchanged. `--fixture-validation-base` (driver: `--synthetic-validation-base`)
+  redraws only the near-clone validation cases from a new seed base; a
+  predeclared fresh validation at base 300000, never observed before, lost no
+  validation winner in any arm.
 - **The family-sync guard accepts a push delegated to `push-with-app-token`
   (Issue #656).** `scripts/check-family-sync-workflow.sh` now passes a
   `family-sync.yml` whose push step `uses: ./.github/actions/push-with-app-token`:

@@ -426,3 +426,53 @@ the fresh validation run, and its contents are fixed for that run.
 - Costs counted: the release build, fixture generation, driver execution and
   every record evaluation, including the audits, as recorded by the manifest
   and observations.
+
+## Public observation — fresh near-clone validation, 24 November 2026
+
+The run declared in the previous section was made once, at git tip `48c0c48`
+(the commit that added that declaration), with the commands declared there. The
+[frozen manifest](../evidence/issue-680-near-clone-fresh-validation-manifest.json)
+and [raw JSONL observations (gzip)](../evidence/issue-680-near-clone-fresh-validation.jsonl.gz)
+record 96 of 96 successful trials, with no failed or omitted trials and no
+integrity error. Every case's candidates are pairwise distinct by SHA-256. The
+calibration cases are byte-identical to the near-clone run above. The two
+validation cases share no candidate or corpus hash with it, so this validation
+is untouched.
+
+Each case/seed outcome was identical across its eight repetitions. On both
+fresh validation cases every arm, stride included, kept the full-data winner
+(retention 1.0, regret 0), and the nested-control agreement was 1.0, so caching
+changed no promotion decision. The top-two full-error gap was 0.32% (12
+candidates) and 12.3% (24 candidates). The only lost winner was the unchanged
+calibration case: stride on calibration-12, seed 17, again selected candidate 8
+instead of 6 (relative regret 1.20%). Cached scoring used 79.8% and 83.4% fewer
+evaluations than full, and 19.1% and 19.9% fewer than nested uncached. The
+evaluation counts per trial are the same as above. The largest full-result
+relative deviation was `2.02e-10`, inside the 1e-6 tolerance. The run consumed
+13,912,176 record evaluations, including the audits.
+
+Indicative paired wall-time differences, in milliseconds (mean and seed-cluster
+bootstrap 95% interval):
+
+| Fresh synthetic validation population | Cached minus full | Cached minus stride | Cached minus nested |
+| --- | ---: | ---: | ---: |
+| 12 | -4.412 [-4.425, -4.392] | -0.270 [-0.288, -0.246] | -0.293 [-0.323, -0.264] |
+| 24 | -9.253 [-9.278, -9.217] | -0.708 [-0.864, -0.459] | -0.462 [-0.483, -0.446] |
+
+Costs: preparation took 17.33 seconds, of which 17.27 seconds was an
+incremental release build and 0.013 seconds was fixture generation; driver
+execution and report construction took 1.91 seconds. Process peak RSS ranged
+from 20.03 to 21.12 MiB. Versions: `halving_bench` 1.1.109, Rust 1.99.1 and
+neat-core v0.23.7 (`3759355634b1cabc8034cd76df5dbd44a867d18c`), on the same
+single host (`vibe-coder-7723`, Linux/aarch64, seven logical CPUs, no tuning
+environment overrides). The manifest records the source fingerprint and the
+executable hash.
+
+Verdict: **inconclusive — no representative validation**. It is the driver's
+verdict and the only success verdict the declaration allowed. Cached screening
+met every predeclared quality and saving threshold on untouched synthetic
+validation. Two fresh near-clone populations cannot say how often a 2% screen
+loses a near-tied winner: the stride loss above was in calibration, and the
+12-candidate validation gap of 0.32% was not lost here. This is still
+synthetic, single-host evidence, and it establishes neither real selection
+quality nor an optimisation benefit.
