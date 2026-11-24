@@ -448,6 +448,7 @@ fn near_clone_fixture_writes_offspring_of_one_parent_and_scores_authoritatively(
         )
         .unwrap();
         assert_eq!(bin.len(), records * (12 + 2) * 4, "{id}");
+        assert_distinct_shared_parent(case["creaturesDir"].as_str().unwrap(), population, id);
     }
     let validation = cases.iter().find(|c| c["id"] == "validation-12").unwrap();
     let out = Command::new(env!("CARGO_BIN_EXE_halving_bench"))
@@ -485,6 +486,11 @@ fn near_clone_fixture_writes_offspring_of_one_parent_and_scores_authoritatively(
         .output()
         .unwrap();
     assert!(!bare.status.success());
+    let bare_err = String::from_utf8_lossy(&bare.stderr);
+    assert!(
+        bare_err.contains("required") && bare_err.contains("--generate-fixture"),
+        "{bare_err}"
+    );
 
     // An existing root is refused and left untouched.
     let existing = dir.path().join("existing");
@@ -498,8 +504,114 @@ fn near_clone_fixture_writes_offspring_of_one_parent_and_scores_authoritatively(
         .output()
         .unwrap();
     assert!(!refused.status.success());
+    let refused_text = format!(
+        "{}{}",
+        String::from_utf8_lossy(&refused.stdout),
+        String::from_utf8_lossy(&refused.stderr)
+    );
+    assert!(
+        refused_text.contains("create synthetic root"),
+        "{refused_text}"
+    );
     assert_eq!(
         std::fs::read_to_string(existing.join("marker")).unwrap(),
         "keep"
     );
+}
+
+fn assert_distinct_shared_parent(dir: &str, population: usize, id: &str) {
+    let mut paths: Vec<_> = std::fs::read_dir(dir)
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .filter(|p| p.extension().is_some_and(|x| x == "json"))
+        .collect();
+    paths.sort();
+    let texts: Vec<String> = paths
+        .iter()
+        .map(|p| std::fs::read_to_string(p).unwrap())
+        .collect();
+    let unique: std::collections::HashSet<&String> = texts.iter().collect();
+    assert_eq!(unique.len(), texts.len(), "{id}: duplicate candidates");
+    let counts: Vec<usize> = texts
+        .iter()
+        .map(|t| {
+            let v: serde_json::Value = serde_json::from_str(t).unwrap();
+            v["neurons"].as_array().unwrap().len()
+        })
+        .collect();
+    let n = counts[0];
+    let half = population / 2;
+    assert!(counts[..half].iter().all(|&c| c == n), "{id}: {counts:?}");
+    assert!(
+        counts[half..].iter().all(|&c| c + 1 == n),
+        "{id}: {counts:?}"
+    );
+}
+
+#[test]
+fn driver_passes_near_clone_profile_through_and_refuses_it_without_synthetic_root() {
+    let dir = tempfile::tempdir().unwrap();
+    let driver =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../scripts/bench-halving.py");
+    let python = || {
+        let mut c = Command::new("python3");
+        c.arg("-B").arg(&driver).stdin(std::process::Stdio::null());
+        c
+    };
+    let manifest = dir.path().join("m.json");
+    let out = python()
+        .arg("prepare")
+        .arg("--synthetic-root")
+        .arg(dir.path().join("nc"))
+        .args(["--synthetic-profile", "near-clone"])
+        .arg("--binary")
+        .arg(env!("CARGO_BIN_EXE_halving_bench"))
+        .arg("--manifest")
+        .arg(&manifest)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let m: serde_json::Value = serde_json::from_slice(&std::fs::read(&manifest).unwrap()).unwrap();
+    assert!(
+        m["config"]["splitJustification"]
+            .as_str()
+            .unwrap()
+            .contains("one-mutation offspring")
+    );
+    for case in m["config"]["cases"].as_array().unwrap() {
+        let id = case["id"].as_str().unwrap();
+        let records: u64 = if id.starts_with("calibration") {
+            2048
+        } else {
+            4096
+        };
+        let bin = std::fs::metadata(
+            std::path::Path::new(case["dataDir"].as_str().unwrap()).join("0.bin"),
+        )
+        .unwrap();
+        assert_eq!(bin.len(), records * (12 + 2) * 4, "{id}");
+    }
+
+    let any = dir.path().join("any.json");
+    std::fs::write(&any, "{}").unwrap();
+    let bad_manifest = dir.path().join("x.json");
+    let refused = python()
+        .arg("prepare")
+        .arg("--config")
+        .arg(&any)
+        .args(["--synthetic-profile", "near-clone"])
+        .arg("--manifest")
+        .arg(&bad_manifest)
+        .output()
+        .unwrap();
+    assert!(!refused.status.success());
+    assert!(
+        String::from_utf8_lossy(&refused.stderr)
+            .contains("--synthetic-profile only applies with --synthetic-root")
+    );
+    assert!(!bad_manifest.exists());
 }

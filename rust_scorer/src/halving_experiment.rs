@@ -503,20 +503,46 @@ fn write_near_clone_case(
     records: usize,
 ) -> Result<(), String> {
     use crate::cohort_fixture::{
-        LayeredShape, corpus, layered_creature, removal_cohort, to_le_bytes, weight_change_cohort,
+        LayeredShape, SplitMix64, corpus, hidden_uuid, layered_creature, to_le_bytes,
+        weight_change_cohort,
     };
     let seed = base + population as u64;
     let shape = LayeredShape::small(seed);
     let parent = layered_creature(&shape);
     let half = population / 2;
     let mut specs = weight_change_cohort(&parent, half, seed + 1);
-    specs.extend(removal_cohort(&parent, &shape, population - half, seed + 2));
-    for (i, spec) in specs.iter().enumerate() {
-        std::fs::write(
-            candidates.join(format!("candidate-{i:03}.json")),
-            spec.to_json(),
-        )
-        .map_err(|e| format!("write fixture candidate: {e}"))?;
+    // Removal offspring drop DISTINCT hidden neurons (same set `removal_cohort`
+    // draws from, but without replacement) so no two candidates are identical.
+    let mut removable: Vec<String> = Vec::new();
+    for layer in 0..shape.layers.len().saturating_sub(1).max(1) {
+        for i in 0..shape.layers[layer].0 {
+            removable.push(hidden_uuid(layer, i));
+        }
+    }
+    let need = population - half;
+    if removable.len() < need {
+        return Err(format!(
+            "near-clone fixture needs {need} distinct removable neurons but only {} exist",
+            removable.len()
+        ));
+    }
+    let mut rng = SplitMix64::new(seed + 2);
+    for i in (1..removable.len()).rev() {
+        removable.swap(i, rng.index(i + 1));
+    }
+    specs.extend(removable[..need].iter().map(|u| parent.without_neuron(u)));
+    let rendered: Vec<String> = specs.iter().map(|s| s.to_json()).collect();
+    let distinct: std::collections::HashSet<&String> = rendered.iter().collect();
+    if distinct.len() != rendered.len() {
+        return Err(format!(
+            "near-clone fixture produced duplicate candidates ({} distinct of {})",
+            distinct.len(),
+            rendered.len()
+        ));
+    }
+    for (i, json) in rendered.iter().enumerate() {
+        std::fs::write(candidates.join(format!("candidate-{i:03}.json")), json)
+            .map_err(|e| format!("write fixture candidate: {e}"))?;
     }
     let packed = corpus(shape.inputs, shape.outputs, records, seed + 3);
     std::fs::write(data.join("0.bin"), to_le_bytes(&packed))
