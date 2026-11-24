@@ -438,7 +438,7 @@ fn generate_fixture(
         }
         if !(MIN_VALIDATION_BASE..=MAX_SAMPLE_PHASE).contains(&base) {
             return Err(format!(
-                "--fixture-validation-base must be in [{MIN_VALIDATION_BASE}, {MAX_SAMPLE_PHASE}] to stay disjoint from calibration seeds"
+                "--fixture-validation-base must be in [{MIN_VALIDATION_BASE}, {MAX_SAMPLE_PHASE}]: at least {MIN_VALIDATION_BASE} to stay disjoint from calibration seeds, at most the seed range"
             ));
         }
     }
