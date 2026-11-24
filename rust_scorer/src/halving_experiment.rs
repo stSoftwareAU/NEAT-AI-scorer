@@ -503,8 +503,8 @@ fn write_near_clone_case(
     records: usize,
 ) -> Result<(), String> {
     use crate::cohort_fixture::{
-        LayeredShape, SplitMix64, corpus, hidden_uuid, layered_creature, to_le_bytes,
-        weight_change_cohort,
+        LayeredShape, SplitMix64, corpus, hidden_uuid, layered_creature, removable_layers,
+        to_le_bytes, weight_change_cohort,
     };
     let seed = base + population as u64;
     let shape = LayeredShape::small(seed);
@@ -514,7 +514,7 @@ fn write_near_clone_case(
     // Removal offspring drop DISTINCT hidden neurons (same set `removal_cohort`
     // draws from, but without replacement) so no two candidates are identical.
     let mut removable: Vec<String> = Vec::new();
-    for layer in 0..shape.layers.len().saturating_sub(1).max(1) {
+    for layer in 0..removable_layers(&shape) {
         for i in 0..shape.layers[layer].0 {
             removable.push(hidden_uuid(layer, i));
         }
@@ -547,4 +547,28 @@ fn write_near_clone_case(
     let packed = corpus(shape.inputs, shape.outputs, records, seed + 3);
     std::fs::write(data.join("0.bin"), to_le_bytes(&packed))
         .map_err(|e| format!("write fixture corpus: {e}"))
+}
+
+#[cfg(test)]
+mod near_clone_tests {
+    use super::write_near_clone_case;
+    use tempfile::TempDir;
+
+    fn dirs() -> (TempDir, TempDir) {
+        (TempDir::new().unwrap(), TempDir::new().unwrap())
+    }
+
+    #[test]
+    fn near_clone_rejects_too_few_removable_neurons_before_writing() {
+        let (cand, data) = dirs();
+        let err = write_near_clone_case(cand.path(), data.path(), 1000, 60, 16)
+            .expect_err("60 candidates need 30 removals but only 24 exist");
+        assert!(err.contains("distinct removable neurons"), "{err}");
+        assert_eq!(std::fs::read_dir(cand.path()).unwrap().count(), 0);
+        assert_eq!(std::fs::read_dir(data.path()).unwrap().count(), 0);
+
+        let (cand, data) = dirs();
+        write_near_clone_case(cand.path(), data.path(), 1000, 24, 16).expect("24 fits");
+        assert_eq!(std::fs::read_dir(cand.path()).unwrap().count(), 24);
+    }
 }

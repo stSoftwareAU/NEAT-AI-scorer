@@ -420,6 +420,12 @@ pub fn weight_change_cohort(base: &CreatureSpec, n: usize, seed: u64) -> Vec<Cre
         .collect()
 }
 
+/// Hidden layers whose neurons a removal offspring may drop: every layer but the last, or the only one.
+#[must_use]
+pub fn removable_layers(shape: &LayeredShape) -> usize {
+    shape.layers.len().saturating_sub(1).max(1)
+}
+
 /// `n` candidates, each with one hidden neuron (not the anchor or the last
 /// layer) removed.
 #[must_use]
@@ -430,7 +436,7 @@ pub fn removal_cohort(
     seed: u64,
 ) -> Vec<CreatureSpec> {
     let mut rng = SplitMix64::new(seed);
-    let removable = shape.layers.len().saturating_sub(1).max(1);
+    let removable = removable_layers(shape);
     (0..n)
         .map(|_| {
             let layer = rng.index(removable);

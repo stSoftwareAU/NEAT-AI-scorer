@@ -340,6 +340,16 @@ record evaluations including the authoritative audits. Cached scoring used
 uncached. The largest surviving full-result relative deviation from the
 authoritative streaming score was `2.02e-10`, inside the 1e-6 tolerance.
 
+This replaces an earlier near-clone run on the same branch (git tip
+`44b49ba`), whose removal offspring were drawn with replacement, so 3 of the 4
+cases held byte-identical candidates. That run was discarded as an invalid
+population, not as an unwanted result; the generator was changed to draw
+distinct neurons and the protocol re-run. Case seeds, thresholds, rates and
+limits were not changed, but the validation parents and corpora had already
+been observed once, so this profile's validation is not strictly untouched. The
+discarded run cost a 107.8-second preparation (a fresh release build) and 1.9
+seconds of driver execution.
+
 Each case/seed outcome was identical across its eight repetitions. The top-two
 full-error gap was 1.2% and 1.0% in the calibration cases and 0.62% and 2.0% in
 the validation cases (12 and 24 candidates). Cached and nested screening kept
