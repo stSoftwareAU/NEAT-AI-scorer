@@ -2,8 +2,9 @@
 
 This opt-in, CPU-only experiment replays immutable, fixed populations. It does
 not change `rust_scorer`, deploy a policy, generate evolutionary proposals or
-replace full-data acceptance. Public synthetic fixtures establish correctness;
-representative validation is still outstanding. Performance changes follow the
+replace full-data acceptance. Public synthetic fixtures establish correctness, and a
+near-clone stress profile records where stride screening loses near-tied
+winners; representative validation is still outstanding. Performance changes follow the
 [Performance Task Workflow](../../CONTRIBUTING.md#performance-task-workflow).
 
 ## Pinned method and adaptation
@@ -147,9 +148,32 @@ python3 -B scripts/bench-halving.py run \
 Generation refuses an existing fixture root; manifests/results use exclusive
 creation and refuse overwrites. Regenerating from the same generator produces
 the same candidate/data hashes; timestamps, executable hashes and timings may
-differ. The synthetic cohorts use separate candidate seeds and input-index
-ranges, with a known IF-tree oracle. They are deliberately favourable
-correctness fixtures, not evidence about real selection quality.
+differ. In the default `tree-oracle` profile, the synthetic cohorts use
+separate candidate seeds and input-index ranges, with a known IF-tree oracle.
+They are deliberately favourable correctness fixtures, not evidence about real
+selection quality.
+
+The near-clone stress profile is selected with `--synthetic-profile near-clone`
+on `prepare` (refused together with `--config`; the worker's equivalent is
+`halving_bench --generate-fixture <root> --fixture-profile near-clone`):
+
+```bash
+python3 -B scripts/bench-halving.py prepare \
+  --synthetic-root "$experiment_dir/inputs" \
+  --synthetic-profile near-clone \
+  --manifest "$experiment_dir/manifest.json"
+```
+
+It uses the same splits, sizes and case ids as `tree-oracle` (calibration 2,048
+records, validation 4,096, populations 12 and 24), but each case's candidates
+are one-mutation offspring of one shared parent built by `cohort_fixture`
+(`LayeredShape::small`: 12 inputs, hidden layers 16/8/4, 2 outputs). The first
+half each change one synapse weight by up to ±0.05; the rest each remove a
+different hidden neuron, so every candidate in a case is distinct (generation
+fails loudly otherwise). The corpus has inputs in [-1, 1) and smooth sine targets, and no
+candidate is the target's generator, so there is no oracle and the candidates
+are near-ties. This is an unfavourable public stress fixture. It is still
+synthetic, labelled `kind: synthetic`, and not representative.
 
 For local representative inputs, supply a JSON configuration instead:
 
@@ -235,12 +259,13 @@ python3 -B -m unittest discover -s tests/experiments -v
 These checks cover disjoint increments, canonical costs including RMSE,
 counts, nested-control parity, ties, empty initial rungs, malformed/non-finite
 inputs, authoritative full-score parity, a deliberately lost winner, frozen
-input changes, split overlap, native failures and counterbalancing/statistics.
+input changes, split overlap, the near-clone fixture profile, native failures
+and counterbalancing/statistics.
 The ordinary sampling/racing regression suites remain the safety net for
 existing interfaces. See the committed issue summary for observed commands and
 the public evidence record for the measured scope.
 
-## Public observation — 14 November 2026
+## Public observation — tree-oracle profile, 14 November 2026
 
 The [frozen manifest](../evidence/issue-680-manifest.json) and
 [raw JSONL observations (gzip)](../evidence/issue-680-synthetic.jsonl.gz)
@@ -298,3 +323,156 @@ fixture is a correctness fixture. The oracle population is deliberately easy.
 The adversarial lost-winner regression demonstrates why these zero-regret
 synthetic observations cannot establish real selection quality. No production
 optimisation, full-paper reproduction or fleet-wide conclusion is claimed.
+
+## Public observation — near-clone profile, 24 November 2026
+
+The [frozen manifest](../evidence/issue-680-near-clone-manifest.json) and
+[raw JSONL observations (gzip)](../evidence/issue-680-near-clone.jsonl.gz)
+record 96 successful trials (four cases, seeds 0, 17 and 101, eight
+counterbalanced repetitions), with no failed or omitted trials and no integrity
+error. Every case's candidates are pairwise distinct by SHA-256. The
+populations and record counts match the tree-oracle profile, so the full,
+nested-uncached and cached per-trial evaluation counts are the same as in its
+table above (validation: 49,152 / 12,251 / 9,914 for 12 candidates and
+98,304 / 20,406 / 16,347 for 24); the declared run again consumed 13,912,176
+record evaluations including the authoritative audits. Cached scoring used
+79.8–83.4% fewer evaluations than full and 19.1–19.9% fewer than nested
+uncached. The largest surviving full-result relative deviation from the
+authoritative streaming score was `2.02e-10`, inside the 1e-6 tolerance.
+
+This replaces an earlier near-clone run on the same branch (git tip
+`44b49ba`), whose removal offspring were drawn with replacement, so 3 of the 4
+cases held byte-identical candidates. That run was discarded as an invalid
+population, not as an unwanted result; the generator was changed to draw
+distinct neurons and the protocol re-run. Case seeds, thresholds, rates and
+limits were not changed, but the validation parents and corpora had already
+been observed once, so this profile's validation is not strictly untouched. The
+discarded run cost a 107.8-second preparation (a fresh release build) and 1.9
+seconds of driver execution.
+
+Each case/seed outcome was identical across its eight repetitions. The top-two
+full-error gap was 1.2% and 1.0% in the calibration cases and 0.62% and 2.0% in
+the validation cases (12 and 24 candidates). Cached and nested screening kept
+the full-data winner in every trial (retention 1.0, regret 0) and the
+nested-control agreement was 1.0 throughout: caching never changed a promotion
+decision. The stride control lost the winner twice, both at the 2% rung:
+
+| Case | Seed | Stride selected | Absolute regret | Relative regret |
+| --- | ---: | --- | ---: | ---: |
+| Calibration, 12 | 17 | candidate 8 instead of 6 | 1.65e-3 | 1.20% |
+| Validation, 12 | 0 | candidate 9 instead of 6 | 9.03e-4 | 0.64% |
+
+Both exceed the predeclared 0.001 relative-regret threshold. The stride sets at
+2% are a different deterministic sample from the shared nested sets, so this
+shows that a 2% screen can drop a winner that is within about 1% of its rivals;
+with three seeds and one population per size it does not show that the nested
+sets are generally safer.
+
+Indicative paired wall-time differences on the shared host, in milliseconds
+(mean and seed-cluster bootstrap 95% interval):
+
+| Synthetic validation population | Cached minus full | Cached minus stride | Cached minus nested |
+| --- | ---: | ---: | ---: |
+| 12 | -4.502 [-4.611, -4.442] | -0.282 [-0.298, -0.262] | -0.271 [-0.273, -0.269] |
+| 24 | -9.241 [-9.363, -9.029] | -0.366 [-0.466, -0.195] | -0.502 [-0.512, -0.498] |
+
+This is single-host evidence from `vibe-coder-7723`, Linux/aarch64. Python
+reported seven logical CPUs; the CPU model was unavailable. The run used no
+tuning environment overrides, Rust 1.99.1, `halving_bench` 1.1.109 and neat-core
+v0.23.7 (`3759355634b1cabc8034cd76df5dbd44a867d18c`), at git tip `22c6355`; the
+manifest records the working-source fingerprint and executable hash.
+Preparation took 18.07 seconds, almost all an 18.03-second incremental release
+build; fixture generation took 0.0096 seconds; driver execution and report
+construction took 1.87 seconds. Process peak RSS ranged from 20.05 to
+21.10 MiB.
+
+Verdict: **inconclusive — no representative validation** (the driver's verdict,
+since every case is `kind: synthetic`). On these near-tied offspring of one
+parent, cached screening met every predeclared quality and saving threshold and
+its timing upper bounds were below zero, but that is synthetic, single-host
+evidence: it establishes neither real selection quality nor an optimisation
+benefit. Representative validation needs private candidate populations and
+corpora, which this public repository and this host do not hold; run it with a
+private `--config` as described above, keeping its manifest and observations
+private. The harness is kept for that run; it is opt-in and changes no scorer
+default.
+
+## Predeclared fresh near-clone validation — 24 November 2026
+
+The near-clone validation cases above were observed once before the generator
+fix, so they are not strictly untouched. This section is committed **before**
+the fresh validation run, and its contents are fixed for that run.
+
+- Inputs: `prepare --synthetic-root <dir>/inputs --synthetic-profile near-clone
+  --synthetic-validation-base 300000`. Calibration cases (base 0) are the
+  calibration cases above, unchanged. The validation parents and corpora are
+  drawn from base 300000. No run, test or fixture on this branch has generated
+  that base before (the regression test uses 200000 and only checks hashes).
+  The driver refuses the manifest if any calibration and validation candidate or
+  corpus hash overlaps.
+- Controls: the four paired arms (full, stride, nested uncached, cached) plus the
+  authoritative full-data audit of every rejected candidate.
+- Seeds 0, 17 and 101; eight counterbalanced repetitions; populations 12 and
+  24; 2,048 calibration and 4,096 validation records; cost `MSE`.
+- Compute limits: the generated config's limits (256 MiB corpus,
+  1,000,000,000 record evaluations, 120 seconds per trial, 1,800 seconds in
+  total). A breach is a failure, not a truncation.
+- Success and failure criteria: the driver's `PROTOCOL` thresholds, unchanged
+  (winner retention ≥ 0.95, relative regret ≤ 0.001, evaluation saving ≥ 50%
+  against full and > 0 against nested uncached, at least three validation
+  seeds). Every case is `kind: synthetic`, so the only reachable verdicts are
+  `inconclusive-no-representative-validation` or a failure. The run is reported
+  whatever its outcome, and it is not re-run to obtain a different one.
+- Costs counted: the release build, fixture generation, driver execution and
+  every record evaluation, including the audits, as recorded by the manifest
+  and observations.
+
+## Public observation — fresh near-clone validation, 24 November 2026
+
+The run declared in the previous section was made once, at git tip `48c0c48`
+(the commit that added that declaration), with the commands declared there. The
+[frozen manifest](../evidence/issue-680-near-clone-fresh-validation-manifest.json)
+and [raw JSONL observations (gzip)](../evidence/issue-680-near-clone-fresh-validation.jsonl.gz)
+record 96 of 96 successful trials, with no failed or omitted trials and no
+integrity error. Every case's candidates are pairwise distinct by SHA-256. The
+calibration cases are byte-identical to the near-clone run above. The two
+validation cases share no candidate or corpus hash with it, so this validation
+is untouched.
+
+Each case/seed outcome was identical across its eight repetitions. On both
+fresh validation cases every arm, stride included, kept the full-data winner
+(retention 1.0, regret 0), and the nested-control agreement was 1.0, so caching
+changed no promotion decision. The top-two full-error gap was 0.32% (12
+candidates) and 12.3% (24 candidates). The only lost winner was the unchanged
+calibration case: stride on calibration-12, seed 17, again selected candidate 8
+instead of 6 (relative regret 1.20%). Cached scoring used 79.8% and 83.4% fewer
+evaluations than full, and 19.1% and 19.9% fewer than nested uncached. The
+evaluation counts per trial are the same as above. The largest full-result
+relative deviation was `2.02e-10`, inside the 1e-6 tolerance. The run consumed
+13,912,176 record evaluations, including the audits.
+
+Indicative paired wall-time differences, in milliseconds (mean and seed-cluster
+bootstrap 95% interval):
+
+| Fresh synthetic validation population | Cached minus full | Cached minus stride | Cached minus nested |
+| --- | ---: | ---: | ---: |
+| 12 | -4.412 [-4.425, -4.392] | -0.270 [-0.288, -0.246] | -0.293 [-0.323, -0.264] |
+| 24 | -9.253 [-9.278, -9.217] | -0.708 [-0.864, -0.459] | -0.462 [-0.483, -0.446] |
+
+Costs: preparation took 17.33 seconds, of which 17.27 seconds was an
+incremental release build and 0.013 seconds was fixture generation; driver
+execution and report construction took 1.91 seconds. Process peak RSS ranged
+from 20.03 to 21.12 MiB. Versions: `halving_bench` 1.1.109, Rust 1.99.1 and
+neat-core v0.23.7 (`3759355634b1cabc8034cd76df5dbd44a867d18c`), on the same
+single host (`vibe-coder-7723`, Linux/aarch64, seven logical CPUs, no tuning
+environment overrides). The manifest records the source fingerprint and the
+executable hash.
+
+Verdict: **inconclusive — no representative validation**. It is the driver's
+verdict and the only success verdict the declaration allowed. Cached screening
+met every predeclared quality and saving threshold on untouched synthetic
+validation. Two fresh near-clone populations cannot say how often a 2% screen
+loses a near-tied winner: the stride loss above was in calibration, and the
+12-candidate validation gap of 0.32% was not lost here. This is still
+synthetic, single-host evidence, and it establishes neither real selection
+quality nor an optimisation benefit.

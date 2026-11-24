@@ -50,6 +50,18 @@ section to the released version with its date.
   observations support reproducible investigation. This is an experimental
   adaptation, with no representative-data benefit established and no default
   scorer change. See [`docs/experiments/halving.md`](docs/experiments/halving.md).
+- **Near-clone stress profile for the cached-halving experiment (Issue #680).**
+  `halving_bench --generate-fixture <root> --fixture-profile near-clone`
+  (driver: `prepare --synthetic-root <dir> --synthetic-profile near-clone`)
+  writes distinct one-mutation offspring of a shared parent, a near-tie
+  population with no oracle. In its public run cached and nested screening kept
+  every full-data winner and caching changed no promotion decision, while the
+  stride control lost the winner in two of twelve case/seed pairs at the 2%
+  rung (relative regret up to 1.2%). The default `tree-oracle` profile is
+  unchanged. `--fixture-validation-base` (driver: `--synthetic-validation-base`)
+  redraws only the near-clone validation cases from a new seed base; a
+  predeclared fresh validation at base 300000, never observed before, lost no
+  validation winner in any arm.
 - **The family-sync guard accepts a push delegated to `push-with-app-token`
   (Issue #656).** `scripts/check-family-sync-workflow.sh` now passes a
   `family-sync.yml` whose push step `uses: ./.github/actions/push-with-app-token`:
