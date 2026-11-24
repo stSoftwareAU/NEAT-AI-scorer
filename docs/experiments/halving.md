@@ -3,8 +3,8 @@
 This opt-in, CPU-only experiment replays immutable, fixed populations. It does
 not change `rust_scorer`, deploy a policy, generate evolutionary proposals or
 replace full-data acceptance. Public synthetic fixtures establish correctness, and a
-near-clone stress profile records a negative selection finding; representative
-validation is still outstanding. Performance changes follow the
+near-clone stress profile records where stride screening loses near-tied
+winners; representative validation is still outstanding. Performance changes follow the
 [Performance Task Workflow](../../CONTRIBUTING.md#performance-task-workflow).
 
 ## Pinned method and adaptation
@@ -168,8 +168,9 @@ It uses the same splits, sizes and case ids as `tree-oracle` (calibration 2,048
 records, validation 4,096, populations 12 and 24), but each case's candidates
 are one-mutation offspring of one shared parent built by `cohort_fixture`
 (`LayeredShape::small`: 12 inputs, hidden layers 16/8/4, 2 outputs). The first
-half each change one synapse weight by up to ±0.05; the rest each remove one
-hidden neuron. The corpus has inputs in [-1, 1) and smooth sine targets, and no
+half each change one synapse weight by up to ±0.05; the rest each remove a
+different hidden neuron, so every candidate in a case is distinct (generation
+fails loudly otherwise). The corpus has inputs in [-1, 1) and smooth sine targets, and no
 candidate is the target's generator, so there is no oracle and the candidates
 are near-ties. This is an unfavourable public stress fixture. It is still
 synthetic, labelled `kind: synthetic`, and not representative.
@@ -329,61 +330,59 @@ The [frozen manifest](../evidence/issue-680-near-clone-manifest.json) and
 [raw JSONL observations (gzip)](../evidence/issue-680-near-clone.jsonl.gz)
 record 96 successful trials (four cases, seeds 0, 17 and 101, eight
 counterbalanced repetitions), with no failed or omitted trials and no integrity
-error. The populations and record counts match the tree-oracle profile, so the
-full, nested-uncached and cached per-trial evaluation counts are the same as in
-its table above (validation: 49,152 / 12,251 / 9,914 for 12 candidates and
+error. Every case's candidates are pairwise distinct by SHA-256. The
+populations and record counts match the tree-oracle profile, so the full,
+nested-uncached and cached per-trial evaluation counts are the same as in its
+table above (validation: 49,152 / 12,251 / 9,914 for 12 candidates and
 98,304 / 20,406 / 16,347 for 24); the declared run again consumed 13,912,176
 record evaluations including the authoritative audits. Cached scoring used
 79.8–83.4% fewer evaluations than full and 19.1–19.9% fewer than nested
-uncached. Every surviving full result matched the authoritative streaming score
-within the 1e-6 tolerance.
+uncached. The largest surviving full-result relative deviation from the
+authoritative streaming score was `2.02e-10`, inside the 1e-6 tolerance.
 
-Each case/seed result was identical across its eight repetitions. "Lost" means
-the full-data winner was rejected; regret is the absolute mean-error difference
-unless marked relative:
+Each case/seed outcome was identical across its eight repetitions. The top-two
+full-error gap was 1.2% and 1.0% in the calibration cases and 0.62% and 2.0% in
+the validation cases (12 and 24 candidates). Cached and nested screening kept
+the full-data winner in every trial (retention 1.0, regret 0) and the
+nested-control agreement was 1.0 throughout: caching never changed a promotion
+decision. The stride control lost the winner twice, both at the 2% rung:
 
-| Case | Seed 0 | Seed 17 | Seed 101 |
-| --- | --- | --- | --- |
-| Calibration, 12 | All arms kept the winner | All kept | Stride lost it at the 15% rung (regret 9.58e-4); cached and nested kept it |
-| Calibration, 24 | All kept | All kept | All kept |
-| Validation, 12 | Stride lost it at the 2% rung (regret 2.92e-3); cached and nested kept it | All kept | All kept |
-| Validation, 24 | All kept | All kept | Cached and nested both lost it at the 15% rung (regret 9.12e-4, relative 0.69%); stride kept it |
+| Case | Seed | Stride selected | Absolute regret | Relative regret |
+| --- | ---: | --- | ---: | ---: |
+| Calibration, 12 | 17 | candidate 8 instead of 6 | 1.65e-3 | 1.20% |
+| Validation, 12 | 0 | candidate 9 instead of 6 | 9.03e-4 | 0.64% |
 
-Cached validation winner retention was 1.0 for 12 candidates and 0.667 for 24
-(seed means 1, 1, 0), with a maximum relative regret of 0.0069, above the
-predeclared 0.001. Had this case been representative, the protocol would
-classify it `selection-or-saving-threshold-not-met`. The nested-control
-agreement was 1.0 in every trial: caching never changed a promotion decision.
-The lost winners come from screening near-tied candidates (top-two full-error
-gap 0.69% on validation-24) on 2%–15% subsets, which the stride control shows
-as well; caching only changes the cost of the same decisions.
+Both exceed the predeclared 0.001 relative-regret threshold. The stride sets at
+2% are a different deterministic sample from the shared nested sets, so this
+shows that a 2% screen can drop a winner that is within about 1% of its rivals;
+with three seeds and one population per size it does not show that the nested
+sets are generally safer.
 
 Indicative paired wall-time differences on the shared host, in milliseconds
 (mean and seed-cluster bootstrap 95% interval):
 
 | Synthetic validation population | Cached minus full | Cached minus stride | Cached minus nested |
 | --- | ---: | ---: | ---: |
-| 12 | -4.378 [-4.396, -4.353] | -0.269 [-0.274, -0.264] | -0.275 [-0.279, -0.272] |
-| 24 | -9.158 [-9.279, -8.963] | -0.309 [-0.439, -0.235] | -0.425 [-0.582, -0.237] |
+| 12 | -4.502 [-4.611, -4.442] | -0.282 [-0.298, -0.262] | -0.271 [-0.273, -0.269] |
+| 24 | -9.241 [-9.363, -9.029] | -0.366 [-0.466, -0.195] | -0.502 [-0.512, -0.498] |
 
 This is single-host evidence from `vibe-coder-7723`, Linux/aarch64. Python
 reported seven logical CPUs; the CPU model was unavailable. The run used no
 tuning environment overrides, Rust 1.99.1, `halving_bench` 1.1.109 and neat-core
-v0.23.7 (`3759355634b1cabc8034cd76df5dbd44a867d18c`), at git tip `44b49ba`; the
+v0.23.7 (`3759355634b1cabc8034cd76df5dbd44a867d18c`), at git tip `22c6355`; the
 manifest records the working-source fingerprint and executable hash.
-Preparation took 107.8 seconds, almost all a fresh 107.76-second release build
-(fat LTO); fixture generation took 0.013 seconds; driver execution and report
-construction took 1.88 seconds. Process peak RSS ranged from 19.92 to
-21.22 MiB.
+Preparation took 18.07 seconds, almost all an 18.03-second incremental release
+build; fixture generation took 0.0096 seconds; driver execution and report
+construction took 1.87 seconds. Process peak RSS ranged from 20.05 to
+21.10 MiB.
 
 Verdict: **inconclusive — no representative validation** (the driver's verdict,
-since every case is `kind: synthetic`). Negative finding: on near-tied offspring
-of one parent, the fixed 2%/5%/15%/100% schedule with eta 2 lost the full-data
-winner in one of three validation seeds for 24 candidates, beyond the
-predeclared regret threshold; caching saved about a fifth of the nested
-control's evaluations without changing any decision. Neither profile
-establishes real selection quality or an optimisation benefit. Representative
-validation needs private candidate populations and corpora, which this public
-repository and this host do not hold; run it with a private `--config` as
-described above, keeping its manifest and observations private. The harness is
-kept for that run; it is opt-in and changes no scorer default.
+since every case is `kind: synthetic`). On these near-tied offspring of one
+parent, cached screening met every predeclared quality and saving threshold and
+its timing upper bounds were below zero, but that is synthetic, single-host
+evidence: it establishes neither real selection quality nor an optimisation
+benefit. Representative validation needs private candidate populations and
+corpora, which this public repository and this host do not hold; run it with a
+private `--config` as described above, keeping its manifest and observations
+private. The harness is kept for that run; it is opt-in and changes no scorer
+default.

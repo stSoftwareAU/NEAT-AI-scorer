@@ -53,11 +53,12 @@ section to the released version with its date.
 - **Near-clone stress profile for the cached-halving experiment (Issue #680).**
   `halving_bench --generate-fixture <root> --fixture-profile near-clone`
   (driver: `prepare --synthetic-root <dir> --synthetic-profile near-clone`)
-  writes one-mutation offspring of a shared parent, a near-tie population with
-  no oracle. Its public run lost the full-data winner in one of three
-  validation seeds for 24 candidates (relative regret 0.69%, above the
-  predeclared 0.001) under cached and nested screening alike; caching changed
-  no promotion decision. The default `tree-oracle` profile is unchanged.
+  writes distinct one-mutation offspring of a shared parent, a near-tie
+  population with no oracle. In its public run cached and nested screening kept
+  every full-data winner and caching changed no promotion decision, while the
+  stride control lost the winner in two of twelve case/seed pairs at the 2%
+  rung (relative regret up to 1.2%). The default `tree-oracle` profile is
+  unchanged.
 - **The family-sync guard accepts a push delegated to `push-with-app-token`
   (Issue #656).** `scripts/check-family-sync-workflow.sh` now passes a
   `family-sync.yml` whose push step `uses: ./.github/actions/push-with-app-token`:
