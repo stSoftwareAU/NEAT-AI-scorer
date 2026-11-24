@@ -37,6 +37,15 @@ use crate::stream_score::effective_fused_read_buf_len;
 
 const SCHEMA: &str = "neat-halving-observation/1";
 
+/// Which public synthetic fixture `--generate-fixture` writes.
+#[derive(Debug, Clone, Copy, clap::ValueEnum)]
+enum FixtureProfile {
+    /// IF-tree oracle: deliberately favourable, one clear winner.
+    TreeOracle,
+    /// One-mutation offspring of a shared parent: near-ties.
+    NearClone,
+}
+
 #[derive(Debug, Parser)]
 #[command(name = "halving_bench", version)]
 struct Cli {
@@ -47,6 +56,9 @@ struct Cli {
     /// Create a new, public synthetic correctness fixture and print its driver config.
     #[arg(long, conflicts_with_all = ["creatures_dir", "data_dir", "describe_protocol"])]
     generate_fixture: Option<PathBuf>,
+    /// Synthetic fixture profile for `--generate-fixture`.
+    #[arg(long, value_enum, default_value_t = FixtureProfile::TreeOracle, requires = "generate_fixture")]
+    fixture_profile: FixtureProfile,
     /// Describe the algorithm constants without touching candidates or data.
     #[arg(long, conflicts_with_all = ["creatures_dir", "data_dir"])]
     describe_protocol: bool,
@@ -123,7 +135,7 @@ pub fn main() -> ExitCode {
         Ok(serde_json::json!({"rates": plan.rates(), "eta": plan.eta(),
             "relativeNumericTolerance": FULL_MATCH_REL_TOLERANCE}))
     } else if let Some(root) = &cli.generate_fixture {
-        generate_fixture(root)
+        generate_fixture(root, cli.fixture_profile)
     } else {
         run(&cli).and_then(|r| serde_json::to_value(r).map_err(|e| e.to_string()))
     };
@@ -404,13 +416,24 @@ fn peak_rss_bytes() -> Result<Option<u64>, String> {
     }
 }
 
-fn generate_fixture(root: &std::path::Path) -> Result<serde_json::Value, String> {
+fn generate_fixture(
+    root: &std::path::Path,
+    profile: FixtureProfile,
+) -> Result<serde_json::Value, String> {
     let started = Instant::now();
     // Refuse existing state: this command owns only a newly created directory.
     std::fs::create_dir(root).map_err(|e| format!("create synthetic root: {e}"))?;
     let root = root
         .canonicalize()
         .map_err(|e| format!("resolve synthetic root: {e}"))?;
+    let split_justification = match profile {
+        FixtureProfile::TreeOracle => {
+            "Distinct synthetic candidate seeds and disjoint input-index ranges; no learned parameters or threshold tuning."
+        }
+        FixtureProfile::NearClone => {
+            "Distinct synthetic parent seeds and corpus seeds per case; candidates are one-mutation offspring of a shared parent (near-ties); no learned parameters or threshold tuning."
+        }
+    };
     let mut cases = Vec::new();
     for (split, base, records) in [("calibration", 0, 2048), ("validation", 100_000, 4096)] {
         for population in [12, 24] {
@@ -422,23 +445,14 @@ fn generate_fixture(root: &std::path::Path) -> Result<serde_json::Value, String>
                 .and_then(|()| std::fs::create_dir(&candidates))
                 .and_then(|()| std::fs::create_dir(&data))
                 .map_err(|e| format!("create fixture: {e}"))?;
-            for i in 0..population {
-                let spec = TreeSpec::new(4, 2, base + i as u64);
-                std::fs::write(
-                    candidates.join(format!("candidate-{i:03}.json")),
-                    tree_creature_json(&spec),
-                )
-                .map_err(|e| format!("write fixture candidate: {e}"))?;
+            match profile {
+                FixtureProfile::TreeOracle => {
+                    write_tree_oracle_case(&candidates, &data, base, population, records)?;
+                }
+                FixtureProfile::NearClone => {
+                    write_near_clone_case(&candidates, &data, base, population, records)?;
+                }
             }
-            let oracle = TreeSpec::new(4, 2, base + (population / 2) as u64);
-            let mut packed = Vec::new();
-            for r in 0..records {
-                let inputs = varied_inputs(4, base as usize + population * 10_000 + r);
-                packed.extend_from_slice(&inputs);
-                packed.push(tree_reference_output(&oracle, &inputs));
-            }
-            std::fs::write(data.join("0.bin"), records_to_le_bytes(&packed))
-                .map_err(|e| format!("write fixture corpus: {e}"))?;
             cases.push(
                 serde_json::json!({"id": id, "split": split, "kind": "synthetic",
                 "creaturesDir": candidates, "dataDir": data}),
@@ -448,9 +462,63 @@ fn generate_fixture(root: &std::path::Path) -> Result<serde_json::Value, String>
     Ok(
         serde_json::json!({"schema": "neat-halving-config/1", "cases": cases,
         "seeds": [0, 17, 101], "repetitions": 8, "cost": "MSE",
-        "splitJustification": "Distinct synthetic candidate seeds and disjoint input-index ranges; no learned parameters or threshold tuning.",
+        "splitJustification": split_justification,
         "inputPreparationSecs": started.elapsed().as_secs_f64(),
         "limits": {"maxCorpusBytes": 268435456, "maxRecordEvaluations": 1000000000,
             "trialSeconds": 120, "totalSeconds": 1800}}),
     )
+}
+
+fn write_tree_oracle_case(
+    candidates: &std::path::Path,
+    data: &std::path::Path,
+    base: u64,
+    population: usize,
+    records: usize,
+) -> Result<(), String> {
+    for i in 0..population {
+        let spec = TreeSpec::new(4, 2, base + i as u64);
+        std::fs::write(
+            candidates.join(format!("candidate-{i:03}.json")),
+            tree_creature_json(&spec),
+        )
+        .map_err(|e| format!("write fixture candidate: {e}"))?;
+    }
+    let oracle = TreeSpec::new(4, 2, base + (population / 2) as u64);
+    let mut packed = Vec::new();
+    for r in 0..records {
+        let inputs = varied_inputs(4, base as usize + population * 10_000 + r);
+        packed.extend_from_slice(&inputs);
+        packed.push(tree_reference_output(&oracle, &inputs));
+    }
+    std::fs::write(data.join("0.bin"), records_to_le_bytes(&packed))
+        .map_err(|e| format!("write fixture corpus: {e}"))
+}
+
+fn write_near_clone_case(
+    candidates: &std::path::Path,
+    data: &std::path::Path,
+    base: u64,
+    population: usize,
+    records: usize,
+) -> Result<(), String> {
+    use crate::cohort_fixture::{
+        LayeredShape, corpus, layered_creature, removal_cohort, to_le_bytes, weight_change_cohort,
+    };
+    let seed = base + population as u64;
+    let shape = LayeredShape::small(seed);
+    let parent = layered_creature(&shape);
+    let half = population / 2;
+    let mut specs = weight_change_cohort(&parent, half, seed + 1);
+    specs.extend(removal_cohort(&parent, &shape, population - half, seed + 2));
+    for (i, spec) in specs.iter().enumerate() {
+        std::fs::write(
+            candidates.join(format!("candidate-{i:03}.json")),
+            spec.to_json(),
+        )
+        .map_err(|e| format!("write fixture candidate: {e}"))?;
+    }
+    let packed = corpus(shape.inputs, shape.outputs, records, seed + 3);
+    std::fs::write(data.join("0.bin"), to_le_bytes(&packed))
+        .map_err(|e| format!("write fixture corpus: {e}"))
 }

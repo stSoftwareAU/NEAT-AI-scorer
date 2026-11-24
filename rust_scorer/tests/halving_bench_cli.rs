@@ -395,3 +395,111 @@ fn python_driver_contract_tests_pass_in_the_cargo_gate() {
         "expected the driver contract tests to run, got {ran}:\n{log}"
     );
 }
+
+#[test]
+fn near_clone_fixture_writes_offspring_of_one_parent_and_scores_authoritatively() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("root");
+    let generated = Command::new(env!("CARGO_BIN_EXE_halving_bench"))
+        .args(["--generate-fixture"])
+        .arg(&root)
+        .args(["--fixture-profile", "near-clone"])
+        .stdin(std::process::Stdio::null())
+        .output()
+        .unwrap();
+    assert!(
+        generated.status.success(),
+        "{}",
+        String::from_utf8_lossy(&generated.stderr)
+    );
+    let config: serde_json::Value = serde_json::from_slice(&generated.stdout).unwrap();
+    let cases = config["cases"].as_array().unwrap();
+    let ids: Vec<&str> = cases.iter().map(|c| c["id"].as_str().unwrap()).collect();
+    assert_eq!(
+        ids,
+        [
+            "calibration-12",
+            "calibration-24",
+            "validation-12",
+            "validation-24"
+        ]
+    );
+    for case in cases {
+        let id = case["id"].as_str().unwrap();
+        let population: usize = id.rsplit('-').next().unwrap().parse().unwrap();
+        let records: u64 = if id.starts_with("calibration") {
+            2048
+        } else {
+            4096
+        };
+        let count = std::fs::read_dir(case["creaturesDir"].as_str().unwrap())
+            .unwrap()
+            .filter(|e| {
+                e.as_ref()
+                    .unwrap()
+                    .path()
+                    .extension()
+                    .is_some_and(|x| x == "json")
+            })
+            .count();
+        assert_eq!(count, population, "{id}");
+        let bin = std::fs::metadata(
+            std::path::Path::new(case["dataDir"].as_str().unwrap()).join("0.bin"),
+        )
+        .unwrap();
+        assert_eq!(bin.len(), records * (12 + 2) * 4, "{id}");
+    }
+    let validation = cases.iter().find(|c| c["id"] == "validation-12").unwrap();
+    let out = Command::new(env!("CARGO_BIN_EXE_halving_bench"))
+        .arg(validation["creaturesDir"].as_str().unwrap())
+        .arg(validation["dataDir"].as_str().unwrap())
+        .args(["--cost", "MSE"])
+        .env("NEAT_SCORER_ACTIVATION_THREADS", "1")
+        .stdin(std::process::Stdio::null())
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["status"], "ok");
+    assert_eq!(v["records"], 4096);
+    let arms = v["arms"].as_array().unwrap();
+    assert_eq!(arms.len(), 4);
+    for arm in arms {
+        assert!(arm["maxRelativeDeviation"].as_f64().unwrap() <= 1e-6);
+    }
+    let errors = v["authoritativeErrors"].as_array().unwrap();
+    assert_eq!(errors.len(), 12);
+    assert!(
+        errors.iter().any(|e| e != &errors[0]),
+        "near-clones must differ"
+    );
+
+    // Without --generate-fixture the profile option is rejected.
+    let bare = Command::new(env!("CARGO_BIN_EXE_halving_bench"))
+        .args(["--fixture-profile", "near-clone"])
+        .stdin(std::process::Stdio::null())
+        .output()
+        .unwrap();
+    assert!(!bare.status.success());
+
+    // An existing root is refused and left untouched.
+    let existing = dir.path().join("existing");
+    std::fs::create_dir(&existing).unwrap();
+    std::fs::write(existing.join("marker"), "keep").unwrap();
+    let refused = Command::new(env!("CARGO_BIN_EXE_halving_bench"))
+        .arg("--generate-fixture")
+        .arg(&existing)
+        .args(["--fixture-profile", "near-clone"])
+        .stdin(std::process::Stdio::null())
+        .output()
+        .unwrap();
+    assert!(!refused.status.success());
+    assert_eq!(
+        std::fs::read_to_string(existing.join("marker")).unwrap(),
+        "keep"
+    );
+}
