@@ -1,160 +1,151 @@
 ## Summary
 
-Added an opt-in cached-halving experiment with four controls, frozen input
-manifests, authoritative rejection audits and paired machine-readable results.
-The ordinary scorer CLI and defaults remain unchanged. Representative-data
-validation is outstanding. Part of #680.
+Adds a public **near-clone stress profile** to the opt-in cached-halving
+experiment that PR #681 delivered, and records its frozen, paired run. The
+profile is a population of distinct one-mutation offspring of one shared
+parent, so the candidates are near-ties and there is no oracle. The existing
+`tree-oracle` fixture is deliberately easy and could not show a lost winner.
+Result: cached and nested screening kept every full-data winner, and caching
+changed no promotion decision. The stride control lost the winner in 2 of 12
+case/seed pairs at the 2% rung (relative regret 0.64% and 1.20%, both above the
+predeclared 0.1%). Validation on representative populations is still
+outstanding: it needs private candidate populations and corpora that this
+public repository and this host do not hold. Part of #680.
 
-- [x] Resume and verify the checkpoint; complete controls and benchmark command.
-- [x] Pin the method, freeze the protocol and archive synthetic observations.
-- [x] Run correctness, existing regression and full quality checks.
-- [ ] Run representative-population/corpus comparisons.
+- [x] Verify the merged harness (PR #681) and the outstanding scope.
+- [x] Add the near-clone profile and the driver flag, with tests.
+- [x] Run the frozen protocol, archive the manifest and observations, and document them.
+- [x] Fix duplicate candidates found in review, re-run, and disclose the discarded run.
+- [ ] Representative-population validation (private inputs, not available here).
 
 ## Spec
 
 ### Intent and Rationale
 
-- Test whether reusing additive loss sums saves evaluations without losing
-  full-data winners; a nested uncached control separates caching from sampling.
-- This delivers experimental infrastructure and correctness evidence, not a
-  deployed optimisation or a full reproduction of EvalAlloc.
+- The scientific risk is losing a near-tied winner on a 2%–15% screen. The
+  merged fixture has one clear winner, so it cannot measure that. Offspring of
+  one parent are the public, application-agnostic shape of that risk.
+- The profile is a second public synthetic profile built on the existing
+  `cohort_fixture` generators. It is not a new scoring path.
 
 ### Essential Design Decisions
 
-- Keep the ordinary positional CLI and candidate files unchanged. The separate
-  worker reuses the directory loader, streaming decoder, `SampleSpec` and
-  canonical cost accumulation; independent streaming full scoring is authoritative.
-- The stride arm adds this experiment's halving schedule to existing sampling.
-  `sampling.rs`, `multi_score.rs` and `racing_stdio.rs` provide no shipped
-  successive-halving controller or externally defined promotion policy.
-- Freeze rates, eta, tolerance, thresholds, hashes, seeds, cohorts, repetitions
-  and limits before scoring. Algorithm constants come from the native
-  `--describe-protocol`; the driver keeps no second rate/tolerance table.
-- Use the predeclared `1e-6` relative tolerance for batch/worker regrouping,
-  with denominator `max(abs(authoritative), 1e-12)`. Report promotion disagreement
-  and every rejected candidate's authoritative error rather than hiding them.
+- `--fixture-profile` defaults to `tree-oracle`, and its output is byte-identical
+  (the code was moved, not rewritten). The flag is only accepted with
+  `--generate-fixture`. The driver's `--synthetic-profile` is refused together
+  with `--config`.
+- Removal offspring drop **distinct** hidden neurons, from the layer set that
+  the new shared `cohort_fixture::removable_layers` defines. Generation fails
+  loudly on a shortfall or on duplicate rendered candidates.
+  `removal_cohort`'s RNG sequence is unchanged.
+- Every near-clone case is labelled `kind: synthetic`, so the driver verdict
+  stays `inconclusive-no-representative-validation`. No threshold, rate or
+  limit was changed.
+- The harness is kept, not removed. A representative run (private `--config`)
+  still needs it, it is opt-in, and it changes no scorer default.
 
 ### Undiscoverable Facts
 
-- No representative candidates or corpus were supplied/configured for this
-  run; production-fixture environment variables were unset.
-- Measurements are single-host observations from `vibe-coder-7663` on
-  Linux/aarch64. Precise CPU model information was unavailable. Shared-host
-  timings are indicative and cannot establish production performance.
+- A first near-clone run (tip `44b49ba`) used `removal_cohort`, which draws with
+  replacement. 3 of the 4 cases held byte-identical candidates, and that run
+  showed cached/nested losing a winner on validation-24. Review found the
+  duplicates. The run was discarded as an invalid population, and the re-run
+  used the same case seeds. This is disclosed in `docs/experiments/halving.md`.
+- This host has no training corpora (`find` over `/home/vibe` and `/var/tmp`
+  found no `.bin` over 1 MiB outside build directories), and
+  `BENCH_PROD_CREATURE` was unset.
+- The evidence is single-host only, from `vibe-coder-7723` (Linux/aarch64), and
+  the timings are indicative.
 
 ## Evidence
 
+- Frozen manifest `docs/evidence/issue-680-near-clone-manifest.json` and raw
+  observations `docs/evidence/issue-680-near-clone.jsonl.gz`. Commands:
+  `python3 -B scripts/bench-halving.py prepare --synthetic-root <dir>/inputs
+  --synthetic-profile near-clone --manifest <dir>/manifest.json`, then
+  `run --manifest … --results …`. Driver output:
+  `inconclusive-no-representative-validation; 96/96 trials`.
+- 96 of 96 trials succeeded, with no integrity error. Every case had pairwise
+  distinct candidate SHA-256s (12/12, 24/24, 12/12, 24/24).
+- Each case/seed outcome was identical across its 8 repetitions. The largest
+  surviving full-result deviation was `2.02e-10`, inside the 1e-6 tolerance.
+- Cached scoring used 79.8–83.4% fewer evaluations than full and 19.1–19.9%
+  fewer than nested uncached. 13,912,176 record evaluations were made in total,
+  including the audits.
+- Regenerating the profile from the final head reproduced every recorded
+  candidate and corpus hash (`identical`).
 - #680: Experiment: Benchmark shared-core cached successive-halving evaluation.
-- [Protocol and reproducible commands](../../experiments/halving.md), including
-  the pinned [arXiv:2610.37276v1 method](https://arxiv.org/html/2610.37276v1).
-- [Frozen manifest](../../evidence/issue-680-manifest.json) and
-  [raw observations, gzip JSONL](../../evidence/issue-680-synthetic.jsonl.gz):
-  96/96 successful synthetic trials, no integrity failures or omitted trials.
-  All cached oracle winners were retained, with zero regret; maximum surviving
-  full-result relative deviation across the arms was `2.01e-14`.
-
-Per-trial evaluations on the 4,096-record synthetic validation cases. Full,
-nested and cached counts are identical across seeds; the stride arm's depend on
-the stride phase (the seed), so its column gives seeds 0 and 101 / seed 17:
-
-| Population | Full | Stride (seeds 0, 101 / 17) | Nested uncached | Cached |
-| --- | ---: | ---: | ---: | ---: |
-| 12 | 49,152 | 12,230 / 12,248 | 12,251 | 9,914 |
-| 24 | 98,304 | 20,364 / 20,400 | 20,406 | 16,347 |
-
-Caching saved approximately 19–20% of evaluations against the nested control
-on these fixtures. Total experimental accounting includes 8,603,760 arm
-evaluations plus 5,308,416 independent full-audit evaluations. Cache statistics
-occupied 192/384 bytes; process peak RSS was 19.92–21.07 MiB.
-
-Indicative shared-host cached-minus-stride time differences were -0.0264 ms
-[-0.0298, -0.0222] and -0.0527 ms [-0.0558, -0.0485], respectively (paired means,
-seed-cluster bootstrap 95% intervals). Raw distributions and preparation,
-compilation, scoring, memory and audit costs are in the observations. The
-scientific verdict is `inconclusive-no-representative-validation`.
 
 ```mermaid
 flowchart LR
-    M[Frozen manifest] --> A[Four paired replay arms]
-    A --> F[Independent streaming full scorer]
-    F --> R[Reject audits and versioned JSONL]
+    P[Shared parent] --> W[Weight-change offspring]
+    P --> R[Distinct-removal offspring]
+    W --> M[Frozen manifest]
+    R --> M
+    M --> A[Four paired arms + authoritative audit]
+    A --> J[JSONL + seed-cluster bootstrap summary]
 ```
 
-This is backend/CLI work; no visual surface changed.
+This is backend/CLI and research tooling. No visual surface changed.
 
 ## Acceptance Criteria
 
-- **missing** — Deliver a reproducible command/manifest and machine-readable
-  results with paired distributions, uncertainty, failures and actual coverage.
-  Fixtures alone do not demonstrate an optimisation benefit.
-  — reason: those artefacts are delivered for synthetic correctness fixtures;
-  representative validation inputs/results and a production benefit remain
-  unavailable and unverified.
+<!-- vibe-spec-review inputs="diff+issue-body" -->
+
+- **partial** — Compare current screening and full evaluation with cumulative deterministic strata at 2%, 5%, 15%, 100%, sharing record IDs between candidates. Reuse sufficient statistics only for decomposable canonical costs; evaluate only unseen records and match exact full results within documented numeric tolerance. Audit rejected candidates to measure lost full-data winners. Count all record evaluations, cache costs and wall time. Reuse existing progressive screening where possible and keep final full scoring authoritative. — evidence: `docs/experiments/halving.md` near-clone section, `docs/evidence/issue-680-near-clone.jsonl.gz` — reviewer: partial — reason: the comparison has only run on synthetic fixtures; representative populations and corpora are private and not on this host.
+- **met** — First inspect current code, merged work and repository instructions. Reuse existing mechanisms; if functionality already exists, this issue still owns the missing controlled comparison rather than a second implementation. — evidence: `rust_scorer/src/halving_experiment.rs::write_near_clone_case` calls `cohort_fixture` helpers, including the new shared `removable_layers` — reviewer: partial — reason: the reviewer flagged the removable-layer policy copied from `removal_cohort`; after that review it moved into `cohort_fixture::removable_layers`, which both callers use.
+- **met** — Opt-in experiment only; preserve ordinary behaviour, interfaces, immutable parents and full authoritative acceptance. No automatic deployment or default change. — evidence: `rust_scorer/src/halving_experiment.rs` (`FixtureProfile::TreeOracle` default, `requires = "generate_fixture"`) — reviewer: met
+- **partial** — Predeclare controls, seeds, sample size, compute limits and success/failure criteria. Identify code/model/data versions; separate calibration from untouched validation and count all preparation/search costs. — evidence: `docs/evidence/issue-680-near-clone-manifest.json` — reviewer: partial — reason: everything is frozen and the discarded first run and its cost are now disclosed, but this profile's validation parents and corpora were observed once before the generator fix.
+- **met** — Provide deterministic positive/negative correctness tests for new behaviour and pass the repository's normal quality checks. Research runs are separate from routine feature CI. — evidence: `rust_scorer/tests/halving_bench_cli.rs::near_clone_fixture_writes_offspring_of_one_parent_and_scores_authoritatively`, `rust_scorer/tests/halving_bench_cli.rs::driver_passes_near_clone_profile_through_and_refuses_it_without_synthetic_root`, `rust_scorer/src/halving_experiment.rs::near_clone_tests::near_clone_rejects_too_few_removable_neurons_before_writing`; `./quality.sh` exit 0 on the final head — reviewer: met
+- **met** — Deliver a reproducible command/manifest and machine-readable results with paired distributions, uncertainty, failures and actual coverage. Fixtures alone do not demonstrate an optimisation benefit. — evidence: `docs/experiments/halving.md`, `docs/evidence/issue-680-near-clone-manifest.json`, `docs/evidence/issue-680-near-clone.jsonl.gz` — reviewer: met
+- **met** — Record negative findings and remove optional code that does not earn its maintenance cost. Do not claim success before representative runs. — evidence: `docs/experiments/halving.md` near-clone verdict, `CHANGELOG.md` — reviewer: met
+- **met** — Keep public implementation and fixtures application-agnostic; private corpora/results and operational integration remain private. — evidence: `rust_scorer/src/halving_experiment.rs::write_near_clone_case` (generic layered networks, sine-target corpus) — reviewer: met
+- **met** — Leave unassigned until an implementer actively starts. `work-on` authorises the investigation, not skipping prerequisite verification. — evidence: this run first verified merged PR #681 and the host's inputs before changing anything — reviewer: missing — reason: the reviewer said "not assessable from a diff (process criterion); nothing in the diff contradicts it".
+
+## Standards Review
+
+<!-- vibe-standards-review inputs="diff+CODING-STANDARDS.md" -->
+
+- **clean** — The repo has no `CODING-STANDARDS.md`, so `CONTRIBUTING.md` and `AGENTS.md` were used; neither marks any rule as review-only. Checked and compliant: Australian English; the positional CLI contract; tests run the real binary and driver; creature JSON comes from `fixture_json` (no hand-encoding); no `unsafe`; CHANGELOG under `[Unreleased]`; docs cross-references resolve; no named-but-absent tests; no workflow change. No existing test expectation was changed (`rust_scorer/tests/halving_bench_cli.rs` is append-only). Optional, not chased: a doc-comment line over 80 columns in `rust_scorer/src/cohort_fixture.rs`, and one multi-concern test.
 
 ## Test Plan
 
-- `cargo test -p rust_scorer --lib halving::tests < /dev/null` — passed, 24 tests.
-  `rust_scorer/src/halving.rs::tests` covers disjoint increments, eight canonical
-  costs, exact counts, RMSE finalisation, ties, empty early rungs, invalid
-  shapes, non-finite corpus/reference values and nested cached/uncached parity.
-  Empty-rung, non-finite and shape tests were observed failing on the resumed
-  implementation before their fixes; this is checkpoint review, not a claim
-  of reproducing a default-branch bug.
-- `cargo test -p rust_scorer --test halving_bench_cli < /dev/null` — passed,
-  six tests (including `python_driver_contract_tests_pass_in_the_cargo_gate`,
-  which runs the Python driver contracts inside `cargo test` so CI gates them),
-  in `rust_scorer/tests/halving_bench_cli.rs`. They exercise the real
-  native worker and Python driver, authoritative RMSE parity, a deliberately
-  rejected full-data winner with 0.96 regret, limits, malformed data, invalid
-  order/seed, split hash overlap, changed inputs/binary and native failures.
-  `frozen_driver_runs_real_worker_and_rejects_changed_inputs` also demonstrated
-  the changed-binary guard failing before its ordering fix and passing after it.
-- `python3 -B -m unittest discover -s tests/experiments -v < /dev/null` — passed,
-  four tests in `tests/experiments/test_halving_driver.py`: counterbalancing,
-  seed-cluster uncertainty, content/inventory hashes and protocol validation.
-- `cargo test -p rust_scorer --test sample_rate_tdd --test racing_stdio_cli
-  < /dev/null` — passed, 14 existing tests in
-  `rust_scorer/tests/sample_rate_tdd.rs` and `rust_scorer/tests/racing_stdio_cli.rs`.
-- `timeout 1500 ./quality.sh < /dev/null` — re-run on the final head on
-  `vibe-coder-88973`, exit 0 ("All quality checks passed!"): shell
-  checks/validators, spelling, shell tests, cargo-deny, formatting, clippy,
-  check, builds, the workspace tests (including
-  `rust_scorer/tests/halving_bench_cli.rs` and the 24 `halving::tests`),
-  rustdoc and release build. The Python unittests above were re-run there too
-  and passed (4 tests).
-- Removed the worker's stale interruption note
-  `docs/archive/handover/issue-680.md`; it is not a deliverable.
-- No base-branch test assertions were removed. In the resumed checkpoint's
-  `rust_scorer/src/halving.rs::tests::verify_full_match_fails_loudly`, the error
-  text expectation `tolerance 0.000000001` became `tolerance 0.000001` for the
-  predeclared numeric contract; its negative fixture remains outside tolerance
-  and its exact-match positive assertion remains intact.
-- Existing directory loader callers retain their behaviour: CPU scoring, GPU
-  compatibility/probing and GPU scoring. Its visibility and fields became
-  crate-visible for reuse; loading semantics did not change. All four replay
-  arms use the shared input checks and canonical loss helper. The driver reads
-  algorithm constants from the native worker rather than mirroring them.
-- Read the README Binaries section and the experiment's method, protocol,
-  accounting and results sections; updated README, CHANGELOG, CONTRIBUTING and
-  `docs/experiments/halving.md`. No workflow file changed.
+- `rust_scorer/tests/halving_bench_cli.rs::near_clone_fixture_writes_offspring_of_one_parent_and_scores_authoritatively`
+  (new) covers:
+  - case ids, population sizes and corpus byte sizes (12 inputs + 2 outputs);
+  - pairwise-distinct candidates, and a shared-parent shape (half with N
+    neurons, half with N − 1);
+  - a real worker run with four arms within 1e-6 and non-equal authoritative
+    errors;
+  - refusal of `--fixture-profile` without `--generate-fixture` (stderr names
+    the requirement);
+  - refusal of an existing root (marker file survives, diagnostic names
+    `create synthetic root`).
 
-## Security Check
+  The distinctness assertion was observed failing against the with-replacement
+  generator (`calibration-24: duplicate candidates`) and passes after the fix.
+- `rust_scorer/tests/halving_bench_cli.rs::driver_passes_near_clone_profile_through_and_refuses_it_without_synthetic_root`
+  (new) runs the real driver. Pass-through: the manifest names the
+  near-clone split justification, and the data size tells the profiles apart.
+  Refusal: `--config` together with `--synthetic-profile` exits non-zero with
+  the reason, and no manifest is written.
+- `rust_scorer/src/halving_experiment.rs::near_clone_tests::near_clone_rejects_too_few_removable_neurons_before_writing`
+  (new): population 60 is refused with "distinct removable neurons" and nothing
+  is written; population 24 is the positive control and writes 24 files. The
+  duplicate-render guard cannot be reached at the shipped sizes and has no
+  test.
+- The `removal_cohort` refactor keeps the draw sequence: `cohort_parity` (12)
+  and `cohort_parity_workers` (1) passed, and so did the `cohort_fixture` lib
+  tests (3).
+- `timeout 1500 ./quality.sh < /dev/null` on the final head: exit 0, "All
+  quality checks passed!". The run included `halving_bench_cli` (8 passed) and
+  the Python driver contracts.
+- Existing tests: none edited, and no assertion was removed.
 
-The driver checks the executable hash before querying its protocol, verifies
-input/source/environment consistency before scoring, and verifies again after
-the run. Subprocesses use argument arrays, writes refuse overwrites, and
-the scorer reads candidates without modifying them. The committed observations
-contain public synthetic inputs and an empty tuning environment. No new
-third-party library was introduced by this implementation.
+## Limitations — not done
 
-## Merge Verification
-
-CI and external review have not been observed.
-
-## Limitations
-
-Representative validation, quiet-host/200 MB Criterion evidence and macOS
-execution were not run. Platform resource-probe failures and live kernel
-loss-overflow failures were not injected. Packed serial replay timings exclude
-per-rung disk I/O and do not measure production directory throughput. Synthetic
-success establishes neither real selection quality nor an optimisation benefit.
+- Representative-population/corpus validation was not run: the private inputs
+  are unavailable here, and the issue requires them to stay private.
+- There was no quiet-host timing and no macOS run. Three seeds and one
+  population per size give limited uncertainty resolution.
+- The duplicate-render guard is untested (unreachable at the shipped sizes).
